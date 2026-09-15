@@ -1,0 +1,9 @@
+[
+  {
+    "url": "https://example.com/",
+    "status": 200,
+    "content": { "screenshot": [137, 80, 78, 71, 13, 10, 26, 10] },
+    "costs": { "compute_cost": 1.2, "file_cost": 0.3, "total_cost": 1.5 },
+    "error": null
+  }
+]

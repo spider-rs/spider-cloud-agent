@@ -1,0 +1,52 @@
+[package]
+name = "spider-agent-cli"
+description = "The spider-agent command line tool: fetch, crawl, search and extract, with local routing, status-aware escalation and a budget."
+readme = "README.md"
+documentation = "https://docs.rs/spider-agent-cli"
+keywords = ["cli", "crawler", "web-scraper", "spider", "agent"]
+categories = ["command-line-utilities", "web-programming"]
+include = ["src/**/*.rs", "Cargo.toml", "README.md", "LICENSE"]
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+
+[lints]
+workspace = true
+
+[badges]
+maintenance = { status = "actively-developed" }
+
+# The binary is named for what you type, not for the crate it ships in.
+[[bin]]
+name = "spider-agent"
+path = "src/main.rs"
+
+[dependencies]
+spider-cloud-agent = { workspace = true }
+# No colour and no suggestion engine: this tool writes no escape codes, and a
+# caller that mistypes a subcommand gets the command list rather than a guess.
+clap = { version = "4", default-features = false, features = [
+    "std",
+    "derive",
+    "help",
+    "usage",
+    "error-context",
+] }
+serde_json = { workspace = true }
+tokio = { workspace = true }
+url = { workspace = true }
+
+[features]
+# Signing in through a browser is on by default here, because a command line
+# tool is where a person signs in. Build with --no-default-features for a
+# binary that only ever reads a key from the environment.
+default = ["oauth"]
+oauth = ["spider-cloud-agent/oauth"]
+keyring = ["spider-cloud-agent/keyring"]
+full = ["oauth", "keyring"]
+
+[dev-dependencies]
+serde_json = { workspace = true }

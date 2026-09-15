@@ -1,0 +1,38 @@
+[package]
+name = "spider-route"
+description = "A small local model that picks the cheapest Spider Cloud request settings likely to succeed."
+readme = "README.md"
+documentation = "https://docs.rs/spider-route"
+keywords = ["classifier", "routing", "spider", "web-scraper"]
+categories = ["web-programming", "algorithms"]
+include = ["src/**/*.rs", "assets/*.bin", "Cargo.toml", "README.md", "LICENSE"]
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+
+[lints]
+workspace = true
+
+[package.metadata.docs.rs]
+all-features = true
+rustdoc-args = ["--cfg", "docsrs"]
+
+[badges]
+maintenance = { status = "actively-developed" }
+
+[dependencies]
+serde = { workspace = true }
+url = { workspace = true }
+
+[features]
+default = []
+
+[dev-dependencies]
+criterion = { version = "0.7", features = ["html_reports"] }
+
+[[bench]]
+name = "route"
+harness = false

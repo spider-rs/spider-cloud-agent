@@ -1,0 +1,17 @@
+# The crate must not lock, and must not panic in a caller's process.
+#
+# Locks are disallowed outright rather than reviewed case by case. The only
+# shared mutable state here is the rate limit snapshot, which is atomics, and a
+# client embedded in someone's async runtime has no business being able to
+# block one task behind another.
+disallowed-types = [
+    { path = "std::sync::Mutex", reason = "use an atomic, or pass ownership. A lock here can stall a caller's runtime." },
+    { path = "std::sync::RwLock", reason = "use an atomic, or pass ownership. A lock here can stall a caller's runtime." },
+    { path = "tokio::sync::Mutex", reason = "use an atomic, or pass ownership. A lock here can stall a caller's runtime." },
+    { path = "tokio::sync::RwLock", reason = "use an atomic, or pass ownership. A lock here can stall a caller's runtime." },
+]
+
+disallowed-methods = [
+    { path = "std::mem::forget", reason = "leaks the value. Drop it, or restructure so it is not needed." },
+    { path = "std::thread::sleep", reason = "blocks the caller's runtime thread. Use the async timer." },
+]
