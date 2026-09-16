@@ -5,6 +5,16 @@ response gives back, or what an escalation costs gets one whether or not it brea
 signature, because those are the changes that show up on a bill rather than in a compiler
 error.
 
+## Unreleased
+
+- Request and builder `Debug` output hides caller cookies, every header value,
+  proxy credentials and other free-form credential input. Header names and proxy
+  endpoints remain visible. Serialization still sends the original values.
+  Regression tests cover all seven operation builders and nested request types.
+- Site memory capacity 0 disables the store without allocating a table. Reads
+  return no record and writes do nothing. Unit tests cover disabled storage, and
+  a loopback routing test compares repeated calls with capacities 0 and 16.
+
 ## [0.3.1]
 
 `spider-agent --budget` and `--wall` now cap the whole run on every command. They were

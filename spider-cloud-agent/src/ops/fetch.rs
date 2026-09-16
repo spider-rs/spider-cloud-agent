@@ -37,11 +37,20 @@ use crate::Result;
 /// # Ok(())
 /// # }
 /// ```
-#[derive(Debug)]
 pub struct Fetch<'a> {
     call: Call<'a>,
     domain: String,
     path: String,
+}
+
+impl std::fmt::Debug for Fetch<'_> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Fetch")
+            .field("call", &self.call)
+            .field("domain", &"<redacted>")
+            .field("path", &"<redacted>")
+            .finish_non_exhaustive()
+    }
 }
 
 impl<'a> Fetch<'a> {

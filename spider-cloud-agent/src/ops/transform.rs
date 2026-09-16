@@ -14,7 +14,7 @@ use crate::Result;
 /// The address is optional and worth giving: stripping a page down to its
 /// article works better when links can be resolved, and that needs to know where
 /// the markup came from.
-#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Document {
     /// The markup to convert.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -28,6 +28,17 @@ pub struct Document {
     /// The language of the content, as a code such as `en`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub lang: Option<String>,
+}
+
+impl std::fmt::Debug for Document {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Document")
+            .field("html", &self.html.as_ref().map(|_| "<redacted>"))
+            .field("content", &self.content.as_ref().map(|_| "<redacted>"))
+            .field("url", &self.url.as_ref().map(|_| "<redacted>"))
+            .field("lang", &self.lang.as_ref().map(|_| "<redacted>"))
+            .finish_non_exhaustive()
+    }
 }
 
 impl Document {

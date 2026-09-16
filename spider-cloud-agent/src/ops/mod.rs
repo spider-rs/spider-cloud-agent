@@ -86,7 +86,6 @@ pub(crate) fn out_of_time(attempts: Vec<Attempt>) -> Error {
 }
 
 /// The state every builder carries, and the one place a call is made.
-#[derive(Debug)]
 pub(crate) struct Call<'a> {
     pub(crate) spider: &'a Spider,
     pub(crate) params: crate::params::RequestParams,
@@ -95,6 +94,20 @@ pub(crate) struct Call<'a> {
     pub(crate) max_tokens: Option<usize>,
     url: Option<Url>,
     url_error: Option<String>,
+}
+
+impl std::fmt::Debug for Call<'_> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Call")
+            .field("spider", &self.spider)
+            .field("params", &self.params)
+            .field("budget", &self.budget)
+            .field("need", &self.need.as_ref().map(|_| "<redacted>"))
+            .field("max_tokens", &self.max_tokens)
+            .field("url", &self.url.as_ref().map(|_| "<redacted>"))
+            .field("url_error", &self.url_error.as_ref().map(|_| "<redacted>"))
+            .finish_non_exhaustive()
+    }
 }
 
 impl<'a> Call<'a> {

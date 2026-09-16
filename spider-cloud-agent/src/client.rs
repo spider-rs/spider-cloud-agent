@@ -459,6 +459,7 @@ impl SpiderBuilder {
 
     /// How many sites this client remembers at once.
     ///
+    /// Zero disables site memory without allocating a table.
     /// Rounded up to a power of two and held inside the limits in
     /// [`crate::memory`]. The store is bounded whatever you pass.
     pub fn site_memory_capacity(mut self, sites: usize) -> SpiderBuilder {
@@ -700,6 +701,70 @@ mod tests {
         for one in printed {
             assert!(!one.contains(SECRET), "key in Debug: {one}");
             assert!(!one.contains("Bearer"), "authorization header in {one}");
+        }
+    }
+
+    #[test]
+    fn no_builder_prints_caller_credentials() {
+        let spider = Spider::with_key(SECRET).expect("a client");
+        let cookie = "session=synthetic-cookie-value";
+        let authorization = "Bearer synthetic-header-value";
+        let password = "synthetic-proxy-password";
+        let proxy = format!("http://user:{password}@example.com:8080");
+        macro_rules! check {
+            ($builder:expr) => {{
+                let mut builder = $builder;
+                let params = builder.params_mut();
+                params.cookies = Some(cookie.into());
+                params.headers = Some(
+                    [
+                        ("Authorization".into(), authorization.into()),
+                        ("X-Custom".into(), password.into()),
+                    ]
+                    .into(),
+                );
+                params.remote_proxy = Some(proxy.clone());
+                let wire = serde_json::to_value(&*params).expect("serialize");
+                assert!(wire["cookies"] == cookie);
+                assert!(wire["headers"]["Authorization"] == authorization);
+                assert!(wire["remote_proxy"] == proxy);
+                let direct = format!("{params:?}");
+                for printed in [direct, format!("{builder:?}"), format!("{builder:#?}")] {
+                    for secret in [SECRET, cookie, authorization, password] {
+                        assert!(!printed.contains(secret), "caller credential in Debug");
+                    }
+                    assert!(printed.contains("Authorization"));
+                    assert!(printed.contains("X-Custom"));
+                    assert!(printed.contains("<redacted>"));
+                }
+            }};
+        }
+        check!(spider.scrape("https://example.com"));
+        check!(spider.crawl("https://example.com"));
+        check!(spider.fetch("example.com", "/"));
+        check!(spider.links("https://example.com"));
+        check!(spider.search("a query"));
+        check!(spider.screenshot("https://example.com"));
+        check!(spider.transform(Vec::new()));
+    }
+
+    #[test]
+    fn builder_debug_redacts_copies_of_url_and_document_credentials() {
+        let spider = Spider::with_key(SECRET).expect("a client");
+        let secret = "synthetic-url-password";
+        let url = format!("https://user:{secret}@example.com/?token={secret}");
+        let document = crate::ops::transform::Document::html(secret).from_url(&url);
+        for printed in [
+            format!("{:?}", spider.scrape(&url)),
+            format!(
+                "{:?}",
+                spider.fetch(format!("user:{secret}@example.com"), secret)
+            ),
+            format!("{:?}", spider.search(&url)),
+            format!("{document:?}"),
+            format!("{:?}", spider.transform(vec![document])),
+        ] {
+            assert!(!printed.contains(secret), "credential in builder Debug");
         }
     }
 

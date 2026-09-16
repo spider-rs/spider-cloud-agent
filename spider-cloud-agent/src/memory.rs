@@ -34,7 +34,7 @@ use url::Url;
 /// more than that raises it.
 pub const DEFAULT_CAPACITY: usize = 256;
 
-/// The fewest slots a store may have.
+/// The fewest slots an enabled store may have.
 const MIN_CAPACITY: usize = 16;
 
 /// The most slots a store may have, which is where bounded stops being a word
@@ -76,10 +76,16 @@ impl Default for SiteMemoryStore {
 impl SiteMemoryStore {
     /// A store with room for about this many sites.
     ///
-    /// The figure is rounded up to a power of two and held between 16 and
+    /// Zero disables memory without allocating a table. Otherwise the figure
+    /// is rounded up to a power of two and held between 16 and
     /// 65536, so the table can be indexed with a mask and so no caller can ask
     /// for a store that is not bounded.
     pub fn new(capacity: usize) -> SiteMemoryStore {
+        if capacity == 0 {
+            return SiteMemoryStore {
+                slots: Box::default(),
+            };
+        }
         let wanted = capacity.clamp(MIN_CAPACITY, MAX_CAPACITY);
         let slots = wanted.next_power_of_two().min(MAX_CAPACITY);
         let mut table = Vec::with_capacity(slots);
@@ -117,6 +123,9 @@ impl SiteMemoryStore {
     /// `None` when nothing is, which is what a cold start looks like and what
     /// the router is built to handle.
     pub fn get(&self, url: &Url) -> Option<SiteMemory> {
+        if self.slots.is_empty() {
+            return None;
+        }
         let key = key_of(url)?;
         let slot = self.slot(key)?;
 
@@ -159,6 +168,9 @@ impl SiteMemoryStore {
 
     /// Replace one site's record with what `next` makes of it.
     fn update(&self, url: &Url, next: impl Fn(SiteMemory) -> SiteMemory) {
+        if self.slots.is_empty() {
+            return;
+        }
         let Some(key) = key_of(url) else {
             return;
         };
@@ -413,9 +425,30 @@ mod tests {
 
     #[test]
     fn a_capacity_is_rounded_up_and_held_inside_its_limits() {
-        assert_eq!(SiteMemoryStore::new(0).capacity(), MIN_CAPACITY);
+        assert_eq!(SiteMemoryStore::new(1).capacity(), MIN_CAPACITY);
         assert_eq!(SiteMemoryStore::new(100).capacity(), 128);
         assert_eq!(SiteMemoryStore::new(usize::MAX).capacity(), MAX_CAPACITY);
+    }
+
+    #[test]
+    fn zero_capacity_disables_site_memory() {
+        let store = SiteMemoryStore::new(0);
+        let site = url("https://example.com/a");
+        assert_eq!(store.capacity(), 0);
+        store.observe(&site, &AttemptOutcome::failed(StatusClass::Blocked, 10));
+        store.remember(
+            &site,
+            SiteMemory {
+                observations: 9,
+                success_rate: 0.0,
+                streak: -9,
+                last_status: StatusClass::Blocked,
+            },
+        );
+        assert!(store.get(&site).is_none());
+        assert!(store.is_empty());
+        store.clear();
+        assert_eq!(store.capacity(), 0);
     }
 
     #[test]
