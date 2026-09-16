@@ -27,6 +27,9 @@ error.
   typed control object or JSON escape hatch. Cache controls remain behind
   `params_mut()`. Round-trip and wire tests hold object serialization. The thrift
   plan and the budget test bands are unchanged.
+- Boolean cache assignments now use `Some(true.into())` or `Some(false.into())`.
+  `From<bool>` keeps that migration explicit, and the deserialization suite checks
+  that both settings still serialize as booleans.
 
 - Release verification requires a readable private denylist with at least one term
   and cargo-deny. Ordinary verification keeps the private-list note and uses cached

@@ -140,6 +140,18 @@ fn cache_controls_round_trip_both_shapes_and_unknown_controls() {
 }
 
 #[test]
+fn boolean_cache_settings_convert_without_changing_the_wire() {
+    use spider_cloud_agent::params::RequestParams;
+    for enabled in [true, false] {
+        let params = RequestParams {
+            cache: Some(enabled.into()),
+            ..RequestParams::default()
+        };
+        assert_eq!(serde_json::to_value(params).unwrap()["cache"], enabled);
+    }
+}
+
+#[test]
 fn f1_cookie_map_fixture_decodes_as_a_page() {
     use spider_cloud_agent::client::{RateLimit, Reply};
     use spider_cloud_agent::policy::engine::Reached;

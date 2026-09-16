@@ -400,6 +400,12 @@ pub enum Cache {
     Other(serde_json::Value),
 }
 
+impl From<bool> for Cache {
+    fn from(enabled: bool) -> Self {
+        Self::Enabled(enabled)
+    }
+}
+
 /// Cache ages in seconds. Additional controls round trip without loss.
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 pub struct CacheControl {
