@@ -165,7 +165,7 @@ citations. Run `scripts/check-anchors.sh` after moving code so these references 
 
 14. **No panic, no lock, no blocking sleep, no unsafe, in library code.** Denied at the lint level
     rather than left to review: `unwrap`, `expect`, `panic!`, `unreachable!`, `todo!`,
-    `unimplemented!`, `exit` and `mem::forget` in `[workspace.lints.clippy]` (`Cargo.toml:29`
+    `unimplemented!`, `exit` and `mem::forget` in `[workspace.lints.clippy]` (`Cargo.toml:36`
     (`[workspace.lints.clippy]`)), `Mutex` and `RwLock` from both `std` and `tokio` plus
     `thread::sleep` in `clippy.toml`, and `#![forbid(unsafe_code)]` at
     `spider-cloud-agent/src/lib.rs:15` (`#![forbid(unsafe_code)]`). This crate runs inside someone
