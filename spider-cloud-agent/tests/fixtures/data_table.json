@@ -1,0 +1,15 @@
+{
+  "body": {
+    "data": [
+      {
+        "status": 200,
+        "url": "https://example.com/docs"
+      }
+    ]
+  },
+  "headers": {
+    "content-type": "application/json"
+  },
+  "http_status": 200,
+  "route": "/data/{table}"
+}

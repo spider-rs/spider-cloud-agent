@@ -12,7 +12,7 @@ citations. Run `scripts/check-anchors.sh` after moving code so these references 
 ## Credentials
 
 1. **A key never reaches a log line, an error message, a `Debug` output, a fixture or a commit.**
-   The bearer header is the only place the key is written (`spider-cloud-agent/src/transport.rs:690`
+   The bearer header is the only place the key is written (`spider-cloud-agent/src/transport.rs:696`
    (`fn bearer(`)), `REDACTED` stands in everywhere else (`spider-cloud-agent/src/transport.rs:59`
    (`const REDACTED:`), `spider-cloud-agent/src/client.rs:61` (`const REDACTED:`)), and `Debug` is
    hand written rather than derived on every type that holds one: `Spider` at

@@ -1,0 +1,14 @@
+{
+  "body": [
+    {
+      "content": {
+        "raw": "<p>Converted from <a href=\"https://example.com/guide\">the guide</a></p>"
+      }
+    }
+  ],
+  "headers": {
+    "content-type": "application/json"
+  },
+  "http_status": 200,
+  "route": "/transform"
+}
