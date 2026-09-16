@@ -12,6 +12,26 @@ Three crates ship from this workspace:
 - `spider-route`, the local rules that pick request settings
 - `spider-agent-cli`, the `spider-agent` command line tool
 
+## Install
+
+Download a prebuilt binary from the
+[latest release](https://github.com/spider-rs/spider-cloud-agent/releases/latest):
+
+| platform | file |
+|---|---|
+| macOS, Apple silicon | `spider-agent-aarch64-apple-darwin.tar.gz` |
+| macOS, Intel | `spider-agent-x86_64-apple-darwin.tar.gz` |
+| Linux, x86_64 | `spider-agent-x86_64-unknown-linux-gnu.tar.gz` |
+| Linux, ARM64 | `spider-agent-aarch64-unknown-linux-gnu.tar.gz` |
+| Windows, x86_64 | `spider-agent-x86_64-pc-windows-msvc.zip` |
+
+```bash
+curl -fsSL https://github.com/spider-rs/spider-cloud-agent/releases/latest/download/spider-agent-aarch64-apple-darwin.tar.gz | tar xz
+./spider-agent --version
+```
+
+Or build it with `cargo install spider-agent-cli`.
+
 ## From another program
 
 The tool is built to be called, not just typed. Results go to stdout,
@@ -19,8 +39,6 @@ diagnostics to stderr, and the exit code says which of auth, budget, a refusing
 site, transport or output stopped the run.
 
 ```bash
-cargo install spider-agent-cli
-
 # one page as JSON
 spider-agent scrape https://example.com --json
 

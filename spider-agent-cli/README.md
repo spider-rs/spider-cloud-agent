@@ -4,6 +4,10 @@ The command line tool for [Spider Cloud](https://spider.cloud), built on
 `spider-cloud-agent`. It picks transport locally before a call goes out,
 escalates on the status a site returned, and stops on a budget you set.
 
+Prebuilt binaries for macOS, Linux and Windows are on the
+[releases page](https://github.com/spider-rs/spider-cloud-agent/releases/latest).
+Or build it:
+
 ```bash
 cargo install spider-agent-cli
 spider-agent https://example.com
