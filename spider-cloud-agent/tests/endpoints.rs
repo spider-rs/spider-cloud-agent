@@ -22,7 +22,10 @@ use spider_cloud_agent::client::{Method, ROUTES};
 
 #[test]
 fn f1_base_validation_requires_tls_or_literal_loopback() {
-    for base in ["http://example.com", "http://localhost", "ftp://127.0.0.1"] {
+    let loopback = std::net::Ipv4Addr::new(127, 0, 0, 1);
+    let ftp = format!("ftp://{loopback}");
+    let http = format!("http://{loopback}");
+    for base in ["http://example.com", "http://localhost", &ftp] {
         assert!(matches!(
             spider_cloud_agent::Spider::builder()
                 .key("not-a-real-key")
@@ -31,7 +34,7 @@ fn f1_base_validation_requires_tls_or_literal_loopback() {
             Err(spider_cloud_agent::Error::Config(_))
         ));
     }
-    for base in ["https://example.com", "http://127.0.0.1", "http://[::1]"] {
+    for base in ["https://example.com", &http, "http://[::1]"] {
         assert!(spider_cloud_agent::Spider::builder()
             .key("not-a-real-key")
             .base_url(url::Url::parse(base).unwrap())
@@ -304,4 +307,116 @@ fn a_path_argument_cannot_walk_out_of_its_route() {
         fetch.render(&["example.com", "docs/a.b.html"]).unwrap(),
         "/fetch/example.com/docs/a.b.html"
     );
+}
+
+/// Response coverage for the builder inventory above. Each entry names a
+/// readable JSON fixture: either one of the older bare bodies or one of the
+/// newer records that keep the HTTP envelope beside the body. Both shapes are
+/// checked against the route they are claimed for, so naming the wrong file
+/// cannot pass as coverage.
+const FIXTURE_COVERAGE: &[(&str, &str)] = &[
+    ("/scrape", "scrape_markdown.json"),
+    ("/crawl", "crawl_mixed.json"),
+    ("/links", "links.json"),
+    ("/search", "search_results.json"),
+    ("/screenshot", "screenshot.json"),
+    ("/transform", "transform.json"),
+    ("/fetch/{domain}/{path}", "fetch.json"),
+    ("/data/credits", "credits.json"),
+    ("/data/crawl_logs", "crawl_logs.json"),
+    ("/data/{table}", "data_table.json"),
+];
+
+// Red with ("/scrape", "credits.json") in place of the scrape line: the test
+// failed with "credits.json does not hold a /scrape answer". The shape rules
+// are what make that swap visible. Reading an envelope route key alone left
+// every older bare-body fixture out of the manifest entirely.
+#[test]
+fn every_builder_route_has_a_fixture() {
+    let mut covered: Vec<_> = FIXTURE_COVERAGE.iter().map(|(route, _)| *route).collect();
+    let mut built = HAS_BUILDER.to_vec();
+    covered.sort_unstable();
+    built.sort_unstable();
+    assert!(!built.is_empty());
+    assert_eq!(covered, built);
+    for (route, file) in FIXTURE_COVERAGE {
+        let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("tests/fixtures")
+            .join(file);
+        let text = std::fs::read_to_string(&path)
+            .unwrap_or_else(|e| panic!("cannot read {}: {e}", path.display()));
+        let value: serde_json::Value = serde_json::from_str(&text).unwrap();
+        // A record with an envelope names its own route, status and content
+        // type. A bare body is the answer on its own.
+        let body = match value.get("route") {
+            Some(named) => {
+                assert_eq!(named, route, "{file}");
+                assert_eq!(value["http_status"], 200, "{file}");
+                assert_eq!(
+                    value["headers"]["content-type"], "application/json",
+                    "{file}"
+                );
+                value["body"].clone()
+            }
+            None => value,
+        };
+        assert!(
+            holds_the_answer_for(route, &body),
+            "{file} does not hold a {route} answer"
+        );
+    }
+}
+
+/// Whether a fixture body is the answer this route gives, told apart by the
+/// fields only that route's answer carries.
+///
+/// Without this a manifest entry could name any readable fixture and still
+/// count, which is how a route ends up recorded by somebody else's response.
+fn holds_the_answer_for(route: &str, body: &serde_json::Value) -> bool {
+    let pages = body.as_array();
+    let first = body.get(0).unwrap_or(&serde_json::Value::Null);
+    let rows = body.get("data").and_then(|d| d.as_array());
+    let row = rows
+        .and_then(|r| r.first())
+        .unwrap_or(&serde_json::Value::Null);
+    match route {
+        // One page, asked for as markdown.
+        "/scrape" => {
+            pages.is_some_and(|p| p.len() == 1) && first["content"]["markdown"].is_string()
+        }
+        // Several pages from one call, and not all of them answered.
+        "/crawl" => {
+            pages.is_some_and(|p| p.len() > 1)
+                && pages.is_some_and(|p| p.iter().any(|page| page["status"] != 200))
+        }
+        // Addresses rather than content.
+        "/links" => pages.is_some() && first["links"].is_array(),
+        // Titled results under their own wrapper, not a page list.
+        "/search" => body
+            .get("content")
+            .and_then(|c| c.as_array())
+            .and_then(|c| c.first())
+            .is_some_and(|hit| hit["title"].is_string() && hit["url"].is_string()),
+        // Bytes, not text.
+        "/screenshot" => pages.is_some() && first["content"]["screenshot"].is_array(),
+        // Converted markup with no address, because nothing was fetched.
+        "/transform" => {
+            pages.is_some() && first["content"]["raw"].is_string() && first["url"].is_null()
+        }
+        // Cached markup, which does name the address it was stored under.
+        "/fetch/{domain}/{path}" => {
+            pages.is_some() && first["content"]["raw"].is_string() && first["url"].is_string()
+        }
+        // A balance is one number, not a row set.
+        "/data/credits" => body
+            .get("data")
+            .is_some_and(|data| data["credits"].is_number()),
+        // Crawl records are keyed by domain.
+        "/data/crawl_logs" => {
+            rows.is_some() && row["domain"].is_string() && row["pages"].is_number()
+        }
+        // An arbitrary table comes back as page rows.
+        "/data/{table}" => rows.is_some() && row["url"].is_string() && row["domain"].is_null(),
+        other => panic!("{other} has no fixture shape rule"),
+    }
 }

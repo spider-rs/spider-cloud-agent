@@ -30,7 +30,7 @@ use spider_cloud_agent::policy::StopReason;
 use spider_cloud_agent::{Body, Budget, Credits, Error, Spider};
 use std::future::Future;
 use std::io::{BufRead, BufReader, Read, Write};
-use std::net::{TcpListener, TcpStream};
+use std::net::{Ipv4Addr, TcpListener, TcpStream};
 use std::sync::mpsc::{channel, Receiver, Sender};
 use std::time::Duration;
 use url::Url;
@@ -101,11 +101,44 @@ fn serve(script: &[&str]) -> Stub {
 
 /// The same, with the status and the headers scripted too.
 fn serve_answers(script: &[Answer]) -> Stub {
-    let listener = TcpListener::bind((std::net::Ipv4Addr::new(127, 0, 0, 1), 0)).expect("a port");
-    let address = listener.local_addr().expect("an address");
-    let script: Vec<Answer> = script.to_vec();
-    let (sender, seen) = channel();
+    let script: Vec<Vec<u8>> = script
+        .iter()
+        .map(|reply| {
+            let chunked = reply.headers.contains("transfer-encoding: chunked\r\n");
+            let length = if chunked {
+                String::new()
+            } else {
+                format!("content-length: {}\r\n", reply.body.len())
+            };
+            let mut bytes = format!(
+                "HTTP/1.1 {} Scripted\r\ncontent-type: application/json\r\n{length}connection: close\r\n{}\r\n",
+                reply.status, reply.headers
+            )
+            .into_bytes();
+            if chunked {
+                for chunk in reply.body.as_bytes().chunks(16 * 1024) {
+                    bytes.extend_from_slice(format!("{:x}\r\n", chunk.len()).as_bytes());
+                    bytes.extend_from_slice(chunk);
+                    bytes.extend_from_slice(b"\r\n");
+                }
+                bytes.extend_from_slice(b"0\r\n\r\n");
+            } else {
+                bytes.extend_from_slice(reply.body.as_bytes());
+            }
+            bytes
+        })
+        .collect();
+    serve_raw(&script)
+}
 
+/// Write exactly these bytes and close the connection, without repairing framing.
+/// Repeat the final answer so an unexpected retry is counted too.
+fn serve_raw(script: &[Vec<u8>]) -> Stub {
+    assert!(!script.is_empty());
+    let listener = TcpListener::bind((Ipv4Addr::new(127, 0, 0, 1), 0)).expect("a port");
+    let address = listener.local_addr().expect("an address");
+    let script = script.to_vec();
+    let (sender, seen) = channel();
     std::thread::spawn(move || {
         for (answered, stream) in listener.incoming().enumerate() {
             let Ok(mut stream) = stream else { break };
@@ -115,42 +148,13 @@ fn serve_answers(script: &[Answer]) -> Stub {
             if sender.send(request).is_err() {
                 break;
             }
-            let fallback = Answer::ok("[]");
             let reply = script
                 .get(answered)
-                .or_else(|| script.last())
-                .unwrap_or(&fallback);
-            let chunked = reply.headers.contains("transfer-encoding: chunked\r\n");
-            let length = if chunked {
-                String::new()
-            } else {
-                format!("content-length: {}\r\n", reply.body.len())
-            };
-            let head = format!(
-                "HTTP/1.1 {} Scripted\r\ncontent-type: application/json\r\n{length}connection: close\r\n{}\r\n",
-                reply.status,
-                reply.headers
-            );
-            if stream.write_all(head.as_bytes()).is_err() {
-                break;
-            }
-            if chunked {
-                for chunk in reply.body.as_bytes().chunks(16 * 1024) {
-                    if write!(stream, "{:x}\r\n", chunk.len()).is_err()
-                        || stream.write_all(chunk).is_err()
-                        || stream.write_all(b"\r\n").is_err()
-                    {
-                        break;
-                    }
-                }
-                let _ = stream.write_all(b"0\r\n\r\n");
-            } else {
-                let _ = stream.write_all(reply.body.as_bytes());
-            }
+                .unwrap_or_else(|| script.last().unwrap());
+            let _ = stream.write_all(reply);
             let _ = stream.flush();
         }
     });
-
     Stub {
         base: Url::parse(&format!("http://{address}")).expect("a base url"),
         seen,
@@ -171,7 +175,7 @@ struct Stalled {
 }
 
 fn stall() -> Stalled {
-    let listener = TcpListener::bind((std::net::Ipv4Addr::new(127, 0, 0, 1), 0)).expect("a port");
+    let listener = TcpListener::bind((Ipv4Addr::new(127, 0, 0, 1), 0)).expect("a port");
     let address = listener.local_addr().expect("an address");
     let (sender, seen) = channel();
     let (release, held) = channel::<()>();
@@ -1821,4 +1825,404 @@ async fn a_site_that_refuses_every_attempt_ends_with_the_policy_reason() {
         failed.to_string().starts_with("no usable page after"),
         "{failed}"
     );
+}
+
+/// Keep the standard rules and retry bounds, but avoid waiting on backoff in tests.
+fn fast_client(stub: &Stub) -> Spider {
+    use spider_cloud_agent::policy::backoff::Backoff;
+    Spider::builder()
+        .key("not-a-real-key")
+        .base_url(stub.base.clone())
+        .policy(
+            spider_cloud_agent::Policy::standard().with_backoff(Backoff {
+                base: Duration::ZERO,
+                cap: Duration::ZERO,
+                ..Backoff::default()
+            }),
+        )
+        .build()
+        .unwrap()
+}
+
+// Red with the 401 and 402 arms taken out of Reply::as_error, so both fell
+// through to Error::Api: the 401 case came back
+// Err(Api { status: ApiStatus(401), message: Some("account refused") }).
+#[tokio::test]
+async fn api_401_and_402_stop_after_one_wire_attempt() {
+    for code in [401, 402] {
+        let stub = serve_answers(&[Answer::with(code, "", r#"{"error":"account refused"}"#)]);
+        let error = fast_client(&stub)
+            .scrape("https://example.com")
+            .send()
+            .await
+            .unwrap_err();
+        match code {
+            401 => assert!(
+                matches!(
+                    error.cause(),
+                    Error::Auth {
+                        cause: AuthCause::Refused,
+                        ..
+                    }
+                ),
+                "{error:?}"
+            ),
+            _ => assert!(
+                matches!(error.cause(), Error::InsufficientCredits),
+                "{error:?}"
+            ),
+        }
+        assert_eq!(error.attempts().len(), 1);
+        assert_eq!(error.attempts()[0].api.code(), code);
+        assert!(!error.attempts()[0].charge_unknown);
+        assert_eq!(stub.sent().len(), 1);
+    }
+}
+
+// Red with Reply::as_error returning None for 403, which hands a failed call
+// back as a reply worth reading: the call ended
+// Err(Exhausted { .. reason: Unhandled }) with one ApiStatus(403) attempt
+// rather than Error::Api.
+#[tokio::test]
+async fn api_403_stops_after_one_wire_attempt() {
+    let stub = serve_answers(&[Answer::with(403, "", r#"{"error":"forbidden"}"#)]);
+    let error = fast_client(&stub)
+        .scrape("https://example.com")
+        .send()
+        .await
+        .unwrap_err();
+    assert!(
+        matches!(error.cause(), Error::Api { status, .. } if status.code() == 403),
+        "{error:?}"
+    );
+    assert_eq!(error.attempts().len(), 1);
+    assert_eq!(error.attempts()[0].api.code(), 403);
+    assert!(!error.attempts()[0].charge_unknown);
+    assert_eq!(stub.sent().len(), 1);
+}
+
+/// API 500 retries once per ladder step, then climbs. The default attempt cap
+/// ends the walk after five calls, retaining each API status in the budget error.
+/// It does not share the retry-only rule used by API 429 and 503.
+// Red with DEFAULT_ATTEMPTS in src/policy/budget.rs moved from 5 to 3: the
+// five-attempt assertion failed with left 3, right 5. Turning the API
+// ServerError rule in src/policy/rule.rs into Decision::Fail reds it further
+// up, at Error::Api on the first call.
+#[tokio::test]
+async fn api_500_retries_and_climbs_until_the_attempt_cap_on_the_wire() {
+    let stub = serve_answers(&[Answer::with(500, "", r#"{"error":"server failed"}"#)]);
+    let result = fast_client(&stub)
+        .scrape("https://example.com")
+        .send()
+        .await;
+    let Err(Error::BudgetExceeded {
+        kind: BudgetKind::Attempts,
+        attempts,
+    }) = result
+    else {
+        panic!("expected the attempt cap, got {result:?}");
+    };
+    assert_eq!(attempts.len(), 5);
+    for attempt in attempts {
+        assert_eq!(attempt.api.code(), 500);
+        assert!(attempt.page.is_none());
+    }
+    let sent = stub.sent();
+    assert_eq!(sent.len(), 5);
+    assert_eq!(sent[0].body, sent[1].body, "retry must not climb");
+    assert_ne!(sent[1].body, sent[2].body, "then climb one step");
+    assert_eq!(sent[2].body, sent[3].body, "retry the new step once");
+    assert_ne!(sent[3].body, sent[4].body, "then climb again");
+}
+
+// Red with the 401 and 402 exclusion put back into is_mirrored_page_status, the
+// one F1 removed: the page 401 case came back
+// Err(Auth { cause: Refused, message: "the key was missing or rejected" }),
+// treating a login wall on the target site as a rejected Spider key.
+#[tokio::test]
+async fn account_and_server_codes_in_page_bodies_take_the_page_path() {
+    for code in [401, 402, 403, 500] {
+        let body =
+            format!(r#"{{"url":"https://example.com","status":{code},"content":"refused"}}"#);
+        let stub = serve_answers(&[Answer::with(code, "", &body)]);
+        let spider = Spider::builder()
+            .key("not-a-real-key")
+            .base_url(stub.base.clone())
+            .policy(spider_cloud_agent::Policy::standard().with_max_attempts(1))
+            .build()
+            .unwrap();
+        let result = spider.scrape("https://example.com").send().await;
+        // A page 403 or 500 asks for another attempt; the explicit cap stops it.
+        // Login and payment pages stop without needing another attempt.
+        let attempts = match result {
+            Err(Error::Exhausted {
+                attempts,
+                last: Some(last),
+                source: None,
+                ..
+            }) if code < 403 => {
+                assert_eq!(last.status.code(), code);
+                attempts
+            }
+            Err(Error::BudgetExceeded {
+                kind: BudgetKind::Attempts,
+                attempts,
+            }) if code >= 403 => attempts,
+            other => panic!("page {code}: {other:?}"),
+        };
+        assert_eq!(attempts.len(), 1);
+        assert_eq!(attempts[0].api.code(), 0);
+        assert_eq!(attempts[0].page.unwrap().code(), code);
+        assert_eq!(stub.sent().len(), 1);
+    }
+}
+
+// Red with the body read error swallowed in Transport::execute
+// (response.bytes().await.unwrap_or_default()): the truncated message came back
+// Err(Decode(Error("EOF while parsing a value", line: 1, column: 0))), a broken
+// HTTP message reported as bad JSON.
+#[tokio::test]
+async fn a_body_shorter_than_content_length_is_a_transport_error() {
+    // Complete JSON still fails when the HTTP message is incomplete.
+    let raw = format!(
+        "HTTP/1.1 200 OK\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{PAGE_ANSWER}",
+        PAGE_ANSWER.len() + 10
+    );
+    let stub = serve_raw(&[raw.into_bytes()]);
+    let error = fast_client(&stub)
+        .scrape("https://example.com")
+        .send()
+        .await
+        .unwrap_err();
+    assert!(matches!(error.cause(), Error::Transport(_)), "{error:?}");
+    assert_eq!(error.attempts().len(), 1);
+    assert!(error.attempts()[0].charge_unknown);
+    assert_eq!(stub.sent().len(), 1);
+}
+
+// Red with the same swallowed body read error in Transport::execute: the
+// half-written chunk came back
+// Err(Decode(Error("EOF while parsing a value", line: 1, column: 0))) instead of
+// Error::Transport.
+#[tokio::test]
+async fn a_connection_closed_mid_body_is_a_transport_error() {
+    let raw = b"HTTP/1.1 200 OK\r\ntransfer-encoding: chunked\r\nconnection: close\r\n\r\n40\r\n{\"url\":";
+    let stub = serve_raw(&[raw.to_vec()]);
+    let error = fast_client(&stub)
+        .scrape("https://example.com")
+        .send()
+        .await
+        .unwrap_err();
+    assert!(matches!(error.cause(), Error::Transport(_)), "{error:?}");
+    assert_eq!(error.attempts().len(), 1);
+    assert!(error.attempts()[0].charge_unknown);
+    assert_eq!(stub.sent().len(), 1);
+}
+
+// Red with Transport::execute reading only the first body chunk
+// (response.chunk() in place of response.bytes()): the two-chunk page failed
+// with Decode(Error("EOF while parsing a string", line: 1, column: 20)), which
+// is the first chunk boundary.
+#[tokio::test]
+async fn chunked_transfer_decodes_a_page_once() {
+    let (first, second) = PAGE_ANSWER.split_at(20);
+    let raw = format!(
+        "HTTP/1.1 200 OK\r\ntransfer-encoding: chunked\r\nconnection: close\r\n\r\n{:x}\r\n{first}\r\n{:x}\r\n{second}\r\n0\r\n\r\n",
+        first.len(),
+        second.len()
+    );
+    let stub = serve_raw(&[raw.into_bytes()]);
+    let page = fast_client(&stub)
+        .scrape("https://example.com")
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(page.status.code(), 200);
+    assert!(!page.body.is_empty());
+    assert_eq!(stub.sent().len(), 1);
+}
+
+/// The built-in client has no gzip decoder enabled. A valid gzip member reaches
+/// the JSON decoder as compressed bytes and ends in Error::Decode, without retry.
+// Red with reqwest's "gzip" feature added to the workspace Cargo.toml, which
+// turns its automatic decoder on (run without --locked, since that moves the
+// lockfile): the member decoded to [], and the call walked the whole ladder to
+// Err(Exhausted { .. reason: LadderExhausted }) over five HTTP 200s. Enabling
+// that feature is therefore a behaviour change, not a build detail.
+#[tokio::test]
+async fn gzip_is_not_decoded_by_the_builtin_transport() {
+    // A gzip member containing [], made with gzip.compress(b"[]", mtime=0).
+    let body: &[u8] = &[
+        31, 139, 8, 0, 0, 0, 0, 0, 2, 3, 139, 142, 5, 0, 41, 187, 76, 13, 2, 0, 0, 0,
+    ];
+    let mut raw = format!(
+        "HTTP/1.1 200 OK\r\ncontent-encoding: gzip\r\ncontent-length: {}\r\nconnection: close\r\n\r\n",
+        body.len()
+    )
+    .into_bytes();
+    raw.extend_from_slice(body);
+    let stub = serve_raw(&[raw]);
+    let error = fast_client(&stub)
+        .scrape("https://example.com")
+        .send()
+        .await
+        .unwrap_err();
+    assert!(matches!(error.cause(), Error::Decode(_)), "{error:?}");
+    assert_eq!(error.attempts().len(), 1);
+    assert_eq!(error.attempts()[0].api.code(), 200);
+    assert!(error.attempts()[0].charge_unknown);
+    assert_eq!(stub.sent().len(), 1);
+}
+
+/// Redirects must not turn an API POST into a GET or escape attempt accounting.
+// Red with the custom redirect policy removed from
+// Transport::with_base_options: reqwest followed the 302, sent a second request
+// inside the same attempt, and the call returned Ok with the page from the
+// address in the Location header. One attempt, two requests, and a body the
+// service never saw.
+#[tokio::test]
+async fn a_302_redirect_is_a_transport_error_after_one_request() {
+    let stub = serve_answers(&[
+        Answer::with(302, "location: /redirected\r\n", ""),
+        Answer::ok(PAGE_ANSWER),
+    ]);
+    let error = fast_client(&stub)
+        .scrape("https://example.com")
+        .send()
+        .await
+        .unwrap_err();
+    assert!(matches!(error.cause(), Error::Transport(_)), "{error:?}");
+    assert_eq!(error.attempts().len(), 1);
+    assert!(error.attempts()[0].charge_unknown);
+    let sent = stub.sent();
+    assert_eq!(sent.len(), 1);
+    assert_eq!(sent[0].line, "POST /scrape HTTP/1.1");
+}
+
+/// Replay one recorded response record as a scripted answer.
+///
+/// These records keep the HTTP envelope beside the JSON body, because the status
+/// and the rate limit headers are half of what the send loop decides on. Each
+/// one is the output of `cargo run --locked -p xtask -- redact` over a recording
+/// held outside the repo, so the hosts and the gateway session cookie in it are
+/// what the redactor left behind. They stand for the endpoint contracts, not for
+/// any particular service revision.
+fn recorded_answer(name: &str) -> Answer {
+    let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("tests/fixtures")
+        .join(name);
+    let record: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(path).unwrap()).unwrap();
+    let headers: String = record["headers"]
+        .as_object()
+        .unwrap()
+        .iter()
+        .map(|(name, value)| format!("{name}: {}\r\n", value.as_str().unwrap()))
+        .collect();
+    Answer::with(
+        record["http_status"].as_u64().unwrap().try_into().unwrap(),
+        &headers,
+        &serde_json::to_string(&record["body"]).unwrap(),
+    )
+}
+
+// Red with retry_after set to None on the Reply built by Transport::execute: the
+// recorded 429 surfaced retry_after: Some(2s), the ratelimit-reset fallback,
+// rather than the 1s the retry-after header asked for.
+#[tokio::test]
+async fn recorded_api_errors_keep_status_headers_and_retry_bounds() {
+    for (file, code, count) in [
+        ("api_401.json", 401, 1),
+        ("api_402.json", 402, 1),
+        ("api_429.json", 429, 4),
+        ("api_503.json", 503, 4),
+    ] {
+        let stub = serve_answers(&[recorded_answer(file)]);
+        let spider = fast_client(&stub);
+        let error = spider
+            .scrape("https://example.com")
+            .send()
+            .await
+            .unwrap_err();
+        match code {
+            401 => assert!(
+                matches!(
+                    error.cause(),
+                    Error::Auth {
+                        cause: AuthCause::Refused,
+                        ..
+                    }
+                ),
+                "{error:?}"
+            ),
+            402 => assert!(
+                matches!(error.cause(), Error::InsufficientCredits),
+                "{error:?}"
+            ),
+            _ => {
+                assert!(
+                    matches!(error.cause(), Error::Api { status, retry_after: Some(wait), .. }
+                    if status.code() == code && *wait == Duration::from_secs(1)),
+                    "{error:?}"
+                );
+                let limits = spider.raw().rate_limit();
+                assert_eq!(limits.limit, Some(100));
+                assert_eq!(limits.remaining, Some(0));
+                assert_eq!(limits.reset, Some(Duration::from_secs(2)));
+            }
+        }
+        assert_eq!(error.attempts().len(), count, "{file}");
+        for attempt in error.attempts() {
+            assert_eq!(attempt.api.code(), code, "{file}");
+        }
+        assert_eq!(stub.sent().len(), count, "{file}");
+    }
+}
+
+// Red twice. With route::DATA_TABLE changed from Route::get to Route::post the
+// table read failed with Config("POST /data/{table} is not a get route"). With
+// Body::Html dropped from Body::as_str the transform answer read back as None
+// instead of its converted markup.
+#[tokio::test]
+async fn recorded_endpoint_answers_reach_their_builders() {
+    for (file, request) in [
+        ("links.json", "POST /links HTTP/1.1"),
+        ("transform.json", "POST /transform HTTP/1.1"),
+        ("fetch.json", "POST /fetch/example.com/docs HTTP/1.1"),
+        ("data_table.json", "GET /data/pages HTTP/1.1"),
+    ] {
+        let stub = serve_answers(&[recorded_answer(file)]);
+        let spider = fast_client(&stub);
+        match file {
+            "links.json" => {
+                let page = spider.links("https://example.com").send().await.unwrap();
+                assert_eq!(page.value[0].as_str(), "https://example.com/docs");
+            }
+            "transform.json" => {
+                let page = spider
+                    .transform(vec![Document::html("<p>Converted</p>")])
+                    .send()
+                    .await
+                    .unwrap();
+                assert_eq!(
+                    page.text(),
+                    Some(
+                        "<p>Converted from <a href=\"https://example.com/guide\">the guide</a></p>"
+                    )
+                );
+            }
+            "fetch.json" => {
+                let page = spider.fetch("example.com", "docs").send().await.unwrap();
+                assert_eq!(page.text(), Some("<p>Cached</p>"));
+            }
+            _ => {
+                let rows = spider.table("pages").send().await.unwrap();
+                assert_eq!(rows.len(), 1);
+                assert_eq!(rows[0]["url"], "https://example.com/docs");
+            }
+        }
+        let sent = stub.sent();
+        assert_eq!(sent.len(), 1, "{file}");
+        assert_eq!(sent[0].line, request);
+    }
 }

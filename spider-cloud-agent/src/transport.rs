@@ -506,6 +506,12 @@ impl Transport {
         validate_base(&base, insecure)?;
         let client = reqwest::Client::builder()
             .user_agent(USER_AGENT)
+            // A redirect can rewrite an API POST as GET and discard its body.
+            // Reject it as a transport failure before another request is sent.
+            // Callers supplying their own client retain its redirect policy.
+            .redirect(reqwest::redirect::Policy::custom(|attempt| {
+                attempt.error("API redirects are not supported")
+            }))
             .connect_timeout(CONNECT_TIMEOUT)
             .build()
             .map_err(Error::Transport)?;
