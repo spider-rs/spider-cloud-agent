@@ -3,7 +3,7 @@ members = ["spider-agent-cli", "spider-cloud-agent", "spider-route", "xtask"]
 resolver = "2"
 
 [workspace.package]
-version = "0.3.0"
+version = "0.3.1"
 edition = "2021"
 authors = ["j-mendez <jeff@spider.cloud>"]
 license = "MIT"
@@ -11,8 +11,8 @@ repository = "https://github.com/spider-rs/spider-cloud-agent"
 homepage = "https://spider.cloud"
 
 [workspace.dependencies]
-spider-cloud-agent = { version = "0.3.0", path = "spider-cloud-agent", default-features = false }
-spider-route = { version = "0.3.0", path = "spider-route" }
+spider-cloud-agent = { version = "0.3.1", path = "spider-cloud-agent", default-features = false }
+spider-route = { version = "0.3.1", path = "spider-route" }
 reqwest = { version = "0.13", default-features = false, features = ["json", "rustls", "rustls-native-certs"] }
 tokio = { version = "1", default-features = false, features = ["rt", "time", "macros"] }
 serde = { version = "1", features = ["derive"] }

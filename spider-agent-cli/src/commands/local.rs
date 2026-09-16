@@ -115,6 +115,7 @@ fn document() -> serde_json::Value {
                 "source": "heuristic|model|caller|memory|explore|unknown"
             },
             "credits": { "type": "credits", "credits": "number", "usd": "number" },
+            "key": { "type": "key", "key": "string, written by login --print and nothing else" },
             "error": {
                 "type": "error",
                 "url": "string or null",
@@ -150,6 +151,7 @@ fn document() -> serde_json::Value {
         },
         "notes": [
             "results go to stdout, diagnostics to stderr, and no escape codes are written",
+            "a reader that closes stdout early, such as head, ends the run quietly with code 0 and no further page is fetched",
             "addresses can be piped in on stdin, one per line",
             "the key is read from SPIDER_API_KEY, SPIDER_CLOUD_API_KEY, then ~/.spider/credentials, and there is no flag for it"
         ]

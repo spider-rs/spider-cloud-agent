@@ -6,12 +6,15 @@
 //! process leaves with.
 
 // A test may unwrap and may panic: a test that cannot set itself up should
-// fail loudly rather than quietly measure nothing.
+// fail loudly rather than quietly measure nothing. It may also sleep: these
+// tests drive a child process from a plain thread, and there is no runtime
+// here for a sleep to stall.
 #![allow(
     clippy::unwrap_used,
     clippy::expect_used,
     clippy::panic,
-    clippy::indexing_slicing
+    clippy::indexing_slicing,
+    clippy::disallowed_methods
 )]
 
 use std::process::{Command, Output};
@@ -632,4 +635,413 @@ fn the_links_flag_help_says_it_costs_no_second_call() {
         help.contains("same call"),
         "the help does not say where the links come from: {help}"
     );
+}
+
+/// Spawn the binary with no key and every stream piped, for a case that has
+/// to write to stdin or close a pipe itself.
+fn spawn(args: &[&str]) -> std::process::Child {
+    use std::process::Stdio;
+    Command::new(env!("CARGO_BIN_EXE_spider-agent"))
+        .args(args)
+        .env("SPIDER_API_KEY", "")
+        .env("SPIDER_CLOUD_API_KEY", "")
+        .env("HOME", std::env::temp_dir())
+        .env("USERPROFILE", std::env::temp_dir())
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("the binary runs")
+}
+
+/// The same, pointed at a stub with a key that goes nowhere else.
+fn spawn_against(base: &str, args: &[&str]) -> std::process::Child {
+    use std::process::Stdio;
+    Command::new(env!("CARGO_BIN_EXE_spider-agent"))
+        .args(args)
+        .env("SPIDER_API_KEY", "not-a-real-key")
+        .env("SPIDER_API_URL", base)
+        .env("HOME", std::env::temp_dir())
+        .env("USERPROFILE", std::env::temp_dir())
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("the binary runs")
+}
+
+/// Enough addresses that the run is still writing when a reader leaves.
+fn many_addresses() -> Vec<String> {
+    (0..400)
+        .map(|n| format!("https://example.com/page/{n}"))
+        .collect()
+}
+
+/// `spider-agent ... | head -1` is the ordinary way to look at the first
+/// record. The reader leaving is not a failure of the run, so the run ends
+/// with nothing on stderr and code 0, the way cat and grep end. The release
+/// profile aborts on a panic, so a print macro that panics on a closed pipe
+/// would hand a caller a core dump for having typed head.
+#[test]
+fn a_reader_that_closes_the_pipe_ends_the_run_quietly() {
+    let addresses = many_addresses();
+    for format in [&["--format", "text"][..], &["--ndjson"][..]] {
+        let mut args: Vec<&str> = vec!["route"];
+        args.extend(format.iter().copied());
+        args.extend(addresses.iter().map(String::as_str));
+        let mut child = spawn(&args);
+        drop(child.stdin.take());
+        // The reader takes nothing and goes away, which is head -0.
+        drop(child.stdout.take());
+        let output = child.wait_with_output().expect("it finishes");
+        assert_eq!(
+            output.status.code(),
+            Some(0),
+            "{format:?}: the run did not end quietly: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        assert!(
+            output.stderr.is_empty(),
+            "{format:?}: a closed pipe was reported as a failure: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
+}
+
+/// A closed pipe stops the run rather than only silencing it. Every page
+/// fetched after the reader left would be paid for and thrown away.
+#[test]
+fn a_closed_pipe_stops_the_run_before_the_next_page_is_paid_for() {
+    let (base, seen) = stub(PAGE_AND_LINKS);
+    let mut child = spawn_against(
+        &base,
+        &[
+            "scrape",
+            "https://example.com/one",
+            "https://example.com/two",
+            "https://example.com/three",
+            "--ndjson",
+        ],
+    );
+    drop(child.stdout.take());
+    let output = child.wait_with_output().expect("it finishes");
+    assert_eq!(
+        output.status.code(),
+        Some(0),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    seen.recv().expect("the first page went out");
+    assert!(
+        seen.recv_timeout(std::time::Duration::from_millis(500))
+            .is_err(),
+        "a second page was fetched after the reader had gone"
+    );
+}
+
+/// Diagnostics go to stderr, and stderr can be a pipe whose reader has gone
+/// as well. A note that cannot be written is dropped, not turned into a panic.
+#[test]
+fn a_broken_stderr_does_not_bring_the_tool_down() {
+    let addresses = many_addresses();
+    let mut args: Vec<&str> = vec!["route", "--verbose"];
+    args.extend(addresses.iter().map(String::as_str));
+    let mut child = spawn(&args);
+    drop(child.stdin.take());
+    drop(child.stderr.take());
+    let output = child.wait_with_output().expect("it finishes");
+    assert_eq!(
+        output.status.code(),
+        Some(0),
+        "the tool died on a note nobody was reading"
+    );
+    assert_eq!(
+        stdout(&output).lines().count(),
+        addresses.len(),
+        "the payload was cut short"
+    );
+}
+
+/// A list saved by an editor on Windows starts with a byte order mark and
+/// ends its lines in CRLF. Neither is part of an address.
+#[test]
+fn a_byte_order_mark_and_crlf_are_not_part_of_an_address() {
+    use std::io::Write as _;
+    let mut child = spawn(&["route", "--ndjson"]);
+    child
+        .stdin
+        .take()
+        .expect("a pipe")
+        .write_all(b"\xEF\xBB\xBFhttps://example.com\r\nhttps://example.com/a\r\n")
+        .expect("written");
+    let output = child.wait_with_output().expect("it finishes");
+    assert_eq!(
+        output.status.code(),
+        Some(0),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let text = stdout(&output);
+    assert_eq!(text.lines().count(), 2, "{text}");
+    let first: serde_json::Value =
+        serde_json::from_str(text.lines().next().expect("a line")).expect("a record");
+    assert_eq!(first["url"], "https://example.com/");
+}
+
+/// `-` names stdin on every flag that reads a file, so on the one flag that
+/// writes it names stdout. Before this it created a file called `-` in the
+/// working directory and put the payload there.
+#[test]
+fn a_dash_as_the_output_is_stdout_and_not_a_file() {
+    let dir = std::env::temp_dir().join(format!("spider-agent-dash-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).expect("a directory");
+    let output = Command::new(env!("CARGO_BIN_EXE_spider-agent"))
+        .args(["route", "https://example.com", "-o", "-"])
+        .current_dir(&dir)
+        .env("SPIDER_API_KEY", "")
+        .env("HOME", std::env::temp_dir())
+        .env("USERPROFILE", std::env::temp_dir())
+        .output()
+        .expect("the binary runs");
+    assert_eq!(
+        code(&output),
+        0,
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert!(
+        stdout(&output).contains("example.com"),
+        "nothing reached stdout: {}",
+        stdout(&output)
+    );
+    assert!(
+        !dir.join("-").exists(),
+        "a file called - was created in the working directory"
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// `--budget` is documented as the most the whole run may spend. On a list
+/// of addresses it was applied to every page afresh, so a run of a hundred
+/// pages under a cap of one credit paid for a hundred pages. `run` had the
+/// check and the other page commands did not.
+#[test]
+fn the_budget_caps_the_whole_run_and_not_each_page() {
+    let selectors = std::env::temp_dir().join(format!(
+        "spider-agent-budget-selectors-{}.json",
+        std::process::id()
+    ));
+    std::fs::write(&selectors, r#"{"title":"h1"}"#).expect("a file");
+    let name = selectors.to_string_lossy().to_string();
+    for command in ["scrape", "crawl", "extract", "links", "screenshot"] {
+        let (base, seen) = stub(PAGE_AND_LINKS);
+        let mut args = vec![
+            command,
+            "https://example.com/one",
+            "https://example.com/two",
+            "https://example.com/three",
+            "--budget",
+            "0.5",
+            "--ndjson",
+        ];
+        if command == "extract" {
+            args.extend(["--selectors", &name]);
+        }
+        let output = run_against(&base, &args);
+        // The stub prices a page above the cap. The first page goes out,
+        // because a price is not known until it is asked for, and the cap
+        // stops the second.
+        seen.recv().expect("the first page went out");
+        assert!(
+            seen.recv_timeout(std::time::Duration::from_millis(300))
+                .is_err(),
+            "{command}: a page was fetched after the cap was spent"
+        );
+        assert_eq!(
+            code(&output),
+            4,
+            "{command}: a run that ran out of budget left with {} rather than 4: {}",
+            code(&output),
+            String::from_utf8_lossy(&output.stderr)
+        );
+        let text = stdout(&output);
+        let last = text.lines().last().expect("a report");
+        let report: serde_json::Value = serde_json::from_str(last).expect("a record");
+        assert_eq!(report["type"], "report", "{command}: {last}");
+        assert_eq!(report["stopped"], "budget", "{command}: {last}");
+    }
+    let _ = std::fs::remove_file(&selectors);
+}
+
+/// The time cap is the same contract and was applied per page the same way.
+/// Unlike a price, the clock is known before a page is asked for, so a wall
+/// of zero seconds is spent before the first page and nothing goes out.
+#[test]
+fn the_wall_caps_the_whole_run_and_not_each_page() {
+    let (base, seen) = stub(PAGE_AND_LINKS);
+    let output = run_against(
+        &base,
+        &[
+            "scrape",
+            "https://example.com/one",
+            "https://example.com/two",
+            "--wall",
+            "0",
+            "--ndjson",
+        ],
+    );
+    assert!(
+        seen.recv_timeout(std::time::Duration::from_millis(300))
+            .is_err(),
+        "a page was fetched after the wall was spent"
+    );
+    assert_eq!(
+        code(&output),
+        4,
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let text = stdout(&output);
+    let last = text.lines().last().expect("a report");
+    let report: serde_json::Value = serde_json::from_str(last).expect("a record");
+    assert_eq!(report["stopped"], "time", "{last}");
+}
+
+/// A cap that is not a number is no cap at all, and a caller who typed one
+/// meant to be stopped. Refused at the command line rather than ignored.
+#[test]
+fn a_budget_that_is_not_a_number_is_refused() {
+    for value in ["nan", "-1", "-inf"] {
+        let flag = format!("--budget={value}");
+        let output = run(&["route", "https://example.com", &flag]);
+        assert_eq!(code(&output), 2, "{flag} was accepted");
+        let flag = format!("--max-per-page={value}");
+        let output = run(&["route", "https://example.com", &flag]);
+        assert_eq!(code(&output), 2, "{flag} was accepted");
+    }
+    let output = run(&["route", "https://example.com", "--budget", "0.5"]);
+    assert_eq!(code(&output), 0);
+}
+
+/// An argument that is not UTF-8 is a usage failure, not a panic.
+#[cfg(unix)]
+#[test]
+fn an_argument_that_is_not_utf8_is_a_usage_failure() {
+    use std::os::unix::ffi::OsStrExt as _;
+    let output = Command::new(env!("CARGO_BIN_EXE_spider-agent"))
+        .arg("route")
+        .arg(std::ffi::OsStr::from_bytes(b"https://example.com/\xff"))
+        .env("SPIDER_API_KEY", "")
+        .env("HOME", std::env::temp_dir())
+        .env("USERPROFILE", std::env::temp_dir())
+        .output()
+        .expect("the binary runs");
+    assert_eq!(code(&output), 2);
+    assert!(output.stdout.is_empty());
+}
+
+/// Ctrl-C in the middle of a run. Every record written before it is on disk,
+/// because NDJSON and text are flushed per record, and the process is gone
+/// promptly rather than waiting out the page it was on. The exit is the
+/// signal itself, which a shell reports as 130. JSON output is the exception
+/// by design: it buffers until the run ends, and an interrupted run has no
+/// end.
+#[cfg(unix)]
+#[test]
+fn an_interrupt_mid_run_keeps_what_was_written_and_leaves_promptly() {
+    use std::io::{BufRead, BufReader, Read, Write};
+    use std::os::unix::process::ExitStatusExt as _;
+
+    // A stub that answers the first request and holds every later one open
+    // for as long as the process lives.
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("a port");
+    let address = listener.local_addr().expect("an address");
+    std::thread::spawn(move || {
+        let mut held = Vec::new();
+        for (index, stream) in listener.incoming().enumerate() {
+            let Ok(mut stream) = stream else { break };
+            let Ok(clone) = stream.try_clone() else { break };
+            let mut reader = BufReader::new(clone);
+            let mut length = 0usize;
+            let mut line = String::new();
+            let _ = reader.read_line(&mut line);
+            loop {
+                let mut header = String::new();
+                if reader.read_line(&mut header).unwrap_or(0) == 0 || header == "\r\n" {
+                    break;
+                }
+                if let Some(value) = header.to_ascii_lowercase().strip_prefix("content-length:") {
+                    length = value.trim().parse().unwrap_or(0);
+                }
+            }
+            let mut body = vec![0u8; length];
+            let _ = reader.read_exact(&mut body);
+            if index == 0 {
+                let head = format!(
+                    "HTTP/1.1 200 OK\r\ncontent-type: application/json\r\ncontent-length: {}\r\nconnection: close\r\n\r\n",
+                    PAGE_AND_LINKS.len()
+                );
+                let _ = stream.write_all(head.as_bytes());
+                let _ = stream.write_all(PAGE_AND_LINKS.as_bytes());
+                let _ = stream.flush();
+            } else {
+                held.push(stream);
+            }
+        }
+    });
+
+    let path = std::env::temp_dir().join(format!(
+        "spider-agent-interrupt-{}.ndjson",
+        std::process::id()
+    ));
+    let _ = std::fs::remove_file(&path);
+    let name = path.to_string_lossy().to_string();
+    let mut child = spawn_against(
+        &format!("http://{address}"),
+        &[
+            "scrape",
+            "https://example.com/one",
+            "https://example.com/two",
+            "--ndjson",
+            "-o",
+            &name,
+        ],
+    );
+
+    // Wait for the first record to land, then interrupt while the second
+    // page hangs.
+    let started = std::time::Instant::now();
+    while std::fs::metadata(&path).map(|m| m.len()).unwrap_or(0) == 0 {
+        assert!(
+            started.elapsed() < std::time::Duration::from_secs(10),
+            "the first record never landed"
+        );
+        std::thread::sleep(std::time::Duration::from_millis(20));
+    }
+    std::thread::sleep(std::time::Duration::from_millis(200));
+    let sent = Command::new("kill")
+        .args(["-INT", &child.id().to_string()])
+        .status()
+        .expect("kill runs");
+    assert!(sent.success());
+
+    let interrupted = std::time::Instant::now();
+    let status = loop {
+        if let Some(status) = child.try_wait().expect("wait") {
+            break status;
+        }
+        assert!(
+            interrupted.elapsed() < std::time::Duration::from_secs(5),
+            "the process did not leave on an interrupt"
+        );
+        std::thread::sleep(std::time::Duration::from_millis(20));
+    };
+    assert_eq!(status.signal(), Some(2), "{status:?}");
+
+    let written = std::fs::read_to_string(&path).expect("the file");
+    let first: serde_json::Value =
+        serde_json::from_str(written.lines().next().expect("a record")).expect("a record");
+    assert_eq!(first["type"], "page", "{written}");
+    let _ = std::fs::remove_file(&path);
 }

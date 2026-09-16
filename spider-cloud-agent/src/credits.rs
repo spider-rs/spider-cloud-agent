@@ -56,11 +56,83 @@ impl Credits {
 /// differ by [`CREDITS_PER_USD`]. This type exists so that the wire numbers
 /// cannot be handed to [`Credits`] without going through the conversion. The
 /// inner value is private for the same reason.
-#[derive(Debug, Clone, Copy, Default, PartialEq, PartialOrd, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, PartialOrd, Serialize)]
 #[serde(transparent)]
 pub struct Usd(f64);
 
+/// Reads a cost line the way the wire writes it, and the ways it might.
+///
+/// A number is the documented shape. A null is a line the service had
+/// nothing to say about, and reads as nothing spent rather than failing the
+/// page it came with, which the account already paid for. A number in quotes
+/// is still a charge, and reading it as zero would let a crawl run past its
+/// budget with every page reporting free. A negative line cannot be a charge,
+/// and a refund or a bug must not offset the pages that were charged for, so
+/// it reads as zero.
+impl<'de> Deserialize<'de> for Usd {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Usd, D::Error> {
+        struct UsdVisitor;
+
+        impl<'de> serde::de::Visitor<'de> for UsdVisitor {
+            type Value = Usd;
+
+            fn expecting(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+                f.write_str("a cost in US dollars, as a number, a numeric string or null")
+            }
+
+            fn visit_f64<E: serde::de::Error>(self, value: f64) -> Result<Usd, E> {
+                Ok(Usd::charged(value))
+            }
+
+            fn visit_i64<E: serde::de::Error>(self, value: i64) -> Result<Usd, E> {
+                Ok(Usd::charged(value as f64))
+            }
+
+            fn visit_u64<E: serde::de::Error>(self, value: u64) -> Result<Usd, E> {
+                Ok(Usd::charged(value as f64))
+            }
+
+            fn visit_str<E: serde::de::Error>(self, value: &str) -> Result<Usd, E> {
+                value
+                    .trim()
+                    .parse::<f64>()
+                    .map(Usd::charged)
+                    .map_err(|_| E::invalid_value(serde::de::Unexpected::Str(value), &self))
+            }
+
+            fn visit_unit<E: serde::de::Error>(self) -> Result<Usd, E> {
+                Ok(Usd::ZERO)
+            }
+
+            fn visit_none<E: serde::de::Error>(self) -> Result<Usd, E> {
+                Ok(Usd::ZERO)
+            }
+
+            fn visit_some<D: serde::Deserializer<'de>>(
+                self,
+                deserializer: D,
+            ) -> Result<Usd, D::Error> {
+                deserializer.deserialize_any(self)
+            }
+        }
+
+        deserializer.deserialize_any(UsdVisitor)
+    }
+}
+
 impl Usd {
+    /// A line off the wire, with the readings that cannot be a charge
+    /// replaced by nothing spent. A negative number and a NaN both read as
+    /// zero; an infinity stays, because a bill that large trips every budget
+    /// and should.
+    fn charged(value: f64) -> Usd {
+        if value.is_nan() || value < 0.0 {
+            Usd::ZERO
+        } else {
+            Usd(value)
+        }
+    }
+
     /// Nothing spent.
     pub const ZERO: Usd = Usd(0.0);
 

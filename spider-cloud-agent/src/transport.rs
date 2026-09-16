@@ -58,6 +58,13 @@ pub const USER_AGENT: &str = concat!(
 /// Shown in place of the key wherever a value is printed.
 const REDACTED: &str = "<redacted>";
 
+/// How long the default client waits for a connection to open.
+///
+/// A connection that has not opened in this long is not going to. Without a
+/// ceiling, a dropped packet on the way in left the caller waiting on the
+/// operating system's own retries, which run to minutes.
+pub const CONNECT_TIMEOUT: Duration = Duration::from_secs(30);
+
 // ---------------------------------------------------------------------------
 // routes
 // ---------------------------------------------------------------------------
@@ -337,6 +344,17 @@ impl RateLimit {
         self != &RateLimit::default()
     }
 
+    /// What one response's headers say, and nothing older.
+    fn from_headers(headers: &reqwest::header::HeaderMap) -> RateLimit {
+        let seconds = |name: &str| header_number(headers, name).map(Duration::from_secs);
+        RateLimit {
+            limit: header_number(headers, "ratelimit-limit").map(count),
+            remaining: header_number(headers, "ratelimit-remaining").map(count),
+            reset: seconds("ratelimit-reset"),
+            retry_after: seconds("retry-after"),
+        }
+    }
+
     /// The longest wait either header asked for.
     pub fn wait(&self) -> Option<Duration> {
         match (self.retry_after, self.reset) {
@@ -371,38 +389,51 @@ impl RateLimitCell {
         }
     }
 
-    fn store(&self, slot: &AtomicI64, value: Option<i64>) {
+    fn store(&self, slot: &AtomicI64, value: Option<u64>) {
         if let Some(value) = value {
-            slot.store(value, Ordering::Relaxed);
+            // Already held under the ceiling by `header_number`, so the fallback
+            // is never taken. It is written out rather than cast so the type
+            // says so.
+            slot.store(i64::try_from(value).unwrap_or(i64::MAX), Ordering::Relaxed);
         }
     }
 
-    fn read(slot: &AtomicI64) -> Option<i64> {
+    fn read(slot: &AtomicI64) -> Option<u64> {
         match slot.load(Ordering::Relaxed) {
             UNSET => None,
-            value => Some(value),
+            value => u64::try_from(value).ok(),
         }
     }
 
     fn snapshot(&self) -> RateLimit {
+        let seconds = |slot: &AtomicI64| RateLimitCell::read(slot).map(Duration::from_secs);
         RateLimit {
-            limit: RateLimitCell::read(&self.limit).map(|v| v as u32),
-            remaining: RateLimitCell::read(&self.remaining).map(|v| v as u32),
-            reset: RateLimitCell::read(&self.reset).map(|v| Duration::from_secs(v as u64)),
-            retry_after: RateLimitCell::read(&self.retry_after)
-                .map(|v| Duration::from_secs(v as u64)),
+            limit: RateLimitCell::read(&self.limit).map(count),
+            remaining: RateLimitCell::read(&self.remaining).map(count),
+            reset: seconds(&self.reset),
+            retry_after: seconds(&self.retry_after),
         }
     }
+}
+
+/// A count as the snapshot holds it.
+///
+/// A value past what the field holds saturates rather than wraps. Cast, a limit
+/// of 2^32 read as zero, which says the opposite of what the service said.
+fn count(value: u64) -> u32 {
+    u32::try_from(value).unwrap_or(u32::MAX)
 }
 
 /// Read one header as a whole number of seconds or calls.
 ///
 /// A negative or unreadable value is treated as absent rather than as zero,
-/// because zero means "none left" and would make a healthy client stop.
-fn header_number(headers: &reqwest::header::HeaderMap, name: &str) -> Option<i64> {
-    let raw = headers.get(name)?.to_str().ok()?.trim().to_string();
-    let seconds = raw.parse::<i64>().ok()?;
-    (seconds >= 0).then_some(seconds)
+/// because zero means "none left" and would make a healthy client stop. A
+/// value past what the cell holds is kept at the cell's ceiling, which is
+/// still an age.
+fn header_number(headers: &reqwest::header::HeaderMap, name: &str) -> Option<u64> {
+    let raw = headers.get(name)?.to_str().ok()?.trim();
+    let value = raw.parse::<u64>().ok()?;
+    Some(value.min(i64::MAX as u64))
 }
 
 // ---------------------------------------------------------------------------
@@ -440,9 +471,16 @@ impl Transport {
     }
 
     /// A transport for one key, against an address you name.
+    ///
+    /// The client it builds gives up on a connection that has not opened after
+    /// thirty seconds. It sets no ceiling on the answer itself, because a
+    /// crawl can legitimately take minutes: the wall on a [`crate::Budget`] is
+    /// what bounds that, per operation, and [`Transport::with_client`] takes a
+    /// client with whatever timeouts you want.
     pub fn with_base(key: impl Into<String>, base: Url) -> Result<Transport> {
         let client = reqwest::Client::builder()
             .user_agent(USER_AGENT)
+            .connect_timeout(CONNECT_TIMEOUT)
             .build()
             .map_err(Error::Transport)?;
         Ok(Transport::with_client(key, base, client))
@@ -450,7 +488,17 @@ impl Transport {
 
     /// A transport built on a client you already have, so connection pools and
     /// timeouts stay yours.
+    ///
+    /// A base whose path does not end in a slash is given one. [`Url::join`]
+    /// reads the last segment of a base as a file and replaces it, so without
+    /// this `https://proxy.example/spider` plus `scrape` called
+    /// `https://proxy.example/scrape`, an address nobody named.
     pub fn with_client(key: impl Into<String>, base: Url, client: reqwest::Client) -> Transport {
+        let mut base = base;
+        if !base.cannot_be_a_base() && !base.path().ends_with('/') {
+            let path = format!("{}/", base.path());
+            base.set_path(&path);
+        }
         Transport {
             client,
             base,
@@ -536,11 +584,15 @@ impl Transport {
             .map(|v| v.to_ascii_lowercase());
         let body = response.bytes().await.map_err(Error::Transport)?;
 
+        // The reply carries this response's headers and not the snapshot. The
+        // snapshot outlives the response, and a reset one answer named was
+        // being read off every later reply as a wait the service had asked
+        // for, so one header set the wait for every retry after it.
+        let rate_limit = RateLimit::from_headers(&headers);
         Ok(Reply {
             status,
-            rate_limit: self.rate_limit(),
-            retry_after: header_number(&headers, "retry-after")
-                .map(|s| Duration::from_secs(s as u64)),
+            retry_after: rate_limit.retry_after,
+            rate_limit,
             elapsed: started.elapsed(),
             content_type,
             body,
@@ -1172,6 +1224,27 @@ mod tests {
         assert!(snapshot.is_known());
     }
 
+    /// A count the field cannot hold saturates. Cast, 2^32 wrapped to zero and
+    /// the snapshot said no calls were left when the service had said the
+    /// opposite.
+    #[test]
+    fn a_rate_limit_past_the_field_saturates_rather_than_wrapping_to_zero() {
+        let mut headers = reqwest::header::HeaderMap::new();
+        headers.insert("ratelimit-limit", "4294967296".parse().unwrap());
+        headers.insert("ratelimit-remaining", "4294967296".parse().unwrap());
+
+        let transport = Transport::with_client(
+            "not-a-real-key",
+            Url::parse(DEFAULT_BASE_URL).unwrap(),
+            reqwest::Client::new(),
+        );
+        transport.record_limits(&headers);
+
+        let snapshot = transport.rate_limit();
+        assert_eq!(snapshot.limit, Some(u32::MAX));
+        assert_eq!(snapshot.remaining, Some(u32::MAX));
+    }
+
     #[test]
     fn a_missing_rate_limit_header_reads_as_unknown_not_as_zero() {
         let transport = Transport::with_client(
@@ -1214,6 +1287,37 @@ mod tests {
                 .as_str(),
             "https://api.spider.cloud/data/crawl_logs?limit=5"
         );
+    }
+
+    /// A base with a path and no trailing slash kept the host and lost the
+    /// path: `Url::join` treats the last segment as a file to replace, so
+    /// `https://proxy.example/spider` plus `scrape` called
+    /// `https://proxy.example/scrape`, an address nobody named.
+    #[test]
+    fn a_base_with_a_path_keeps_its_path_whether_or_not_it_ends_in_a_slash() {
+        for base in [
+            "https://proxy.example/spider",
+            "https://proxy.example/spider/",
+        ] {
+            let transport = Transport::with_client(
+                "not-a-real-key",
+                Url::parse(base).unwrap(),
+                reqwest::Client::new(),
+            );
+            assert_eq!(
+                transport.url_for(route::SCRAPE, &[], &[]).unwrap().as_str(),
+                "https://proxy.example/spider/scrape",
+                "from base {base}"
+            );
+            assert_eq!(
+                transport
+                    .url_for(route::FETCH, &["example.com", "a/b"], &[])
+                    .unwrap()
+                    .as_str(),
+                "https://proxy.example/spider/fetch/example.com/a/b",
+                "from base {base}"
+            );
+        }
     }
 
     #[tokio::test]

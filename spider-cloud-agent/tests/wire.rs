@@ -23,12 +23,14 @@
 //! so a test can assert where the call went and what it asked for as well as
 //! what came back.
 
+use spider_cloud_agent::error::BudgetKind;
 use spider_cloud_agent::ops::transform::Document;
 use spider_cloud_agent::params::ReturnFormat;
-use spider_cloud_agent::{Body, Credits, Spider};
+use spider_cloud_agent::{Body, Budget, Credits, Error, Spider};
 use std::io::{BufRead, BufReader, Read, Write};
 use std::net::{TcpListener, TcpStream};
-use std::sync::mpsc::{channel, Receiver};
+use std::sync::mpsc::{channel, Receiver, Sender};
+use std::time::Duration;
 use url::Url;
 
 /// A stub of the service.
@@ -61,15 +63,45 @@ impl Stub {
     }
 }
 
-/// Start a stub that answers each request from `script`.
+/// One scripted answer: the status, any extra headers, and the body.
+#[derive(Clone)]
+struct Answer {
+    status: u16,
+    /// Extra header lines, each ending in `\r\n`.
+    headers: String,
+    body: String,
+}
+
+impl Answer {
+    /// A 200 carrying `body`, which is how the service answers when all is well.
+    fn ok(body: &str) -> Answer {
+        Answer::with(200, "", body)
+    }
+
+    fn with(status: u16, headers: &str, body: &str) -> Answer {
+        Answer {
+            status,
+            headers: headers.to_string(),
+            body: body.to_string(),
+        }
+    }
+}
+
+/// Start a stub that answers each request with a 200 and a body from `script`.
 ///
 /// Once the script runs out the last answer is repeated, so a test that expects
 /// one request still gets somewhere to escalate to when the fix it pins is
 /// broken, and the count is what fails rather than the connection.
 fn serve(script: &[&str]) -> Stub {
+    let answers: Vec<Answer> = script.iter().map(|body| Answer::ok(body)).collect();
+    serve_answers(&answers)
+}
+
+/// The same, with the status and the headers scripted too.
+fn serve_answers(script: &[Answer]) -> Stub {
     let listener = TcpListener::bind("127.0.0.1:0").expect("a port");
     let address = listener.local_addr().expect("an address");
-    let script: Vec<String> = script.iter().map(|body| (*body).to_string()).collect();
+    let script: Vec<Answer> = script.to_vec();
     let (sender, seen) = channel();
 
     std::thread::spawn(move || {
@@ -81,19 +113,21 @@ fn serve(script: &[&str]) -> Stub {
             if sender.send(request).is_err() {
                 break;
             }
+            let fallback = Answer::ok("[]");
             let reply = script
                 .get(answered)
                 .or_else(|| script.last())
-                .map(String::as_str)
-                .unwrap_or("[]");
+                .unwrap_or(&fallback);
             let head = format!(
-                "HTTP/1.1 200 OK\r\ncontent-type: application/json\r\ncontent-length: {}\r\nconnection: close\r\n\r\n",
-                reply.len()
+                "HTTP/1.1 {} Scripted\r\ncontent-type: application/json\r\ncontent-length: {}\r\nconnection: close\r\n{}\r\n",
+                reply.status,
+                reply.body.len(),
+                reply.headers
             );
             if stream.write_all(head.as_bytes()).is_err() {
                 break;
             }
-            let _ = stream.write_all(reply.as_bytes());
+            let _ = stream.write_all(reply.body.as_bytes());
             let _ = stream.flush();
         }
     });
@@ -102,6 +136,226 @@ fn serve(script: &[&str]) -> Stub {
         base: Url::parse(&format!("http://{address}")).expect("a base url"),
         seen,
     }
+}
+
+/// A stub that reads every request and answers none of them.
+///
+/// The connection is accepted and held open until the test drops the stub, so
+/// what the client sees is a service that took the request and went quiet. This
+/// is the shape of a hang: not a refused connection, which fails at once, and
+/// not a slow answer, which arrives eventually.
+struct Stalled {
+    base: Url,
+    seen: Receiver<Sent>,
+    /// Dropping this is what lets the thread go.
+    _release: Sender<()>,
+}
+
+fn stall() -> Stalled {
+    let listener = TcpListener::bind("127.0.0.1:0").expect("a port");
+    let address = listener.local_addr().expect("an address");
+    let (sender, seen) = channel();
+    let (release, held) = channel::<()>();
+
+    std::thread::spawn(move || {
+        let mut open: Vec<TcpStream> = Vec::new();
+        for stream in listener.incoming() {
+            let Ok(mut stream) = stream else { break };
+            let Some(request) = read_request(&mut stream) else {
+                break;
+            };
+            if sender.send(request).is_err() {
+                break;
+            }
+            open.push(stream);
+            // Blocks until the test drops its end, which is when every held
+            // connection is let go.
+            if held.recv().is_err() {
+                break;
+            }
+        }
+        drop(open);
+    });
+
+    Stalled {
+        base: Url::parse(&format!("http://{address}")).expect("a base url"),
+        seen,
+        _release: release,
+    }
+}
+
+impl Stalled {
+    /// How many requests reached the stub.
+    fn received(&self) -> usize {
+        self.seen.try_iter().count()
+    }
+}
+
+/// A client pointed at a stalled stub, with a wall budget on every operation.
+fn client_with_wall(stub: &Stalled, wall: Duration) -> Spider {
+    Spider::builder()
+        .key("not-a-real-key")
+        .base_url(stub.base.clone())
+        .budget(Budget::default().with_wall(wall))
+        .build()
+        .expect("a client")
+}
+
+/// Long enough that a hang is what it measures, short enough to fail fast.
+const HANG: Duration = Duration::from_secs(5);
+
+/// The wall the operations below run under.
+const WALL: Duration = Duration::from_millis(300);
+
+/// The bug this pins: nothing bounded a call. The default client had no
+/// timeout, the wall budget was checked only before a sleep, and a service that
+/// accepted the request and never answered held the caller forever. A budget
+/// that names a wall now ends the call at that wall and says so.
+#[tokio::test]
+async fn a_scrape_that_never_answers_stops_at_the_wall_budget() {
+    let stub = stall();
+    let spider = client_with_wall(&stub, WALL);
+
+    let outcome = tokio::time::timeout(HANG, spider.scrape("https://example.com").send())
+        .await
+        .expect("the call hung past the wall budget");
+
+    match outcome {
+        Err(Error::BudgetExceeded { kind, attempts }) => {
+            assert_eq!(kind, BudgetKind::Time);
+            assert_eq!(attempts.len(), 1, "attempts: {attempts:?}");
+        }
+        other => panic!("expected the wall budget to stop the call, got {other:?}"),
+    }
+    assert_eq!(stub.received(), 1);
+}
+
+/// The same for an answer that is not a page. The search path has its own,
+/// shorter loop, and it had the same hole.
+#[tokio::test]
+async fn a_search_that_never_answers_stops_at_the_wall_budget() {
+    let stub = stall();
+    let spider = client_with_wall(&stub, WALL);
+
+    let outcome = tokio::time::timeout(HANG, spider.search("example").send())
+        .await
+        .expect("the call hung past the wall budget");
+
+    assert!(
+        matches!(
+            outcome,
+            Err(Error::BudgetExceeded {
+                kind: BudgetKind::Time,
+                ..
+            })
+        ),
+        "{outcome:?}"
+    );
+}
+
+/// The account reads take no builder budget, so the client's wall is what
+/// bounds them. Without it a balance check against a quiet service never
+/// returned.
+#[tokio::test]
+async fn an_account_read_that_never_answers_stops_at_the_client_wall() {
+    let stub = stall();
+    let spider = client_with_wall(&stub, WALL);
+
+    let credits = tokio::time::timeout(HANG, spider.credits())
+        .await
+        .expect("the balance read hung past the wall budget");
+    assert!(
+        matches!(
+            credits,
+            Err(Error::BudgetExceeded {
+                kind: BudgetKind::Time,
+                ..
+            })
+        ),
+        "{credits:?}"
+    );
+
+    let logs = tokio::time::timeout(HANG, spider.crawl_logs().limit(1).send())
+        .await
+        .expect("the log read hung past the wall budget");
+    assert!(
+        matches!(
+            logs,
+            Err(Error::BudgetExceeded {
+                kind: BudgetKind::Time,
+                ..
+            })
+        ),
+        "{logs:?}"
+    );
+}
+
+/// The bug this pins: the rate limit snapshot is kept for the life of the
+/// client, and a reply reported the snapshot as its own headers. One answer
+/// carrying `ratelimit-reset: 20` then made every later retry on that client
+/// wait twenty seconds, whatever the later answer said, because the send loop
+/// reads a reply's reset as the wait the service asked for. A reply now
+/// reports the headers it arrived with and nothing older.
+#[tokio::test]
+async fn a_reset_header_on_one_answer_does_not_set_the_wait_for_a_later_one() {
+    let stub = serve_answers(&[
+        Answer::with(200, "ratelimit-reset: 20\r\n", PAGE_ANSWER),
+        Answer::with(503, "", r#"{"error":"draining"}"#),
+        Answer::ok(PAGE_ANSWER),
+    ]);
+    let spider = client(&stub);
+
+    spider
+        .scrape("https://example.com")
+        .send()
+        .await
+        .expect("the first page");
+
+    // The second operation meets a 503 and retries. The wait it takes is the
+    // curve, half a second, and not the twenty the earlier answer named.
+    let outcome = tokio::time::timeout(
+        Duration::from_secs(3),
+        spider.scrape("https://example.com").send(),
+    )
+    .await
+    .expect("the retry waited on a header from an earlier answer")
+    .expect("the second page");
+
+    assert_eq!(outcome.attempts.len(), 2, "{:?}", outcome.attempts);
+    assert_eq!(stub.sent().len(), 3);
+}
+
+/// A service asking for a wait of 999999 seconds is not a reason to wait that
+/// long. The curve's ceiling holds the figure down, and this pins that the
+/// send loop honours the ceiling rather than the header.
+#[tokio::test]
+async fn a_huge_retry_after_is_held_to_the_backoff_ceiling() {
+    use spider_cloud_agent::policy::Backoff;
+    use spider_cloud_agent::Policy;
+
+    let stub = serve_answers(&[
+        Answer::with(429, "retry-after: 999999\r\n", r#"{"error":"slow down"}"#),
+        Answer::ok(PAGE_ANSWER),
+    ]);
+    let spider = Spider::builder()
+        .key("not-a-real-key")
+        .base_url(stub.base.clone())
+        .policy(Policy::standard().with_backoff(Backoff {
+            cap: Duration::from_millis(200),
+            ..Backoff::default()
+        }))
+        .build()
+        .expect("a client");
+
+    let outcome = tokio::time::timeout(
+        Duration::from_secs(3),
+        spider.scrape("https://example.com").send(),
+    )
+    .await
+    .expect("the retry waited on the header rather than the ceiling")
+    .expect("the page");
+
+    assert_eq!(outcome.attempts.len(), 2, "{:?}", outcome.attempts);
 }
 
 /// Read one request and hand back its request line and its body.

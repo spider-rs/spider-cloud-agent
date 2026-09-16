@@ -4,11 +4,30 @@
 //! what has been crawled, what a stored table holds. None of them fetches a
 //! page, so none of them escalates and none of them costs credits.
 
+use std::future::Future;
+
 use crate::client::Spider;
 use crate::credits::Credits;
 use crate::error::Error;
+use crate::ops::{out_of_time, read_wall, within};
 use crate::transport::{route, Reply};
 use crate::Result;
+
+/// One account read, held to the client's wall and judged on the call plane.
+///
+/// These reads take no builder budget, so the wall on the client is what
+/// bounds them, and [`crate::ops::DEFAULT_READ_WALL`] when it names none. A
+/// read against a service that accepted the request and went quiet used to
+/// wait for as long as the socket stayed open.
+pub(crate) async fn read_under_wall<F>(spider: &Spider, call: F) -> Result<Reply>
+where
+    F: Future<Output = Result<Reply>>,
+{
+    within(Some(read_wall(spider)), call)
+        .await
+        .ok_or_else(|| out_of_time(Vec::new()))??
+        .into_result()
+}
 
 /// The balance, read out of whichever shape the reply used.
 ///
@@ -92,12 +111,11 @@ impl<'a> CrawlLogs<'a> {
     pub async fn send(self) -> Result<Vec<serde_json::Value>> {
         let query = paging(self.limit, self.page);
         let pairs: Vec<(&str, &str)> = query.iter().map(|(k, v)| (*k, v.as_str())).collect();
-        let reply = self
-            .spider
-            .raw()
-            .get(route::DATA_CRAWL_LOGS, &[], &pairs)
-            .await?
-            .into_result()?;
+        let reply = read_under_wall(
+            self.spider,
+            self.spider.raw().get(route::DATA_CRAWL_LOGS, &[], &pairs),
+        )
+        .await?;
         rows(&reply)
     }
 }
@@ -139,12 +157,13 @@ impl<'a> Table<'a> {
     pub async fn send(self) -> Result<Vec<serde_json::Value>> {
         let query = paging(self.limit, self.page);
         let pairs: Vec<(&str, &str)> = query.iter().map(|(k, v)| (*k, v.as_str())).collect();
-        let reply = self
-            .spider
-            .raw()
-            .get(route::DATA_TABLE, &[&self.name], &pairs)
-            .await?
-            .into_result()?;
+        let reply = read_under_wall(
+            self.spider,
+            self.spider
+                .raw()
+                .get(route::DATA_TABLE, &[&self.name], &pairs),
+        )
+        .await?;
         rows(&reply)
     }
 }

@@ -5,6 +5,67 @@ response gives back, or what an escalation costs gets one whether or not it brea
 signature, because those are the changes that show up on a bill rather than in a compiler
 error.
 
+## [0.3.1]
+
+`spider-agent --budget` and `--wall` now cap the whole run on every command. They were
+handed to each operation afresh, and a command that works a list of addresses runs one
+operation per address, so `scrape` over a hundred addresses under `--budget 1` paid for a
+hundred pages and left with code 0. Only `run` carried the spend across pages. The check
+is now made before every page on `scrape`, `crawl`, `extract`, `links` and `screenshot`,
+what is left is handed to the next operation as its cap, and a run a cap stopped leaves
+with code 4 and `stopped` set on the report. The first page still goes out under a credit
+cap, because a price is not known until it is asked for. A wall that is already spent
+stops the run before anything is sent.
+
+- A reader that closes stdout early, `spider-agent ... | head -1`, ends the run quietly
+  with code 0 and no further page is fetched. It was reported as an output failure, code
+  7, with `Broken pipe` on stderr.
+- A progress note written to a stderr nobody is reading is dropped. It panicked, and the
+  release profile turns a panic into an abort.
+- `-o -` writes to stdout. It created a file called `-`.
+- A byte order mark at the start of an address list, a selector map or a plan is dropped.
+- `--budget` and `--max-per-page` refuse `nan`, `inf` and a negative number as a usage
+  failure. `nan` was read as a cap that never stopped anything.
+
+Every call is now held to the wall budget. A service that accepted a request and never
+answered held `scrape`, `crawl`, `fetch`, `search` and the account reads for as long as
+the socket stayed open, because the wall was only looked at between calls. A call that
+runs out of wall returns `BudgetExceeded` with kind `Time`. The account reads fall back to
+60 seconds when no wall is set, and the default client gives up on a connection that has
+not opened after 30 seconds.
+
+- The wait before a retry comes from the answer being retried. It came from the client's
+  last rate limit snapshot, so one `ratelimit-reset: 20` made every later retry on that
+  client sleep 20 seconds.
+- A base URL with a path and no trailing slash keeps its path. `https://proxy.example/spider`
+  sent requests to `https://proxy.example/scrape`.
+- A rate limit count past `u32::MAX` saturates. It wrapped to zero.
+- A negative or unreadable cost no longer lowers what a walk has spent. A negative cost
+  read as a refund and let the walk keep escalating past its credit cap.
+- A cost line that is `null` or a quoted number reads as a cost. Either one failed the
+  whole page, which had already been paid for. A search result with a `null` url no
+  longer loses the rest of the list.
+- Exploration is skipped on a call where the caller pinned a setting. The wire kept the
+  pin, but the outcome and the recorded row reported the explored mode.
+- The session step on the ladder can fire. Nothing outside the tests marked whether a
+  request carried cookies, so a login wall never got its second call.
+- A trim never cuts inside a zero width joiner sequence or a flag, and `max_tokens` never
+  reads below `approx_tokens` on whitespace outside ASCII.
+- `TokenBudget::split` no longer overflows on large costs. In a release build it handed
+  out shares far larger than the total.
+- `Pages::digest` counts its own headings against the total, measures pages the way it
+  caps them, and honours a per page cap set without a total. It went over its total, and
+  cut pages that fit.
+- Signing in reads callback connections side by side, so a local connection that sends
+  nothing no longer holds up the browser.
+- The credentials file is written to a temporary file and renamed into place. Two writers
+  could mix their keys, a crash could leave the file empty, and a symlink at the path
+  was written through. A credentials file over 4 KiB is not read.
+- `spider-agent login --print --json` carries the key. It printed a record without one,
+  and `--print` does not store the key, so it was lost.
+- `spider-route` reads a NaN success rate as no history and a NaN confidence as zero. The
+  first landed in the highest success band.
+
 ## [0.3.0]
 
 A page and the links on it are one call. `return_page_links` was set in two places inside

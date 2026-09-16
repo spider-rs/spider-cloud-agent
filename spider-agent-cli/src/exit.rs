@@ -95,6 +95,24 @@ impl Failure {
     pub fn output(message: impl Into<String>) -> Failure {
         Failure::new(Code::Output, message)
     }
+
+    /// The reader of the payload has gone.
+    ///
+    /// `spider-agent ... | head -1` closes the pipe after one line, and that
+    /// is the reader's decision rather than a failure of the run. The run
+    /// stops where it is, so no page after that is paid for, and the process
+    /// leaves with code 0 and nothing on stderr, the way cat and grep leave.
+    /// The message is empty, and an empty message is what tells the caller
+    /// of a failed run to print nothing.
+    pub fn reader_gone() -> Failure {
+        Failure::new(Code::Ok, String::new())
+    }
+
+    /// Whether there is anything to print. The one silent failure is the
+    /// reader going away.
+    pub fn is_silent(&self) -> bool {
+        self.message.is_empty()
+    }
 }
 
 impl fmt::Display for Failure {
@@ -105,6 +123,9 @@ impl fmt::Display for Failure {
 
 impl From<std::io::Error> for Failure {
     fn from(error: std::io::Error) -> Failure {
+        if error.kind() == std::io::ErrorKind::BrokenPipe {
+            return Failure::reader_gone();
+        }
         Failure::output(error.to_string())
     }
 }
@@ -177,6 +198,17 @@ mod tests {
 
         let auth: Failure = Error::Auth("no api key".to_string()).into();
         assert_eq!(auth.code, Code::Auth);
+    }
+
+    #[test]
+    fn a_closed_pipe_is_a_silent_stop_and_not_an_output_failure() {
+        let gone: Failure = std::io::Error::from(std::io::ErrorKind::BrokenPipe).into();
+        assert_eq!(gone.code, Code::Ok);
+        assert!(gone.is_silent());
+
+        let refused: Failure = std::io::Error::from(std::io::ErrorKind::PermissionDenied).into();
+        assert_eq!(refused.code, Code::Output);
+        assert!(!refused.is_silent());
     }
 
     #[test]

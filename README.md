@@ -9,7 +9,7 @@ for.
 Three crates ship from this workspace:
 
 - `spider-cloud-agent`, the client
-- `spider-route`, a local model that picks request settings
+- `spider-route`, the local rules that pick request settings
 - `spider-agent-cli`, the `spider-agent` command line tool
 
 ## From another program
@@ -105,17 +105,14 @@ page takes 5261 bytes to 2269, and 1333 approximate tokens to 509.
 Those are byte counts from running the request planner over recorded responses,
 so they measure what this crate asks for and returns, not the service.
 
-## The routing model
+## How it routes
 
-Deciding whether a page needs a browser takes no language understanding. It
-takes a classifier over the shape of a URL and what happened last time something
-like it was fetched. That fits in about a megabyte and answers in microseconds,
-so it can run on every request without anyone weighing the cost.
+Deciding whether a page needs a browser takes no language model. `spider-route`
+reads the shape of the URL and what happened the last time a similar request
+went out, and answers from rules in microseconds. It reads the host once, for its
+shape, and keeps no name.
 
-The model never sees a domain name. Every input is a bucketed, enumerated
-feature, and the full feature to weight table ships with the weights. That is a
-property of the format rather than a promise: the artifact has no string field
-in it, so a domain cannot be stored there.
+To route another way, implement the `Router` trait.
 
 ## License
 

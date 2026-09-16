@@ -37,6 +37,11 @@ pub const KEYRING_USER: &str = "default";
 /// Shown wherever a key would otherwise be printed.
 const REDACTED: &str = "<redacted>";
 
+/// The most a credentials file may hold and still be read. A key is under a
+/// hundred bytes. Anything past this is not a key file, and reading it whole
+/// would mean reading whatever the path turned out to point at.
+pub const MAX_KEY_FILE_BYTES: usize = 4096;
+
 /// The mode a credentials file is created with: the owner reads and writes, and
 /// nobody else has any access at all.
 #[cfg(unix)]
@@ -241,8 +246,27 @@ fn resolve_in(lookup: &Lookup<'_>) -> Option<Credentials> {
 
 /// Read the credentials file, warning once when anyone but the owner can read
 /// it. The mode is left exactly as it was found.
+///
+/// The read stops at [`MAX_KEY_FILE_BYTES`], and a file past that is no key.
+/// Reading to the end would read whatever the path points at, and a symlink
+/// to a device that never ends would hold every run of every program that
+/// looks for a key here.
 fn read_key_file(path: &Path) -> Option<String> {
-    let contents = std::fs::read_to_string(path).ok()?;
+    use std::io::Read;
+
+    let file = std::fs::File::open(path).ok()?;
+    let mut bytes = Vec::new();
+    file.take(MAX_KEY_FILE_BYTES as u64 + 1)
+        .read_to_end(&mut bytes)
+        .ok()?;
+    if bytes.len() > MAX_KEY_FILE_BYTES {
+        log::warn!(
+            "{} is larger than {MAX_KEY_FILE_BYTES} bytes, which no api key is, so it was not read",
+            path.display()
+        );
+        return None;
+    }
+    let contents = String::from_utf8(bytes).ok()?;
     if let Some(mode) = wide_permissions(path) {
         warn_wide_permissions(path, mode, &WARNED_ABOUT_PERMISSIONS);
     }
@@ -303,6 +327,15 @@ fn tighten(path: &Path) -> std::io::Result<Option<PathBuf>> {
 /// The order matters. A file created at the default mode and narrowed
 /// afterwards is world readable for the window in between, and that window is
 /// long enough: it has already leaked a key in this repository's history.
+///
+/// The key goes into a fresh file beside the final path and is moved over it
+/// once it is on disk. Written in place, the file was truncated and refilled,
+/// so two processes storing at once left a file holding the front of one key
+/// and the back of another, a reader in between saw nothing, and a crash
+/// between the two left an empty file where the key had been. A rename
+/// replaces the whole entry at once, and it replaces a symlink at the path
+/// rather than writing through it. The new file is always at [`FILE_MODE`], so
+/// an old file with a wider mode is gone rather than narrowed.
 fn write_key_file(home: &Path, key: &str) -> std::io::Result<PathBuf> {
     use std::io::Write;
 
@@ -324,25 +357,64 @@ fn write_key_file(home: &Path, key: &str) -> std::io::Result<PathBuf> {
     #[cfg(not(unix))]
     std::fs::create_dir_all(parent)?;
 
-    // An existing file keeps its old mode through a truncating open, so narrow
-    // it before anything is written into it.
-    #[cfg(unix)]
-    if path.exists() {
-        use std::os::unix::fs::PermissionsExt;
-        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(FILE_MODE))?;
+    let (mut file, staged) = create_staging_file(parent)?;
+    let written = file
+        .write_all(key.as_bytes())
+        .and_then(|()| file.flush())
+        .and_then(|()| file.sync_all());
+    drop(file);
+    if let Err(e) = written {
+        let _ = std::fs::remove_file(&staged);
+        return Err(e);
+    }
+    if let Err(e) = std::fs::rename(&staged, &path) {
+        let _ = std::fs::remove_file(&staged);
+        return Err(e);
     }
 
-    let mut options = std::fs::OpenOptions::new();
-    options.write(true).create(true).truncate(true);
+    // The rename is durable once the directory is. Best effort: a directory
+    // that cannot be opened or synced has still had the rename applied.
     #[cfg(unix)]
-    {
-        use std::os::unix::fs::OpenOptionsExt;
-        options.mode(FILE_MODE);
+    if let Ok(dir) = std::fs::File::open(parent) {
+        let _ = dir.sync_all();
     }
-    let mut file = options.open(&path)?;
-    file.write_all(key.as_bytes())?;
-    file.flush()?;
     Ok(path)
+}
+
+/// How many names are tried for the staging file before giving up. Two writers
+/// only collide when they share a pid and read the clock in the same
+/// nanosecond, and the attempt number changes the name on the retry.
+const STAGING_ATTEMPTS: u32 = 8;
+
+/// A fresh file beside the credentials file, created at [`FILE_MODE`] under a
+/// name nothing else holds.
+///
+/// `create_new` is what makes it fresh: it fails rather than opening a file
+/// that is already there, so it never follows a symlink someone planted and
+/// never truncates another process's half written key.
+fn create_staging_file(parent: &Path) -> std::io::Result<(std::fs::File, PathBuf)> {
+    let pid = std::process::id();
+    let mut last = std::io::Error::new(std::io::ErrorKind::AlreadyExists, "no free staging name");
+    for attempt in 0..STAGING_ATTEMPTS {
+        let nanos = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_nanos())
+            .unwrap_or(0);
+        let staged = parent.join(format!(".credentials.{pid}.{nanos}.{attempt}.tmp"));
+        let mut options = std::fs::OpenOptions::new();
+        options.write(true).create_new(true);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::OpenOptionsExt;
+            options.mode(FILE_MODE);
+        }
+        match options.open(&staged) {
+            Ok(file) => return Ok((file, staged)),
+            Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => last = e,
+            Err(e) => return Err(e),
+        }
+    }
+    Err(last)
 }
 
 /// The home directory, which is the one the command line tool lands in too, so
@@ -657,6 +729,94 @@ mod tests {
 
         let mode = std::fs::metadata(&path).unwrap().permissions().mode() & 0o777;
         assert_eq!(mode, FILE_MODE, "mode {mode:o}");
+    }
+
+    #[test]
+    fn writers_racing_for_the_file_leave_one_whole_key_and_never_a_mix() {
+        let home = TempHome::new("race");
+        let keys: Vec<String> = (0..4)
+            .map(|n| format!("key-{n}-").repeat(64 + n * 16))
+            .collect();
+
+        for _ in 0..25 {
+            let writers: Vec<_> = keys
+                .iter()
+                .cloned()
+                .map(|key| {
+                    let home = home.path().to_path_buf();
+                    std::thread::spawn(move || write_key_file(&home, &key).unwrap())
+                })
+                .collect();
+            for writer in writers {
+                writer.join().unwrap();
+            }
+            let path = home.path().join(CREDENTIALS_PATH);
+            let read = std::fs::read_to_string(&path).unwrap();
+            assert!(keys.contains(&read), "the file holds a mix: {read:?}");
+        }
+    }
+
+    #[test]
+    fn a_write_leaves_nothing_beside_the_file() {
+        let home = TempHome::new("tidy");
+        let path = write_key_file(home.path(), SECRET).unwrap();
+        let mut names: Vec<String> = std::fs::read_dir(path.parent().unwrap())
+            .unwrap()
+            .map(|entry| entry.unwrap().file_name().to_string_lossy().into_owned())
+            .collect();
+        names.sort();
+        assert_eq!(names, vec!["credentials".to_string()]);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_symlink_at_the_path_is_replaced_and_its_target_is_left_alone() {
+        let home = TempHome::new("symlink");
+        let elsewhere = home.path().join("elsewhere");
+        std::fs::write(&elsewhere, "old").unwrap();
+        let path = home.path().join(CREDENTIALS_PATH);
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::os::unix::fs::symlink(&elsewhere, &path).unwrap();
+
+        write_key_file(home.path(), SECRET).unwrap();
+
+        assert_eq!(std::fs::read_to_string(&elsewhere).unwrap(), "old");
+        assert!(
+            !std::fs::symlink_metadata(&path).unwrap().is_symlink(),
+            "the symlink was written through rather than replaced"
+        );
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), SECRET);
+    }
+
+    #[test]
+    fn a_file_far_larger_than_any_key_is_not_read_as_one() {
+        let home = TempHome::new("oversized");
+        let path = home.write_credentials(&"x".repeat(MAX_KEY_FILE_BYTES + 1));
+        assert_eq!(read_key_file(&path), None);
+
+        let path = home.write_credentials(&"y".repeat(MAX_KEY_FILE_BYTES));
+        assert_eq!(
+            read_key_file(&path).map(|k| k.len()),
+            Some(MAX_KEY_FILE_BYTES)
+        );
+    }
+
+    #[test]
+    fn a_directory_an_empty_file_or_bytes_that_are_not_text_yield_no_key() {
+        let home = TempHome::new("odd");
+        let path = home.path().join(CREDENTIALS_PATH);
+        std::fs::create_dir_all(&path).unwrap();
+        assert_eq!(read_key_file(&path), None);
+        std::fs::remove_dir(&path).unwrap();
+
+        std::fs::write(&path, b"").unwrap();
+        assert_eq!(trimmed(read_key_file(&path)), None);
+
+        std::fs::write(&path, [0xff, 0xfe, b'k', b'e', b'y']).unwrap();
+        assert_eq!(read_key_file(&path), None);
+
+        std::fs::write(&path, "   \n\n").unwrap();
+        assert_eq!(trimmed(read_key_file(&path)), None);
     }
 
     #[cfg(unix)]

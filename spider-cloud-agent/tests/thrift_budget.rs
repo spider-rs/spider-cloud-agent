@@ -914,3 +914,291 @@ fn a_budget_a_caller_set_holds_on_a_page_of_nothing_but_ideographs() {
     assert!(max_tokens(&out) <= 100);
     assert!(out.chars().filter(|c| *c == '漢').count() <= 60);
 }
+
+// ---------------------------------------------------------------------------
+// the ceiling under generated input
+// ---------------------------------------------------------------------------
+
+/// Pieces a page can be made of, chosen to hit every branch of the walk:
+/// plain words, hashes, punctuation runs, every kind of whitespace, scripts
+/// written without spaces, marks that lean on the character before them,
+/// emoji held together by joiners, flags made of two characters, inlined
+/// images, bare links and minified markup.
+const PIECES: &[&str] = &[
+    "the",
+    "quick",
+    "Elephant",
+    "iPhone",
+    "HTML",
+    "a3f9c2e1",
+    "12.50",
+    "2026",
+    " ",
+    "  ",
+    "\n",
+    "\n\n\n",
+    "\t",
+    " \t\n",
+    "\u{3000}",
+    "\u{feff}",
+    ".",
+    "!",
+    "?",
+    ",",
+    "...",
+    "?!",
+    "\"",
+    "'",
+    ")",
+    "(",
+    "<",
+    ">",
+    "。",
+    "！",
+    "？",
+    "…",
+    "．",
+    "蜘蛛云是一个网页抓取服务",
+    "漢漢漢",
+    "ウェブページ",
+    "웹 페이지",
+    "\u{304b}\u{3099}",
+    "\u{ff76}\u{ff9e}",
+    "\u{3030}\u{fe0f}",
+    "Café",
+    "naïve",
+    "e\u{0301}",
+    "a\u{0300}\u{0301}\u{0302}",
+    "مرحبا",
+    "السعر",
+    "यह सेवा",
+    "क्ष",
+    "สวัสดี",
+    "Сервис",
+    "🚀",
+    "👍🏽",
+    "👨\u{200d}👩\u{200d}👧\u{200d}👦",
+    "🧑\u{1f3fd}\u{200d}🚒",
+    "🇺🇸",
+    "🇫🇷🇩🇪",
+    "1\u{fe0f}\u{20e3}",
+    "\u{200d}",
+    "\u{fe0f}",
+    "\u{0301}",
+    "£19.99",
+    "€22.40",
+    "¥3200",
+    "₹1650",
+    "https://example.com/p/89?a=1",
+    "[label](https://example.com/x)",
+    "- https://example.com/y",
+    "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJ",
+    "<div class=\"a\"><span id=\"b\">12.50</span></div>",
+    "</div></div></div>",
+    "{\"price\":12.5,\"tags\":[\"a\",\"b\"]}",
+    "\u{fffd}",
+    "\u{0000}",
+    "\u{200b}",
+    "\u{202e}",
+];
+
+/// A deterministic generator, so a failing case can be named by its seed.
+struct XorShift(u64);
+
+impl XorShift {
+    fn next(&mut self) -> u64 {
+        let mut x = self.0;
+        x ^= x << 13;
+        x ^= x >> 7;
+        x ^= x << 17;
+        self.0 = x;
+        x
+    }
+
+    fn below(&mut self, n: usize) -> usize {
+        (self.next() % n.max(1) as u64) as usize
+    }
+
+    fn page(&mut self, pieces: usize) -> String {
+        let mut out = String::new();
+        for _ in 0..pieces {
+            out.push_str(PIECES[self.below(PIECES.len())]);
+        }
+        out
+    }
+}
+
+fn is_regional_indicator(c: char) -> bool {
+    ('\u{1f1e6}'..='\u{1f1ff}').contains(&c)
+}
+
+/// Every promise the truncation makes, checked against one text and one
+/// ceiling. Returns a description of the first broken one.
+fn check_truncation(text: &str, ceiling: usize) -> Result<(), String> {
+    let (out, dropped) = truncate_to_tokens(text, ceiling);
+
+    if max_tokens(&out) > ceiling {
+        return Err(format!(
+            "came back costing {} against a ceiling of {ceiling}",
+            max_tokens(&out)
+        ));
+    }
+    if dropped == 0 && out != text {
+        return Err("nothing was dropped but the text changed".to_string());
+    }
+    if dropped > 0 && max_tokens(text) <= ceiling {
+        return Err("text that fit was cut".to_string());
+    }
+
+    let kept = out.split("\n...[truncated").next().unwrap_or_default();
+    if !text.starts_with(kept) {
+        return Err(format!(
+            "the kept part {kept:?} is not the front of the text"
+        ));
+    }
+    let rest = text
+        .get(kept.len()..)
+        .ok_or("the cut landed inside a character")?;
+    if dropped == 0 || kept.is_empty() {
+        return Ok(());
+    }
+
+    let cut_after = kept.chars().last();
+    let cut_before = rest.chars().next();
+    if cut_before.is_some_and(hangs_on_what_came_before) {
+        return Err(format!("the cut landed in front of {cut_before:?}"));
+    }
+    if cut_after == Some('\u{200d}') {
+        return Err("the cut left a joiner with nothing after it".to_string());
+    }
+    // A flag is two regional indicators, so a cut inside a run of them is
+    // safe after an even count and splits a flag after an odd one.
+    let trailing = kept
+        .chars()
+        .rev()
+        .take_while(|c| is_regional_indicator(*c))
+        .count();
+    if cut_before.is_some_and(is_regional_indicator) && trailing % 2 == 1 {
+        return Err("the cut landed between the two halves of a flag".to_string());
+    }
+    Ok(())
+}
+
+#[test]
+fn the_ceiling_holds_on_generated_pages() {
+    let mut rng = XorShift(0x9e37_79b9_7f4a_7c15);
+    let trimmer = Trimmer::new(TrimSettings::default());
+    let raw = Trimmer::new(TrimSettings::untouched());
+
+    for case in 0..2_000 {
+        let seed = rng.0;
+        let pieces = 1 + rng.below(40);
+        let text = rng.page(pieces);
+        let whole = max_tokens(&text);
+        assert!(
+            approx_tokens(&text) <= whole,
+            "case {case} seed {seed:#x}: the estimate read above the ceiling on {text:?}"
+        );
+
+        let ceilings = [
+            0,
+            1,
+            2,
+            rng.below(whole + 1),
+            whole / 2,
+            whole.saturating_sub(1),
+            whole,
+            whole + 1,
+        ];
+        for ceiling in ceilings {
+            if let Err(broken) = check_truncation(&text, ceiling) {
+                panic!("case {case} seed {seed:#x} ceiling {ceiling} on {text:?}: {broken}");
+            }
+            for (label, trimmer) in [("default", &trimmer), ("untouched", &raw)] {
+                let trimmed = trimmer.trim(&text, Some(ceiling));
+                assert!(
+                    max_tokens(&trimmed.text) <= ceiling,
+                    "case {case} seed {seed:#x} ceiling {ceiling} {label} trim of {text:?} \
+                     came back costing {}",
+                    max_tokens(&trimmed.text)
+                );
+            }
+        }
+    }
+}
+
+#[test]
+fn learning_from_generated_crawls_never_panics_and_the_ceiling_still_holds() {
+    let mut rng = XorShift(0x2545_f491_4f6c_dd1d);
+    for case in 0..200 {
+        let seed = rng.0;
+        let shared_pieces = 1 + rng.below(6);
+        let shared = rng.page(shared_pieces);
+        let pages: Vec<String> = (0..3 + rng.below(4))
+            .map(|_| {
+                let pieces = rng.below(20);
+                format!("{shared}\n{}\n{shared}", rng.page(pieces))
+            })
+            .collect();
+        let mut trimmer = Trimmer::new(TrimSettings::default());
+        trimmer.learn(&pages);
+
+        let costs: Vec<usize> = pages.iter().map(|page| max_tokens(page)).collect();
+        let total = rng.below(costs.iter().sum::<usize>() + 1);
+        let budget = TokenBudget::total(total).and_per_page(1 + rng.below(200));
+        let shares = budget.split(&costs);
+        assert!(
+            shares.iter().sum::<usize>() <= total,
+            "case {case} seed {seed:#x}"
+        );
+
+        let spent: usize = pages
+            .iter()
+            .zip(&shares)
+            .map(|(page, share)| max_tokens(&trimmer.trim(page, Some(*share)).text))
+            .sum();
+        assert!(
+            spent <= total,
+            "case {case} seed {seed:#x}: {spent} tokens against a total of {total}"
+        );
+    }
+}
+
+#[test]
+fn a_cut_never_leaves_half_an_emoji_sequence() {
+    // A family is four people held together by joiners, and a flag is two
+    // regional indicators. Neither is a place to cut, and neither was covered
+    // by the rule about marks: the joiner leans on what came before it, but
+    // what comes after the joiner leans on it just as hard.
+    let cases = [
+        "👨\u{200d}👩\u{200d}👧\u{200d}👦",
+        "🧑\u{1f3fd}\u{200d}🚒🧑\u{1f3fd}\u{200d}🚒",
+        "🇺🇸🇫🇷🇩🇪",
+        "蜘蛛👨\u{200d}👩\u{200d}👧\u{200d}👦云",
+    ];
+    for text in cases {
+        for ceiling in 0..=(max_tokens(text) + 2) {
+            if let Err(broken) = check_truncation(text, ceiling) {
+                panic!("a ceiling of {ceiling} on {text:?}: {broken}");
+            }
+        }
+    }
+}
+
+#[test]
+fn a_ceiling_of_zero_and_an_empty_page_hand_back_nothing_without_complaint() {
+    assert_eq!(truncate_to_tokens("", 0), (String::new(), 0));
+    assert_eq!(truncate_to_tokens("", 10), (String::new(), 0));
+    assert_eq!(truncate_to_tokens("   \n\t  ", 0).0, "");
+    let (out, dropped) = truncate_to_tokens("Some text here.", 0);
+    assert_eq!(out, "");
+    assert_eq!(dropped, max_tokens("Some text here."));
+
+    let trimmer = Trimmer::new(TrimSettings::default());
+    for text in ["", " ", "\n\n\n", "<div></div>", "data:", "[](", "- "] {
+        let trimmed = trimmer.trim(text, Some(0));
+        assert_eq!(max_tokens(&trimmed.text), 0, "{text:?}");
+        let _ = trimmer.trim(text, None);
+        let _ = trimmer.trim(text, Some(usize::MAX));
+    }
+}

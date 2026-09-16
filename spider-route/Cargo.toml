@@ -1,6 +1,6 @@
 [package]
 name = "spider-route"
-description = "A small local model that picks the cheapest Spider Cloud request settings likely to succeed."
+description = "Local rules that pick the cheapest Spider Cloud request settings likely to succeed."
 readme = "README.md"
 documentation = "https://docs.rs/spider-route"
 keywords = ["classifier", "routing", "spider", "web-scraper"]

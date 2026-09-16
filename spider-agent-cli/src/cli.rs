@@ -144,7 +144,7 @@ pub struct Global {
     #[arg(long, global = true, value_enum)]
     pub format: Option<Format>,
 
-    /// Write results to this file instead of stdout.
+    /// Write results to this file instead of stdout. A dash is stdout.
     #[arg(short = 'o', long, global = true, value_name = "FILE")]
     pub output: Option<String>,
 
@@ -173,11 +173,11 @@ pub struct Global {
     /// The most the whole run may spend, in credits. The first call on a page
     /// always goes out, because a price is not known until it is asked for.
     /// The cap stops the escalations after it and the pages after that.
-    #[arg(long, global = true, value_name = "CREDITS")]
+    #[arg(long, global = true, value_name = "CREDITS", value_parser = credits)]
     pub budget: Option<f64>,
 
     /// The most any one page may spend, in credits. Fractions survive here.
-    #[arg(long, global = true, value_name = "CREDITS")]
+    #[arg(long, global = true, value_name = "CREDITS", value_parser = credits)]
     pub max_per_page: Option<f64>,
 
     /// The most calls one page may take, first attempt and escalations
@@ -225,6 +225,24 @@ pub struct Global {
     /// Print a line on stderr for every page and every escalation.
     #[arg(short, long, global = true)]
     pub verbose: bool,
+}
+
+/// An amount of credits a caller typed.
+///
+/// `f64` reads `nan`, `inf` and a negative number as numbers. As a cap, a
+/// NaN compares false against everything and a negative is spent before the
+/// first page, so each is a cap that does not do what the caller who typed
+/// one meant. Refused here, where the answer is a usage failure.
+fn credits(text: &str) -> Result<f64, String> {
+    let value: f64 = text
+        .parse()
+        .map_err(|_| format!("{text} is not a number of credits"))?;
+    if !value.is_finite() || value < 0.0 {
+        return Err(format!(
+            "{text} is not a number of credits. Give a number that is zero or more."
+        ));
+    }
+    Ok(value)
 }
 
 /// How results are written.

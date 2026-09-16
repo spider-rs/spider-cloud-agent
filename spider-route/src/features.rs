@@ -819,8 +819,15 @@ const fn observation_bucket(count: u32) -> usize {
 }
 
 /// Success rate, bucketed. Anything outside zero to one is clamped, because a
-/// caller's arithmetic is not this crate's to trust.
+/// caller's arithmetic is not this crate's to trust. That includes the NaN a
+/// caller gets from dividing no successes by no attempts: `clamp` passes NaN
+/// through and every comparison below is then false, which would land it in
+/// the top band, so it is read as no history instead.
 fn success_bucket(rate: f32) -> usize {
+    if rate.is_nan() {
+        return 0;
+    }
+
     let rate = rate.clamp(0.0, 1.0);
 
     if rate < 0.2 {

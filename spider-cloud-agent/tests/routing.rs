@@ -486,6 +486,76 @@ async fn exploring_never_reaches_past_the_budget() {
 }
 
 #[tokio::test]
+async fn exploring_never_contradicts_a_setting_the_caller_made() {
+    let path = std::env::temp_dir().join(format!(
+        "spider-routing-pinned-{}.jsonl",
+        std::process::id()
+    ));
+    let _ = std::fs::remove_file(&path);
+
+    // A rate of one explores every page, and an explored arm is always a
+    // different action from the routed one. The caller pinned the plain
+    // fetch, so whatever arm is drawn contradicts it.
+    let fake = Fake::always(200, SERVED);
+    let spider = client(&fake)
+        .explore(1.0)
+        .recorder(JsonlRecorder::create(&path).expect("a file"))
+        .build()
+        .expect("a client");
+
+    let page = spider
+        .scrape("https://example.com/a")
+        .mode(RequestMode::Http)
+        .send()
+        .await
+        .expect("a page");
+
+    let sent = fake.next_request();
+    assert!(sent.contains("\"request\":\"http\""), "{sent}");
+
+    // What the outcome reports is the action that was sent, not one that was
+    // drawn and then overruled.
+    let decision = page.route.as_ref().expect("the decision on the outcome");
+    assert_eq!(decision.mode(), RequestMode::Http, "{decision:?}");
+    assert_eq!(decision.source, RouteSource::Caller, "{decision:?}");
+
+    let rows = std::fs::read_to_string(&path).expect("the rows back");
+    assert!(
+        rows.contains("\"mode\":\"http\""),
+        "the row claims an action that was never sent: {rows}"
+    );
+    let _ = std::fs::remove_file(&path);
+}
+
+/// A login wall, served as a page with a status the site chose.
+const WALL: &str = r#"[{"url":"https://example.com/account","status":401,"content":null,"costs":{"total_cost":0.5},"error":"sign in first"}]"#;
+
+#[tokio::test]
+async fn a_login_wall_turns_on_the_session_when_the_caller_supplied_cookies() {
+    let fake = Fake::always(200, WALL);
+    let spider = client(&fake)
+        .budget(Budget::default().with_attempts(2))
+        .build()
+        .expect("a client");
+
+    let mut call = spider.scrape("https://example.com/account");
+    call.params_mut().cookies = Some("sid=abc".into());
+    let _ = call.send().await;
+
+    let first = fake.next_request();
+    assert!(!first.contains("\"session\":true"), "{first}");
+
+    // The second call is the one the session step produces. Without it the
+    // wall is read as final and nothing else is sent.
+    let second = fake.next_request();
+    assert!(
+        second.contains("\"session\":true"),
+        "the session rung was not applied: {second}"
+    );
+    assert!(second.contains("sid=abc"), "{second}");
+}
+
+#[tokio::test]
 async fn the_site_store_stays_bounded_across_many_sites() {
     let fake = Fake::always(200, SERVED);
     let spider = client(&fake)

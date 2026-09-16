@@ -26,7 +26,7 @@ use url::Url;
 use spider_cloud_agent::{Budget, Credits, Need};
 
 use crate::cli::{Format, Global, Goal, RunArgs};
-use crate::commands::{error_item, finish, is_fatal, worsen};
+use crate::commands::{close_caps, finish, record};
 use crate::exit::{Code, Failure, Run};
 use crate::progress::Log;
 use crate::records::{self, Report};
@@ -141,10 +141,7 @@ pub async fn run(global: &Global, args: &RunArgs, log: Log) -> Run<Code> {
                 if failure.code == Code::Budget {
                     stopped = Some("budget");
                 }
-                emitter.write(error_item(Some(&url), &failure))?;
-                let fatal = is_fatal(failure.code);
-                worsen(&mut worst, failure);
-                if fatal {
+                if record(&mut emitter, &mut report, &mut worst, Some(&url), failure)? {
                     break;
                 }
             }
@@ -152,25 +149,7 @@ pub async fn run(global: &Global, args: &RunArgs, log: Log) -> Run<Code> {
     }
 
     report.elapsed_ms = started.elapsed().as_millis() as u64;
-    report.stopped = stopped;
-    // A spend cap that stopped the run leaves under its own code, so a caller
-    // can tell a run that finished from one that ran out of money without
-    // reading the report. A page limit is not that: it is the run doing what
-    // it was told, so it leaves with zero.
-    if matches!(stopped, Some("budget") | Some("time")) {
-        worsen(
-            &mut worst,
-            Failure::new(
-                Code::Budget,
-                format!(
-                    "stopped on {}, after {} page(s) and {:.3} credits",
-                    stopped.unwrap_or("a cap"),
-                    report.served + report.refused,
-                    spent.get()
-                ),
-            ),
-        );
-    }
+    close_caps(&mut report, stopped, &mut worst);
     finish(&mut emitter, &report, &log, worst)
 }
 

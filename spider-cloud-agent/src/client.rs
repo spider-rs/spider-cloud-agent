@@ -164,15 +164,12 @@ impl Spider {
     /// than quietly sending the traffic somewhere else.
     pub fn with_key(key: impl Into<String>) -> Result<Spider> {
         let base = Transport::base_url_from_env()?;
-        // Building an http client fails only when the TLS stack will not start,
-        // and the plain constructor is the same call without the user agent. The
-        // key is carried through either way: a client that quietly forgot its key
-        // would fail later and somewhere else.
-        let client = reqwest::Client::builder()
-            .user_agent(USER_AGENT)
-            .build()
-            .unwrap_or_default();
-        let transport = Transport::with_client(key, base, client);
+        // Building an http client fails only when the TLS stack will not start.
+        // That failure is reported rather than papered over: the fallback this
+        // used to take was `reqwest::Client::default()`, which builds the same
+        // client and panics when it cannot, so the one case it was written for
+        // was the one case it took the caller's process down in.
+        let transport = Transport::with_base(key, base)?;
         Ok(Spider {
             transport: Arc::new(transport),
             budget: Budget::default(),
@@ -236,11 +233,11 @@ impl Spider {
 
     /// What is left on the account.
     pub async fn credits(&self) -> Result<Credits> {
-        let reply = self
-            .transport
-            .get(route::DATA_CREDITS, &[], &[])
-            .await?
-            .into_result()?;
+        let reply = crate::ops::data::read_under_wall(
+            self,
+            self.transport.get(route::DATA_CREDITS, &[], &[]),
+        )
+        .await?;
         crate::ops::data::credits_from(&reply)
     }
 

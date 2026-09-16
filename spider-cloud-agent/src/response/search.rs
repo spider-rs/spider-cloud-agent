@@ -64,8 +64,14 @@ pub struct SearchEntry {
     #[serde(default)]
     pub description: Option<String>,
     /// The result address, as the engine wrote it.
-    #[serde(default)]
+    #[serde(default, deserialize_with = "null_as_empty")]
     pub url: String,
+}
+
+/// A missing or null address reads as an empty one, so one entry the engine
+/// could not name does not lose the whole list.
+fn null_as_empty<'de, D: serde::Deserializer<'de>>(deserializer: D) -> Result<String, D::Error> {
+    Ok(Option::<String>::deserialize(deserializer)?.unwrap_or_default())
 }
 
 impl SearchEntry {
@@ -100,6 +106,19 @@ mod tests {
         assert_eq!(results.len(), 2);
         assert_eq!(results.entries()[0].title.as_deref(), Some("Example"));
         assert!(results.entries()[1].title.is_none());
+        assert_eq!(results.urls().len(), 1);
+    }
+
+    #[test]
+    fn a_null_field_on_one_entry_does_not_lose_the_whole_list() {
+        let json = r#"{"content":[
+            {"title":null,"description":null,"url":null},
+            {"title":"Example","url":"https://example.com/a"}
+        ]}"#;
+        let results: SearchResults = serde_json::from_str(json).expect("search results");
+        assert_eq!(results.len(), 2);
+        assert_eq!(results.entries()[0].url, "");
+        assert!(results.entries()[0].url().is_none());
         assert_eq!(results.urls().len(), 1);
     }
 

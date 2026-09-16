@@ -10,7 +10,7 @@ use crate::cli::{
     CrawlArgs, ExtractArgs, FetchArgs, Format, Global, Goal, LinksArgs, ScrapeArgs, ScreenshotArgs,
     TransformArgs,
 };
-use crate::commands::{absorb, error_item, finish, is_fatal, worsen};
+use crate::commands::{absorb, close_caps, finish, record, Caps};
 use crate::exit::{Code, Failure, Run};
 use crate::progress::Log;
 use crate::records::{self, Report};
@@ -30,11 +30,24 @@ pub async fn scrape(global: &Global, args: &ScrapeArgs, log: Log) -> Run<Code> {
         ..Report::default()
     };
     let started = Instant::now();
+    let caps = Caps::new(global, started);
     let mut worst = None;
+    let mut stopped = None;
 
     for url in &urls {
+        if let Some(reason) = caps.spent(&report) {
+            stopped = Some(reason);
+            break;
+        }
         log.note(format!("reading {url}"));
-        let call = pin!(spider.scrape(url.clone()).need(need.clone()), global, links);
+        let call = pin!(
+            spider
+                .scrape(url.clone())
+                .need(need.clone())
+                .budget(caps.budget(global, &report)),
+            global,
+            links
+        );
         match call.send_all().await {
             Ok(outcome) => {
                 if let Some(route) = &outcome.route {
@@ -48,11 +61,13 @@ pub async fn scrape(global: &Global, args: &ScrapeArgs, log: Log) -> Run<Code> {
                 absorb(&mut emitter, &mut report, outcome)?;
             }
             Err(error) => {
-                let failure = Failure::from(error);
-                emitter.write(error_item(Some(url), &failure))?;
-                let fatal = is_fatal(failure.code);
-                worsen(&mut worst, failure);
-                if fatal {
+                if record(
+                    &mut emitter,
+                    &mut report,
+                    &mut worst,
+                    Some(url),
+                    Failure::from(error),
+                )? {
                     break;
                 }
             }
@@ -60,6 +75,7 @@ pub async fn scrape(global: &Global, args: &ScrapeArgs, log: Log) -> Run<Code> {
     }
 
     report.elapsed_ms = started.elapsed().as_millis() as u64;
+    close_caps(&mut report, stopped, &mut worst);
     finish(&mut emitter, &report, &log, worst)
 }
 
@@ -103,9 +119,13 @@ pub async fn fetch(global: &Global, args: &FetchArgs, log: Log) -> Run<Code> {
     match call.send_all().await {
         Ok(outcome) => absorb(&mut emitter, &mut report, outcome)?,
         Err(error) => {
-            let failure = Failure::from(error);
-            emitter.write(error_item(Some(target), &failure))?;
-            worsen(&mut worst, failure);
+            record(
+                &mut emitter,
+                &mut report,
+                &mut worst,
+                Some(target),
+                Failure::from(error),
+            )?;
         }
     }
 
@@ -124,11 +144,24 @@ pub async fn crawl(global: &Global, args: &CrawlArgs, log: Log) -> Run<Code> {
         ..Report::default()
     };
     let started = Instant::now();
+    let caps = Caps::new(global, started);
     let mut worst = None;
+    let mut stopped = None;
 
     for url in &urls {
+        if let Some(reason) = caps.spent(&report) {
+            stopped = Some(reason);
+            break;
+        }
         log.note(format!("crawling {url}"));
-        let mut call = pin!(spider.crawl(url.clone()).need(need.clone()), global, links);
+        let mut call = pin!(
+            spider
+                .crawl(url.clone())
+                .need(need.clone())
+                .budget(caps.budget(global, &report)),
+            global,
+            links
+        );
         if let Some(limit) = args.limit {
             call = call.limit(limit);
         }
@@ -138,11 +171,13 @@ pub async fn crawl(global: &Global, args: &CrawlArgs, log: Log) -> Run<Code> {
         match call.send_all().await {
             Ok(outcome) => absorb(&mut emitter, &mut report, outcome)?,
             Err(error) => {
-                let failure = Failure::from(error);
-                emitter.write(error_item(Some(url), &failure))?;
-                let fatal = is_fatal(failure.code);
-                worsen(&mut worst, failure);
-                if fatal {
+                if record(
+                    &mut emitter,
+                    &mut report,
+                    &mut worst,
+                    Some(url),
+                    Failure::from(error),
+                )? {
                     break;
                 }
             }
@@ -150,6 +185,7 @@ pub async fn crawl(global: &Global, args: &CrawlArgs, log: Log) -> Run<Code> {
     }
 
     report.elapsed_ms = started.elapsed().as_millis() as u64;
+    close_caps(&mut report, stopped, &mut worst);
     finish(&mut emitter, &report, &log, worst)
 }
 
@@ -164,19 +200,34 @@ pub async fn extract(global: &Global, args: &ExtractArgs, log: Log) -> Run<Code>
         ..Report::default()
     };
     let started = Instant::now();
+    let caps = Caps::new(global, started);
     let mut worst = None;
+    let mut stopped = None;
 
     for url in &urls {
+        if let Some(reason) = caps.spent(&report) {
+            stopped = Some(reason);
+            break;
+        }
         log.note(format!("extracting from {url}"));
-        let call = pin!(spider.scrape(url.clone()).need(need.clone()), global, links);
+        let call = pin!(
+            spider
+                .scrape(url.clone())
+                .need(need.clone())
+                .budget(caps.budget(global, &report)),
+            global,
+            links
+        );
         match call.send_all().await {
             Ok(outcome) => absorb(&mut emitter, &mut report, outcome)?,
             Err(error) => {
-                let failure = Failure::from(error);
-                emitter.write(error_item(Some(url), &failure))?;
-                let fatal = is_fatal(failure.code);
-                worsen(&mut worst, failure);
-                if fatal {
+                if record(
+                    &mut emitter,
+                    &mut report,
+                    &mut worst,
+                    Some(url),
+                    Failure::from(error),
+                )? {
                     break;
                 }
             }
@@ -184,6 +235,7 @@ pub async fn extract(global: &Global, args: &ExtractArgs, log: Log) -> Run<Code>
     }
 
     report.elapsed_ms = started.elapsed().as_millis() as u64;
+    close_caps(&mut report, stopped, &mut worst);
     finish(&mut emitter, &report, &log, worst)
 }
 
@@ -197,11 +249,22 @@ pub async fn links(global: &Global, args: &LinksArgs, log: Log) -> Run<Code> {
         ..Report::default()
     };
     let started = Instant::now();
+    let caps = Caps::new(global, started);
     let mut worst = None;
+    let mut stopped = None;
 
     for url in &urls {
+        if let Some(reason) = caps.spent(&report) {
+            stopped = Some(reason);
+            break;
+        }
         log.note(format!("reading the links on {url}"));
-        let call = pin!(spider.links(url.clone()), global);
+        let call = pin!(
+            spider
+                .links(url.clone())
+                .budget(caps.budget(global, &report)),
+            global
+        );
         match call.send_all().await {
             Ok(outcome) => {
                 report.attempts += outcome.attempts.len();
@@ -223,11 +286,13 @@ pub async fn links(global: &Global, args: &LinksArgs, log: Log) -> Run<Code> {
                 }
             }
             Err(error) => {
-                let failure = Failure::from(error);
-                emitter.write(error_item(Some(url), &failure))?;
-                let fatal = is_fatal(failure.code);
-                worsen(&mut worst, failure);
-                if fatal {
+                if record(
+                    &mut emitter,
+                    &mut report,
+                    &mut worst,
+                    Some(url),
+                    Failure::from(error),
+                )? {
                     break;
                 }
             }
@@ -235,6 +300,7 @@ pub async fn links(global: &Global, args: &LinksArgs, log: Log) -> Run<Code> {
     }
 
     report.elapsed_ms = started.elapsed().as_millis() as u64;
+    close_caps(&mut report, stopped, &mut worst);
     finish(&mut emitter, &report, &log, worst)
 }
 
@@ -257,19 +323,33 @@ pub async fn screenshot(global: &Global, args: &ScreenshotArgs, log: Log) -> Run
         ..Report::default()
     };
     let started = Instant::now();
+    let caps = Caps::new(global, started);
     let mut worst = None;
+    let mut stopped = None;
 
     for url in &urls {
+        if let Some(reason) = caps.spent(&report) {
+            stopped = Some(reason);
+            break;
+        }
         log.note(format!("shooting {url}"));
-        let call = pin!(spider.screenshot(url.clone()), global, links);
+        let call = pin!(
+            spider
+                .screenshot(url.clone())
+                .budget(caps.budget(global, &report)),
+            global,
+            links
+        );
         match call.send_all().await {
             Ok(outcome) => absorb(&mut emitter, &mut report, outcome)?,
             Err(error) => {
-                let failure = Failure::from(error);
-                emitter.write(error_item(Some(url), &failure))?;
-                let fatal = is_fatal(failure.code);
-                worsen(&mut worst, failure);
-                if fatal {
+                if record(
+                    &mut emitter,
+                    &mut report,
+                    &mut worst,
+                    Some(url),
+                    Failure::from(error),
+                )? {
                     break;
                 }
             }
@@ -277,6 +357,7 @@ pub async fn screenshot(global: &Global, args: &ScreenshotArgs, log: Log) -> Run
     }
 
     report.elapsed_ms = started.elapsed().as_millis() as u64;
+    close_caps(&mut report, stopped, &mut worst);
     finish(&mut emitter, &report, &log, worst)
 }
 
@@ -303,9 +384,13 @@ pub async fn transform(global: &Global, args: &TransformArgs, log: Log) -> Run<C
     match call.send_all().await {
         Ok(outcome) => absorb(&mut emitter, &mut report, outcome)?,
         Err(error) => {
-            let failure = Failure::from(error);
-            emitter.write(error_item(None, &failure))?;
-            worsen(&mut worst, failure);
+            record(
+                &mut emitter,
+                &mut report,
+                &mut worst,
+                None,
+                Failure::from(error),
+            )?;
         }
     }
 

@@ -274,9 +274,14 @@ enum Class {
 fn classify(c: char) -> Class {
     if c.is_ascii_alphanumeric() {
         Class::Word
-    } else if c.is_whitespace() {
+    } else if c.is_ascii_whitespace() {
         Class::Space
     } else {
+        // Whitespace outside ASCII, the ideographic space above all, is
+        // costed by its bytes like any other wide character. Folded into a
+        // space run it would cost half a token, which is less than the
+        // estimate charges for it, and the ceiling must never read below
+        // the estimate.
         Class::Other
     }
 }
@@ -354,23 +359,24 @@ impl TokenBudget {
             return capped;
         };
 
-        if capped.iter().sum::<usize>() <= total {
+        // Summed and multiplied in a wider type. A cost is a page's token
+        // count and a total is a caller's number, and the product of the two
+        // does not have to fit in a usize. A wrapped sum reads as already
+        // fitting and hands back every page uncut.
+        let weight: u128 = capped.iter().map(|cost| *cost as u128).sum();
+        if weight <= total as u128 {
             return capped;
         }
 
         // Hand every page its share of the total by weight, then give the
         // remainder to the pages that lost the most to rounding, so the shares
         // add up to the total exactly rather than a few short.
-        let weight: usize = capped.iter().sum();
-        if weight == 0 {
-            return capped;
-        }
-
         let mut shares: Vec<usize> = Vec::with_capacity(capped.len());
-        let mut remainders: Vec<(usize, usize)> = Vec::with_capacity(capped.len());
+        let mut remainders: Vec<(u128, usize)> = Vec::with_capacity(capped.len());
         for (index, cost) in capped.iter().enumerate() {
-            let exact = cost * total;
-            shares.push(exact / weight);
+            let exact = *cost as u128 * total as u128;
+            // The quotient is at most the total, so it fits.
+            shares.push(usize::try_from(exact / weight).unwrap_or(total));
             remainders.push((exact % weight, index));
         }
 
@@ -523,6 +529,28 @@ mod tests {
     }
 
     #[test]
+    fn whitespace_outside_ascii_does_not_pull_the_ceiling_under_the_estimate() {
+        // The ideographic space is three bytes, which the estimate charges two
+        // tokens for. Folded into a space run it cost half a token.
+        for text in [
+            "\u{3000}",
+            "\u{3000}\u{3000}\u{3000}",
+            "\u{a0}",
+            "\u{2003}\u{2009}",
+            "漢\u{3000}漢",
+            "a\u{3000}b",
+            "\u{feff}\u{3000}",
+        ] {
+            assert!(
+                approx_tokens(text) <= max_tokens(text),
+                "the ceiling read {} under the estimate {} on {text:?}",
+                max_tokens(text),
+                approx_tokens(text)
+            );
+        }
+    }
+
+    #[test]
     fn a_run_that_looks_like_a_hash_costs_more_than_a_run_that_looks_like_a_word() {
         assert!(max_tokens("a3f9c2e1") > max_tokens("elephant"));
         assert!(max_tokens("HTML") > max_tokens("html"));
@@ -575,6 +603,24 @@ mod tests {
         let shares = budget.split(&[1000, 1000, 1000]);
         assert_eq!(shares, vec![200, 200, 200]);
         assert_eq!(shares.iter().sum::<usize>(), 600);
+    }
+
+    #[test]
+    fn a_split_holds_its_total_on_costs_too_large_to_multiply() {
+        // Two costs that overflow when added, let alone when multiplied by
+        // the total. A wrapped sum reads as already fitting and hands back
+        // shares of nine quintillion against a total of three.
+        let budget = TokenBudget::total(3);
+        let shares = budget.split(&[usize::MAX / 2, usize::MAX / 2, 4]);
+        assert!(
+            shares.iter().sum::<usize>() <= 3,
+            "shares {shares:?} against a total of 3"
+        );
+
+        let budget = TokenBudget::total(usize::MAX / 4);
+        let shares = budget.split(&[usize::MAX / 2, usize::MAX / 2]);
+        assert!(shares.iter().all(|share| *share <= usize::MAX / 4));
+        assert!(shares.iter().sum::<usize>() <= usize::MAX / 4);
     }
 
     #[test]

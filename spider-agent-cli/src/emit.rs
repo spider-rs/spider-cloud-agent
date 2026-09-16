@@ -105,6 +105,10 @@ impl Emitter {
         rules: FileRules,
     ) -> Run<Emitter> {
         let dest = match (output, output_dir) {
+            // A dash names stdin on every flag that reads, so on the flag
+            // that writes it names stdout. Read as a file name it would
+            // create a file called `-` in the working directory.
+            (Some("-"), _) => Dest::Stream(Box::new(std::io::stdout())),
             (Some(path), _) => {
                 Dest::Stream(Box::new(BufWriter::new(open_file(Path::new(path), rules)?)))
             }

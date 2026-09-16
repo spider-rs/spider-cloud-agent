@@ -631,6 +631,19 @@ fn hangs_on_the_character_before(c: char) -> bool {
     )
 }
 
+/// Whether a character only means anything attached to the one after it.
+///
+/// The zero width joiner. It glues two emoji into one picture, and a cut
+/// after it hands back a joiner with nothing to join.
+fn hangs_on_the_character_after(c: char) -> bool {
+    c == '\u{200d}'
+}
+
+/// Whether a character is one half of a flag.
+fn is_regional_indicator(c: char) -> bool {
+    matches!(c, '\u{1f1e6}'..='\u{1f1ff}')
+}
+
 /// The byte index of the last sentence end that fits inside `room` tokens.
 ///
 /// Falls back to the last place a word or a character ends, and to zero when
@@ -640,6 +653,17 @@ fn last_boundary_within(text: &str, room: usize) -> usize {
     let mut sentence_end = 0usize;
     let mut word_end = 0usize;
     let mut character_end = 0usize;
+
+    // How many regional indicators in a row end at this character. A flag is
+    // two of them, so a cut is safe after an even count and splits a flag
+    // after an odd one.
+    let mut regional_run = 0usize;
+    // Whether a cut may land in front of the character being read, which is
+    // the verdict on the character before it. The word boundary at a space is
+    // in front of the space, so it is the character before the space that has
+    // to allow it, and a joiner does not.
+    let mut may_cut_before = true;
+    let mut after_a_space = false;
 
     let mut chars = text.char_indices().peekable();
     while let Some((index, c)) = chars.next() {
@@ -651,21 +675,41 @@ fn last_boundary_within(text: &str, room: usize) -> usize {
         let next_index = index + c.len_utf8();
         let next = chars.peek().map(|(_, next)| *next);
         let followed_by_space = next.map(char::is_whitespace).unwrap_or(true);
+        regional_run = if is_regional_indicator(c) {
+            regional_run + 1
+        } else {
+            0
+        };
         // A mark that leans on this character has to travel with it, so none
-        // of the three boundaries may land between the two.
-        let may_cut_after = !next.map(hangs_on_the_character_before).unwrap_or(false);
+        // of the three boundaries may land between the two. The joiner leans
+        // both ways: what follows it is part of the same picture, and a cut
+        // after it leaves a joiner with nothing to join.
+        let may_cut_after = !next.map(hangs_on_the_character_before).unwrap_or(false)
+            && !hangs_on_the_character_after(c)
+            && regional_run.is_multiple_of(2);
 
         if may_cut_after {
-            character_end = next_index;
-            if ends_a_wide_sentence(c) || (ends_a_sentence(c) && followed_by_space) {
-                sentence_end = next_index;
-            }
             if c.is_whitespace() {
-                word_end = index;
-            } else if breaks_without_a_space(c) {
-                word_end = next_index;
+                // A cut anywhere in a run of whitespace lands at the start of
+                // the run once the trailing whitespace goes, so the start is
+                // the boundary, and the character before the run is the one
+                // that has to allow it.
+                if may_cut_before && !after_a_space {
+                    word_end = index;
+                    character_end = index;
+                }
+            } else {
+                character_end = next_index;
+                if ends_a_wide_sentence(c) || (ends_a_sentence(c) && followed_by_space) {
+                    sentence_end = next_index;
+                }
+                if breaks_without_a_space(c) {
+                    word_end = next_index;
+                }
             }
         }
+        may_cut_before = may_cut_after;
+        after_a_space = c.is_whitespace();
     }
 
     // A sentence end reads best, a word end next. Falling all the way through

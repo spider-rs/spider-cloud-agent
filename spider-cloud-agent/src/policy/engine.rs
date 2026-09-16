@@ -261,10 +261,21 @@ impl AttemptState {
     }
 
     /// Fold in what an attempt saw. Call this once per call, before deciding.
+    ///
+    /// A cost that cannot be a bill is counted as nothing. A negative figure
+    /// would read as a refund and pull the running total under the cap, and a
+    /// figure that is not a number poisons every sum it touches, after which no
+    /// sum is ever over the cap. Either one arriving on the wire would switch
+    /// the credit cap off for the rest of the operation.
     pub fn record(&mut self, observed: &Observed) {
+        let cost = if observed.cost.get().is_finite() && observed.cost.get() > 0.0 {
+            observed.cost
+        } else {
+            Credits::ZERO
+        };
         self.attempts = self.attempts.saturating_add(1);
-        self.spent += observed.cost;
-        self.last_cost = observed.cost;
+        self.spent += cost;
+        self.last_cost = cost;
         self.elapsed = self.elapsed.saturating_add(observed.elapsed);
     }
 
@@ -827,6 +838,21 @@ mod tests {
         assert_eq!(s.spent, Credits(7.0));
         assert_eq!(s.last_cost, Credits(4.0));
         assert_eq!(s.elapsed, Duration::from_secs(3));
+    }
+
+    #[test]
+    fn a_cost_that_cannot_be_a_bill_is_counted_as_nothing() {
+        let mut s = state();
+        s.record(&Observed::seen(200, Some(403)).costing(Credits(3.0)));
+        s.record(&Observed::seen(200, Some(403)).costing(Credits(-100.0)));
+        assert_eq!(s.spent, Credits(3.0));
+        assert_eq!(s.last_cost, Credits::ZERO);
+
+        s.record(&Observed::seen(200, Some(403)).costing(Credits(f64::NAN)));
+        assert_eq!(s.spent, Credits(3.0));
+        s.record(&Observed::seen(200, Some(403)).costing(Credits(f64::INFINITY)));
+        assert_eq!(s.spent, Credits(3.0));
+        assert_eq!(s.attempts, 4);
     }
 
     #[test]

@@ -15,15 +15,31 @@ use crate::emit::{Emitter, FileRules};
 use crate::exit::{Code, Failure, Run};
 
 /// Read a file, or stdin when the name is a single dash.
+///
+/// A byte order mark at the start is dropped. An editor on Windows writes one
+/// in front of a list of addresses or a selector map, and it is part of
+/// neither: left in, the first address fails to parse and a JSON file is
+/// refused at its first byte.
 pub fn source(spec: &str) -> Run<String> {
-    if spec == "-" {
+    let text = if spec == "-" {
         let mut text = String::new();
         std::io::stdin()
             .read_to_string(&mut text)
             .map_err(|e| Failure::usage(format!("could not read stdin: {e}")))?;
-        return Ok(text);
+        text
+    } else {
+        std::fs::read_to_string(spec)
+            .map_err(|e| Failure::usage(format!("could not read {spec}: {e}")))?
+    };
+    Ok(without_bom(text))
+}
+
+/// The text with a leading byte order mark removed.
+fn without_bom(text: String) -> String {
+    match text.strip_prefix('\u{feff}') {
+        Some(rest) => rest.to_string(),
+        None => text,
     }
-    std::fs::read_to_string(spec).map_err(|e| Failure::usage(format!("could not read {spec}: {e}")))
 }
 
 /// The addresses to work on.
@@ -37,11 +53,7 @@ pub fn addresses(targets: &Targets) -> Run<Vec<Url>> {
         raw.extend(lines(&source(spec)?));
     }
     if raw.is_empty() && !std::io::stdin().is_terminal() {
-        let mut text = String::new();
-        std::io::stdin()
-            .read_to_string(&mut text)
-            .map_err(|e| Failure::usage(format!("could not read stdin: {e}")))?;
-        raw.extend(lines(&text));
+        raw.extend(lines(&source("-")?));
     }
     if raw.is_empty() {
         return Err(Failure::usage(
@@ -332,6 +344,20 @@ mod tests {
                 "https://example.com/a".to_string()
             ]
         );
+    }
+
+    #[test]
+    fn a_byte_order_mark_is_not_part_of_the_text() {
+        assert_eq!(
+            without_bom("\u{feff}https://example.com\n".to_string()),
+            "https://example.com\n"
+        );
+        assert_eq!(
+            without_bom("https://example.com\n".to_string()),
+            "https://example.com\n"
+        );
+        // Only the one at the start. One inside the text is the file's own.
+        assert_eq!(without_bom("a\u{feff}b".to_string()), "a\u{feff}b");
     }
 
     #[test]

@@ -16,6 +16,8 @@
 //!   [`MAX_REQUEST_BYTES`], so a client that keeps writing cannot grow the buffer
 //! - every connection has its own read timeout and the whole wait has a
 //!   deadline, so a client that connects and says nothing cannot hold the window
+//! - connections are read side by side, so a client that connects and says
+//!   nothing does not put the browser behind its timeout either
 //! - a request whose `state` does not match is refused and the wait continues,
 //!   so a local process cannot end the sign in by racing the browser to the port
 //! - the code alone is not enough. Redeeming it needs the PKCE verifier, which
@@ -56,6 +58,11 @@ pub const CONNECTION_TIMEOUT: Duration = Duration::from_secs(10);
 /// The most request head one connection may send. A browser redirect is a few
 /// hundred bytes; this is room to spare and still a bound.
 pub const MAX_REQUEST_BYTES: usize = 16 * 1024;
+
+/// How many connections are read at once. Past this the listener stops
+/// accepting until one finishes, so the browser waits behind at most one
+/// connection timeout rather than being dropped.
+pub const MAX_OPEN_CONNECTIONS: usize = 16;
 
 /// Everything RFC 3986 calls unreserved stays as it is. The CLI this was ported
 /// from encoded `-`, `.`, `_` and `~` as well, which decodes to the same string
@@ -280,6 +287,13 @@ fn authorize_url(endpoint: &str, params: &[(&str, &str)]) -> String {
 /// Anything that is not a valid callback is answered and dropped, and the wait
 /// continues until `deadline` runs out. That is deliberate: ending the flow on
 /// the first odd request would hand any local process a way to cancel a sign in.
+///
+/// Connections are read side by side, up to [`MAX_OPEN_CONNECTIONS`] at once.
+/// Read one after another, a connection that said nothing held the browser
+/// behind it for the whole of `per_connection`, and a local process that kept
+/// opening such connections could hold it until the deadline. The tasks live in
+/// a set that is dropped with this future, so a caller that gives up on the
+/// sign in leaves no task behind.
 async fn wait_for_code(
     listener: &TcpListener,
     state: &str,
@@ -287,6 +301,7 @@ async fn wait_for_code(
     per_connection: Duration,
 ) -> Result<Code> {
     let started = std::time::Instant::now();
+    let mut open: tokio::task::JoinSet<Callback> = tokio::task::JoinSet::new();
 
     loop {
         let left = deadline
@@ -294,49 +309,99 @@ async fn wait_for_code(
             .filter(|left| !left.is_zero())
             .ok_or_else(|| Error::Auth(timed_out(deadline)))?;
 
-        let accepted = match tokio::time::timeout(left, listener.accept()).await {
-            Err(_) => return Err(Error::Auth(timed_out(deadline))),
-            Ok(Err(e)) => return Err(Error::Auth(format!("the loopback listener failed: {e}"))),
-            Ok(Ok(accepted)) => accepted,
-        };
-        let (mut stream, peer) = accepted;
+        tokio::select! {
+            accepted = listener.accept(), if open.len() < MAX_OPEN_CONNECTIONS => {
+                let (stream, peer) = match accepted {
+                    Ok(accepted) => accepted,
+                    Err(e) => {
+                        // A peer that connected and left before it was
+                        // accepted surfaces here on some platforms, and so
+                        // does running out of descriptors. Neither is a reason
+                        // to end the sign in: the first is noise, and the
+                        // second is worth a pause and another try. The
+                        // deadline bounds both.
+                        accept_failed(&e).await;
+                        continue;
+                    }
+                };
 
-        // Binding loopback already excludes the network. This excludes a
-        // surprise, such as a platform that widens a loopback bind.
-        if !peer.ip().is_loopback() {
-            continue;
-        }
+                // Binding loopback already excludes the network. This excludes
+                // a surprise, such as a platform that widens a loopback bind.
+                if !peer.ip().is_loopback() {
+                    continue;
+                }
 
-        let read = per_connection.min(
-            deadline
-                .checked_sub(started.elapsed())
-                .unwrap_or(Duration::ZERO),
-        );
-        let head = match read_request_head(&mut stream, MAX_REQUEST_BYTES, read).await {
-            Ok(head) => head,
-            Err(reason) => {
-                log::debug!("a callback connection was dropped: {reason}");
-                continue;
+                let budget = per_connection.min(left);
+                let state = state.to_string();
+                open.spawn(async move { serve(stream, &state, budget).await });
             }
-        };
-
-        let outcome = request_target(&head)
-            .map(|target| read_callback(target, state))
-            .unwrap_or(Callback::Unrelated);
-
-        respond(&mut stream, matches!(outcome, Callback::Code(_))).await;
-
-        match outcome {
-            Callback::Code(code) => return Ok(code),
-            Callback::Denied(reason) => {
-                return Err(Error::Auth(format!("authorization denied: {reason}")))
+            Some(finished) = open.join_next(), if !open.is_empty() => {
+                match finished {
+                    Ok(Callback::Code(code)) => return Ok(code),
+                    Ok(Callback::Denied(reason)) => {
+                        return Err(Error::Auth(format!("authorization denied: {reason}")))
+                    }
+                    Ok(Callback::StateMismatch) => {
+                        log::warn!("a callback arrived with the wrong state and was refused");
+                    }
+                    Ok(Callback::Unrelated) => {}
+                    Err(e) => log::debug!("a callback connection ended early: {e}"),
+                }
             }
-            Callback::StateMismatch => {
-                log::warn!("a callback arrived with the wrong state and was refused");
-            }
-            Callback::Unrelated => {}
+            () = tokio::time::sleep(left) => return Err(Error::Auth(timed_out(deadline))),
         }
     }
+}
+
+/// How long the listener pauses after an accept error that is not one peer
+/// leaving, such as running out of descriptors.
+const ACCEPT_BACKOFF: Duration = Duration::from_millis(500);
+
+/// Log an accept error and, unless it was one peer going away, pause before
+/// the next attempt so a persistent failure does not spin until the deadline.
+async fn accept_failed(error: &std::io::Error) {
+    use std::io::ErrorKind;
+    match error.kind() {
+        ErrorKind::ConnectionAborted
+        | ErrorKind::ConnectionReset
+        | ErrorKind::ConnectionRefused
+        | ErrorKind::Interrupted
+        | ErrorKind::WouldBlock => {
+            log::debug!("a callback connection went away before it was read: {error}");
+        }
+        _ => {
+            log::warn!("the loopback listener could not accept a connection: {error}");
+            tokio::time::sleep(ACCEPT_BACKOFF).await;
+        }
+    }
+}
+
+/// Read one connection, answer it, and say what it was.
+///
+/// The answer is written under the same budget as the read. A browser that
+/// sends the callback and never reads the reply has still delivered the code,
+/// and the code must not wait on it.
+async fn serve(mut stream: TcpStream, state: &str, budget: Duration) -> Callback {
+    let head = match read_request_head(&mut stream, MAX_REQUEST_BYTES, budget).await {
+        Ok(head) => head,
+        Err(reason) => {
+            log::debug!("a callback connection was dropped: {reason}");
+            return Callback::Unrelated;
+        }
+    };
+
+    let outcome = request_target(&head)
+        .map(|target| read_callback(target, state))
+        .unwrap_or(Callback::Unrelated);
+
+    let ok = matches!(outcome, Callback::Code(_));
+    if tokio::time::timeout(budget, respond(&mut stream, ok))
+        .await
+        .is_err()
+    {
+        log::debug!("a callback connection never read its answer");
+    }
+    outcome
 }
 
 fn timed_out(deadline: Duration) -> String {
@@ -543,7 +608,13 @@ fn random_token() -> Result<String> {
 /// Windows has no `start` executable: it is a shell builtin, which is why the
 /// call goes through `cmd`. The empty argument is the window title `start`
 /// otherwise takes from a quoted URL.
+///
+/// The launcher gets no stdin and no stdout. It inherited the process's, and
+/// the command line tool's stdout is the payload stream: whatever `xdg-open`
+/// chose to print landed in front of the key that `login --print` writes there.
 fn open_browser(url: &str) {
+    use std::process::Stdio;
+
     let mut command = if cfg!(target_os = "macos") {
         let mut c = std::process::Command::new("open");
         c.arg(url);
@@ -557,7 +628,18 @@ fn open_browser(url: &str) {
         c.arg(url);
         c
     };
-    let _ = command.spawn();
+    command
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null());
+    // Reaped from a thread of its own. Dropped unwaited, the launcher stays a
+    // zombie for as long as the host process runs, and this crate runs inside
+    // processes that run for a long time.
+    if let Ok(mut child) = command.spawn() {
+        std::thread::spawn(move || {
+            let _ = child.wait();
+        });
+    }
 }
 
 #[cfg(test)]
@@ -864,6 +946,133 @@ mod tests {
         assert_eq!(code.expose(), "the-code");
 
         silent.abort();
+        browser.abort();
+    }
+
+    #[tokio::test]
+    async fn a_silent_connection_costs_the_real_callback_none_of_its_own_timeout() {
+        let listener = listener().await;
+        let address = listener.local_addr().unwrap();
+
+        // Connects first and never writes. It has five seconds of its own
+        // before its read gives up, and the browser must not wait for any of
+        // them: the connections have to be read side by side.
+        let silent = tokio::spawn(async move {
+            let stream = TcpStream::connect(address).await.unwrap();
+            tokio::time::sleep(Duration::from_secs(20)).await;
+            drop(stream);
+        });
+
+        let browser = tokio::spawn(async move {
+            tokio::time::sleep(Duration::from_millis(200)).await;
+            let mut stream = TcpStream::connect(address).await.unwrap();
+            let request =
+                format!("GET /callback?code=the-code&state={STATE} HTTP/1.1\r\nHost: x\r\n\r\n");
+            stream.write_all(request.as_bytes()).await.unwrap();
+            let mut seen = Vec::new();
+            let _ = stream.read_to_end(&mut seen).await;
+            String::from_utf8_lossy(&seen).into_owned()
+        });
+
+        let started = std::time::Instant::now();
+        let code = tokio::time::timeout(
+            Duration::from_secs(2),
+            wait_for_code(
+                &listener,
+                STATE,
+                Duration::from_secs(10),
+                Duration::from_secs(5),
+            ),
+        )
+        .await
+        .expect("the silent connection held the listener for its whole timeout")
+        .unwrap();
+        assert_eq!(code.expose(), "the-code");
+        assert!(
+            started.elapsed() < Duration::from_secs(2),
+            "{:?}",
+            started.elapsed()
+        );
+
+        let answered = browser.await.unwrap();
+        assert!(answered.starts_with("HTTP/1.1 200 OK"), "{answered}");
+        silent.abort();
+    }
+
+    #[tokio::test]
+    async fn many_silent_connections_still_leave_room_for_the_browser() {
+        let listener = listener().await;
+        let address = listener.local_addr().unwrap();
+
+        // More idle connections than the listener reads at once. The browser
+        // arrives behind all of them and still has to be answered before the
+        // idle ones time out, because a slot frees as each of them does.
+        let mut idle = Vec::new();
+        for _ in 0..(MAX_OPEN_CONNECTIONS + 4) {
+            let stream = TcpStream::connect(address).await.unwrap();
+            idle.push(stream);
+        }
+
+        let browser = tokio::spawn(async move {
+            tokio::time::sleep(Duration::from_millis(200)).await;
+            let mut stream = TcpStream::connect(address).await.unwrap();
+            let request =
+                format!("GET /callback?code=the-code&state={STATE} HTTP/1.1\r\nHost: x\r\n\r\n");
+            stream.write_all(request.as_bytes()).await.unwrap();
+            let mut seen = Vec::new();
+            let _ = stream.read_to_end(&mut seen).await;
+            String::from_utf8_lossy(&seen).into_owned()
+        });
+
+        let code = tokio::time::timeout(
+            Duration::from_secs(4),
+            wait_for_code(
+                &listener,
+                STATE,
+                Duration::from_secs(10),
+                Duration::from_millis(500),
+            ),
+        )
+        .await
+        .expect("the idle connections held the listener")
+        .unwrap();
+        assert_eq!(code.expose(), "the-code");
+
+        let answered = browser.await.unwrap();
+        assert!(answered.starts_with("HTTP/1.1 200 OK"), "{answered}");
+        drop(idle);
+    }
+
+    #[tokio::test]
+    async fn a_browser_that_never_reads_the_answer_does_not_hold_the_code() {
+        let listener = listener().await;
+        let address = listener.local_addr().unwrap();
+
+        // Sends a complete callback and then sits on the socket without ever
+        // reading. The answer is small enough to land in the kernel buffer, so
+        // this must come back with the code and not wait on the write.
+        let browser = tokio::spawn(async move {
+            let mut stream = TcpStream::connect(address).await.unwrap();
+            let request =
+                format!("GET /callback?code=the-code&state={STATE} HTTP/1.1\r\nHost: x\r\n\r\n");
+            stream.write_all(request.as_bytes()).await.unwrap();
+            tokio::time::sleep(Duration::from_secs(20)).await;
+            drop(stream);
+        });
+
+        let code = tokio::time::timeout(
+            Duration::from_secs(3),
+            wait_for_code(
+                &listener,
+                STATE,
+                Duration::from_secs(10),
+                Duration::from_secs(1),
+            ),
+        )
+        .await
+        .expect("the unread answer held the code")
+        .unwrap();
+        assert_eq!(code.expose(), "the-code");
         browser.abort();
     }
 

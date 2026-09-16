@@ -146,12 +146,22 @@ impl Default for RouteDecision {
 
 impl RouteDecision {
     /// A decision that uses this action and nothing else.
+    ///
+    /// The confidence is held to zero through one. A NaN is read as zero,
+    /// because `clamp` passes it through and a caller's confidence floor and
+    /// recorded rows both need a number.
     pub fn new(action: Action, source: RouteSource, confidence: f32) -> RouteDecision {
+        let confidence = if confidence.is_nan() {
+            0.0
+        } else {
+            confidence.clamp(0.0, 1.0)
+        };
+
         RouteDecision {
             action,
             country: None,
             start_rung: 0,
-            confidence: confidence.clamp(0.0, 1.0),
+            confidence,
             source,
         }
     }

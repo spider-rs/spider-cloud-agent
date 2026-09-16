@@ -147,6 +147,56 @@ mod tests {
     }
 
     #[test]
+    fn a_null_cost_line_reads_as_nothing_rather_than_failing_the_page() {
+        // The block is optional on the wire, and so is any line in it. A
+        // null where a number was expected used to fail the whole page, which
+        // lost a page the account had already paid for.
+        let costs: Costs = serde_json::from_str(
+            r#"{"ai_cost":null,"compute_cost":2.0,"total_cost":null,"transform_cost":1.0}"#,
+        )
+        .expect("costs with null lines");
+        assert_eq!(costs.ai_cost, Usd::ZERO);
+        assert_eq!(costs.total_cost, Usd::ZERO);
+        assert_eq!(costs.compute(), Credits(20_000.0));
+    }
+
+    #[test]
+    fn a_cost_written_as_a_string_still_counts_against_the_budget() {
+        // A number in quotes is still a charge. Reading it as zero would let
+        // a crawl run past its budget while every page reported free.
+        let costs: Costs =
+            serde_json::from_str(r#"{"total_cost":"1.5e-05","compute_cost":"0.25"}"#)
+                .expect("costs as strings");
+        assert!((costs.total().get() - 0.15).abs() < 1e-9);
+        assert_eq!(costs.compute(), Credits(2_500.0));
+
+        let err = serde_json::from_str::<Costs>(r#"{"total_cost":"free"}"#)
+            .expect_err("a word is not a charge");
+        assert!(err.to_string().contains("free"), "{err}");
+    }
+
+    #[test]
+    fn a_negative_cost_line_cannot_pull_the_spend_down() {
+        // Nothing on a bill is negative. A refund line, or a bug on the
+        // service, must not offset the pages that were charged for.
+        let costs: Costs =
+            serde_json::from_str(r#"{"total_cost":-0.5,"compute_cost":1.0}"#).expect("costs");
+        assert_eq!(costs.total(), Credits::ZERO);
+        assert_eq!(costs.compute(), Credits(10_000.0));
+    }
+
+    #[test]
+    fn an_absurd_cost_still_trips_a_budget_rather_than_wrapping() {
+        // The largest number the parser accepts. Past that serde_json refuses
+        // the document as out of range, which is an error and not a panic.
+        let costs: Costs =
+            serde_json::from_str(r#"{"total_cost":1.7976931348623157e308}"#).expect("costs");
+        assert!(costs.total().get() > 1e300);
+        assert!(costs.total().get().is_infinite() || costs.total().get() > 0.0);
+        assert!(serde_json::from_str::<Costs>(r#"{"total_cost":1e400}"#).is_err());
+    }
+
+    #[test]
     fn credits_add_up() {
         let total: Credits = [Credits(1.5), Credits(2.5)].into_iter().sum();
         assert_eq!(total, Credits(4.0));

@@ -107,7 +107,7 @@ pub async fn login(global: &Global, args: &crate::cli::LoginArgs, log: Log) -> R
         // The key goes to the payload stream and nowhere else. It is never
         // logged, never put in a record and never printed alongside anything
         // that would end up in a transcript.
-        emitter.write(Item::structured(json!({ "type": "key" })).with_text(key, "txt"))?;
+        emitter.write(key_item(key))?;
         emitter.finish()?;
         return Ok(Code::Ok);
     }
@@ -126,10 +126,43 @@ pub async fn login(global: &Global, args: &crate::cli::LoginArgs, log: Log) -> R
     Ok(Code::Ok)
 }
 
+/// The key as one item for `login --print`, in every shape the emitter writes.
+///
+/// The structured form carries the key too. `--print` exists to hand the key
+/// to whatever asked for it, and a caller who also passed `--json` would
+/// otherwise get a record that names a key and holds none, while the key
+/// itself, already redeemed from a code that cannot be redeemed twice, is gone.
+#[cfg(feature = "oauth")]
+fn key_item(key: String) -> Item {
+    Item::structured(json!({ "type": "key", "key": key })).with_text(key, "txt")
+}
+
 /// Signing in needs the browser flow, which this build left out.
 #[cfg(not(feature = "oauth"))]
 pub async fn login(_global: &Global, _args: &crate::cli::LoginArgs, _log: Log) -> Run<Code> {
     Err(Failure::usage(
         "this build has no browser sign in. Set SPIDER_API_KEY, or install a build with the oauth feature.",
     ))
+}
+
+#[cfg(all(test, feature = "oauth"))]
+mod tests {
+    // A test may unwrap and may panic: a test that cannot set itself up should
+    // fail loudly rather than quietly measure nothing.
+    #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
+    use super::*;
+
+    const KEY: &str = "sk-live-not-a-real-key-0123456789";
+
+    #[test]
+    fn the_printed_key_is_in_the_structured_form_as_well_as_the_text() {
+        let item = key_item(KEY.to_string());
+        assert_eq!(item.text.as_deref(), Some(KEY));
+        assert_eq!(item.value.get("type").and_then(|v| v.as_str()), Some("key"));
+        let encoded = serde_json::to_string(&item.value).unwrap();
+        assert!(
+            encoded.contains(KEY),
+            "--print --json loses the key: {encoded}"
+        );
+    }
 }

@@ -50,7 +50,9 @@ fn main() -> ExitCode {
     match runtime.block_on(dispatch(&parsed, log)) {
         Ok(code) => code.into(),
         Err(failure) => {
-            log.failed(&failure.message);
+            if !failure.is_silent() {
+                log.failed(&failure.message);
+            }
             failure.code.into()
         }
     }

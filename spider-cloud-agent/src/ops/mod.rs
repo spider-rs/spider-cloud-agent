@@ -21,14 +21,15 @@ pub mod screenshot;
 pub mod search;
 pub mod transform;
 
-use std::time::Duration;
+use std::future::Future;
+use std::time::{Duration, Instant};
 
 use serde::Serialize;
 use url::Url;
 
 use crate::client::{IntoUrl, Spider};
 use crate::credits::Credits;
-use crate::error::Error;
+use crate::error::{BudgetKind, Error};
 use crate::params::{RequestParams, ReturnFormat, ReturnFormatHandling};
 use crate::policy::engine::Reached;
 use crate::policy::{AttemptState, Budget, Next, Observed, Policy, Step, StopReason};
@@ -42,11 +43,47 @@ use crate::thrift::{Need, Plan, ThriftReport};
 use crate::transport::{route, Route};
 use crate::Result;
 use spider_route::featurize;
-use tokio::time::sleep;
+use tokio::time::{sleep, timeout};
 
 /// The service's own address, used as the subject of a result that did not come
 /// from fetching a page.
 const SERVICE_URL: &str = "https://spider.cloud";
+
+/// How long an account read may take when the client's budget names no wall.
+///
+/// A balance or a page of the crawl record is a database read, and one that has
+/// not answered in a minute is not going to. The page operations have no such
+/// figure: a crawl can run for as long as the site is large, so only a wall the
+/// caller set bounds those.
+pub(crate) const DEFAULT_READ_WALL: Duration = Duration::from_secs(60);
+
+/// The wall an account read runs under: the client's, or the default above.
+pub(crate) fn read_wall(spider: &Spider) -> Duration {
+    spider.budget().wall.unwrap_or(DEFAULT_READ_WALL)
+}
+
+/// Run one call under a wall, or under none.
+///
+/// `None` comes back when the wall ran out before the call finished. Dropping
+/// the call is what ends it: nothing in the transport holds a resource past
+/// its future, so a request cut off here leaves nothing behind.
+pub(crate) async fn within<T, F>(wall: Option<Duration>, call: F) -> Option<Result<T>>
+where
+    F: Future<Output = Result<T>>,
+{
+    match wall {
+        Some(wall) => timeout(wall, call).await.ok(),
+        None => Some(call.await),
+    }
+}
+
+/// The error for a call the wall ended before the service answered.
+pub(crate) fn out_of_time(attempts: Vec<Attempt>) -> Error {
+    Error::BudgetExceeded {
+        kind: BudgetKind::Time,
+        attempts,
+    }
+}
 
 /// The state every builder carries, and the one place a call is made.
 #[derive(Debug)]
@@ -175,11 +212,17 @@ impl<'a> Call<'a> {
             remembered.as_ref(),
         );
         let picked = self.spider.router().route(&input);
-        let decision = self
-            .spider
-            .explorer()
-            .choose(&target, &picked, &self.budget)
-            .unwrap_or(picked);
+        // A caller who fixed a setting is not explored. The pin would win over
+        // the drawn arm anyway, and the outcome and the recorded row would then
+        // name an action that was never sent.
+        let decision = if input.pins.any() {
+            picked
+        } else {
+            self.spider
+                .explorer()
+                .choose(&target, &picked, &self.budget)
+                .unwrap_or(picked)
+        };
 
         routing::apply_decision(&decision, &mut self.params, &caller);
         plan.apply_over(&mut self.params, &caller);
@@ -197,15 +240,35 @@ impl<'a> Call<'a> {
         let mut call_error: Option<Error>;
         let current = endpoint_for(&plan, route);
         let mut wire_bytes = 0usize;
+        // The wall is measured on the clock rather than summed from the attempts,
+        // because a call that never answers reports no duration to sum.
+        let started = Instant::now();
 
         loop {
             let mut attempt_bytes = 0u32;
             self.budget.apply(&mut self.params);
             let body = make_body(&self.params);
-            let sent = self.spider.raw().post(current, args, &body).await;
+
+            // A call is held to whatever is left of the wall. Without this a
+            // service that accepted the request and never answered held the
+            // caller for as long as the socket stayed open, and the budget only
+            // ever looked at the clock between calls.
+            let remaining = self.budget.remaining_wall(started.elapsed());
+            if remaining == Some(Duration::ZERO) {
+                return Err(out_of_time(attempts));
+            }
+            let before = Instant::now();
+            let sent = within(remaining, self.spider.raw().post(current, args, &body)).await;
+            let mut wall_ran_out = false;
 
             let observed = match sent {
-                Ok(reply) => {
+                None => {
+                    call_error = None;
+                    pages = Pages::default();
+                    wall_ran_out = true;
+                    Observed::timed_out().taking(before.elapsed())
+                }
+                Some(Ok(reply)) => {
                     wire_bytes = reply.body.len();
                     attempt_bytes = wire_bytes.min(u32::MAX as usize) as u32;
                     let elapsed = reply.elapsed;
@@ -248,18 +311,22 @@ impl<'a> Call<'a> {
                         }
                     }
                 }
-                Err(Error::Transport(e)) if e.is_timeout() => {
+                Some(Err(Error::Transport(e))) if e.is_timeout() => {
                     call_error = Some(Error::Transport(e));
-                    Observed::timed_out()
+                    Observed::timed_out().taking(before.elapsed())
                 }
-                Err(Error::Transport(e)) if e.is_connect() => {
+                Some(Err(Error::Transport(e))) if e.is_connect() => {
                     call_error = Some(Error::Transport(e));
-                    Observed::connect_failed()
+                    Observed::connect_failed().taking(before.elapsed())
                 }
                 // Anything else went wrong before a call could be judged, so
                 // there is nothing for the policy to read.
-                Err(other) => return Err(other),
-            };
+                Some(Err(other)) => return Err(other),
+            }
+            // Read off the request whether it carried anything a session could
+            // keep, which is what decides whether a login wall gets a second
+            // call.
+            .for_request(&self.params);
 
             state.record(&observed);
             attempts.push(Attempt::new(
@@ -269,7 +336,14 @@ impl<'a> Call<'a> {
                 observed.cost,
             ));
 
-            let next = policy.decide(&observed, &state);
+            // The wall ended the call, so the budget has already decided. The
+            // policy is not asked, because whatever it answered would be a call
+            // there is no time left for.
+            let next = if wall_ran_out {
+                Next::Stop(StopReason::Budget(BudgetKind::Time))
+            } else {
+                policy.decide(&observed, &state)
+            };
 
             // What the attempt says about the site, folded in before the next
             // move is acted on. The policy has already judged whether this
@@ -405,11 +479,11 @@ impl<'a> Call<'a> {
     {
         self.budget.apply(&mut self.params);
         let body = make_body(&self.params);
-        let reply = self
-            .spider
-            .raw()
-            .post(route, &[], &body)
-            .await?
+        // One call, held to the wall the same way the send loop holds its
+        // calls. A search against a service that went quiet hung here too.
+        let reply = within(self.budget.wall, self.spider.raw().post(route, &[], &body))
+            .await
+            .ok_or_else(|| out_of_time(Vec::new()))??
             .into_result()?;
         let body: serde_json::Value = reply.json()?;
         let cost = charged(&body);

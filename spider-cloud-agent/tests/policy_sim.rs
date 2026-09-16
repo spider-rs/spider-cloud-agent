@@ -925,6 +925,119 @@ fn a_free_attempt_does_not_buy_an_unlimited_walk() {
     );
 }
 
+/// Drive a policy against a site that gives the same answer to every call, and
+/// count the calls.
+///
+/// Unlike [`run`], the script never runs out. The bound on the walk is what is
+/// being checked, so this stops on the first accept or stop and panics only if
+/// the policy is still asking after far more calls than any ceiling allows.
+fn calls_until_it_stops(policy: &Policy, budget: Budget, scripted: Scripted) -> (u8, Move) {
+    let mut state = AttemptState::new(budget);
+    let observed = scripted.observed();
+
+    for _ in 0..1_000u16 {
+        state.record(&observed);
+        let next = policy.decide(&observed, &state);
+        state.follow(&next);
+        if matches!(next, Next::Accept | Next::Stop(_)) {
+            return (state.attempts, Move::of(&next));
+        }
+    }
+
+    panic!("the policy was still asking for calls after a thousand of them: {scripted:?}");
+}
+
+#[test]
+fn no_refusal_can_make_more_calls_than_the_ceiling_allows() {
+    // Every answer a site or the service can keep giving, including the ones
+    // that retry in place and the one that jumps on the ladder.
+    let refusals = [
+        Scripted::seen(200, Some(403)).costing(1.0),
+        Scripted::seen(200, Some(429)).costing(1.0),
+        Scripted::seen(200, Some(503)),
+        Scripted::seen(200, Some(200)).blank().costing(1.0),
+        Scripted::seen(429, None),
+        Scripted::seen(500, None),
+        Scripted::seen(503, None),
+        Scripted::timed_out(),
+        Scripted::connect_failed(),
+    ];
+
+    for ceiling in [1u8, 2, 3, 5, 7, u8::MAX] {
+        let policy = Policy::standard().with_max_attempts(ceiling);
+        for scripted in refusals {
+            let (made, last) = calls_until_it_stops(&policy, Budget::unlimited(), scripted);
+            assert!(
+                made <= ceiling,
+                "{scripted:?} made {made} calls under a ceiling of {ceiling}, ending on {last:?}"
+            );
+            assert!(
+                matches!(last, Move::Stop(_)),
+                "{scripted:?} ended on {last:?}"
+            );
+        }
+    }
+
+    // The budget's own attempt cap holds on the same walk when the policy's
+    // ceiling is the one out of the way.
+    let policy = Policy::standard().with_max_attempts(u8::MAX);
+    for cap in [1u8, 2, 4] {
+        for scripted in refusals {
+            let (made, last) =
+                calls_until_it_stops(&policy, Budget::unlimited().with_attempts(cap), scripted);
+            assert!(
+                made <= cap,
+                "{scripted:?} made {made} calls under a budget of {cap}, ending on {last:?}"
+            );
+        }
+    }
+}
+
+#[test]
+fn a_cost_that_cannot_be_real_does_not_unlock_the_credit_cap() {
+    let policy = Policy::standard().with_max_attempts(u8::MAX);
+    let budget = Budget::unlimited().with_credits(Credits(20.0));
+
+    // A negative cost, which no bill produces, would read as a refund and push
+    // the running total below zero, and then every estimate fits.
+    let refund = run(
+        &policy,
+        budget,
+        &[
+            Scripted::seen(200, Some(403)).costing(-100.0),
+            Scripted::seen(200, Some(403)).costing(5.0),
+        ],
+    );
+    assert_eq!(
+        refund.moves,
+        [
+            Move::Escalate("browser", Duration::ZERO),
+            // Five spent, and the next step is priced at five times five.
+            Move::Stop(StopReason::Budget(BudgetKind::Credits)),
+        ]
+    );
+    assert_eq!(refund.spent, Credits(5.0), "the refund was counted");
+
+    // A cost that is not a number poisons every sum it touches, and a sum that
+    // is not a number is never over the cap.
+    let poisoned = run(
+        &policy,
+        budget,
+        &[
+            Scripted::seen(200, Some(403)).costing(f64::NAN),
+            Scripted::seen(200, Some(403)).costing(5.0),
+        ],
+    );
+    assert_eq!(
+        poisoned.moves,
+        [
+            Move::Escalate("browser", Duration::ZERO),
+            Move::Stop(StopReason::Budget(BudgetKind::Credits)),
+        ]
+    );
+    assert_eq!(poisoned.spent, Credits(5.0));
+}
+
 /// A request carrying cookies the caller supplied.
 fn with_cookies() -> RequestParams {
     let mut params = RequestParams::url("https://example.com/account");
