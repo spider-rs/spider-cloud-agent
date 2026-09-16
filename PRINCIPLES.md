@@ -48,10 +48,10 @@ citations. Run `scripts/check-anchors.sh` after moving code so these references 
 
 4. **A credential file this crate writes is `0600`, and one it only reads is reported rather than
    quietly changed.** `FILE_MODE` is `0o600` at `spider-cloud-agent/src/auth/store.rs:48`
-   (`pub const FILE_MODE`), the mode is read at `spider-cloud-agent/src/auth/store.rs:282`
+   (`pub const FILE_MODE`), the mode is read at `spider-cloud-agent/src/auth/store.rs:286`
    (`let mode = std::fs::metadata`), a file readable by others warns once at
-   `spider-cloud-agent/src/auth/store.rs:294` (`fn warn_wide_permissions`), and permissions change
-   only on the path the caller asked for (`spider-cloud-agent/src/auth/store.rs:314`
+   `spider-cloud-agent/src/auth/store.rs:298` (`fn warn_wide_permissions`), and permissions change
+   only on the path the caller asked for (`spider-cloud-agent/src/auth/store.rs:318`
    (`std::fs::set_permissions`)). A library that silently rewrites permissions on a file it did not
    create is a worse surprise than the one it set out to fix.
 
@@ -65,7 +65,7 @@ citations. Run `scripts/check-anchors.sh` after moving code so these references 
    `spider-cloud-agent/src/status/mod.rs:31` (`let _ = PageStatus::from`). The rule table keeps them
    apart as separate triggers (`spider-cloud-agent/src/policy/rule.rs:17` (`pub enum Trigger`)), and
    the send loop sorts a body status the service mirrored onto the envelope back where it belongs
-   (`spider-cloud-agent/src/ops/mod.rs:283`
+   (`spider-cloud-agent/src/ops/mod.rs:296`
    (`if reply.is_success() || reply.is_mirrored_page_status()`)).
 
    How the call to Spider Cloud went and how the target site answered are different facts that
@@ -93,7 +93,7 @@ citations. Run `scripts/check-anchors.sh` after moving code so these references 
 
 7. **An empty body is a failure only when the caller wanted a body.** `Need::Metadata` and
    `Need::Fields` ask for `return_format=empty` on purpose, so the page arrives with nothing in it
-   and that is the request working as asked (`spider-cloud-agent/src/ops/mod.rs:297`
+   and that is the request working as asked (`spider-cloud-agent/src/ops/mod.rs:310`
    (`if nothing_came_back(&pages) && !body_was_declined`)). Reading it as a blank page sent the walk
    up the whole ladder against a request that had already succeeded and billed for every step. That
    bill is the reason principle 12 is written down rather than assumed.
@@ -191,7 +191,7 @@ citations. Run `scripts/check-anchors.sh` after moving code so these references 
 17. **A new knob on the curated surface needs an argument, not a use case.** The curated set is
     request mode, proxy pool, country, wait condition, profile, timeout, session, budget, need and
     max tokens, plus `page_links` on page operations. `params_mut()` reaches the full parameter set.
-    The exact method membership is checked at `spider-cloud-agent/src/ops/mod.rs:882`
+    The exact method membership is checked at `spider-cloud-agent/src/ops/mod.rs:895`
     (`fn curated_surface_membership_is_explicit`), and each method has a reason in
     `docs/action-vocabulary.md`. Every promotion is a label the router has to learn and a column the
     trainer has to carry, and a new routing action lands in `spider-route` first
