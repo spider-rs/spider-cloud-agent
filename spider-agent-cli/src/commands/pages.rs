@@ -384,13 +384,15 @@ pub async fn transform(global: &Global, args: &TransformArgs, log: Log) -> Run<C
     match call.send_all().await {
         Ok(outcome) => absorb(&mut emitter, &mut report, outcome)?,
         Err(error) => {
-            record(
-                &mut emitter,
-                &mut report,
-                &mut worst,
-                None,
-                Failure::from(error),
-            )?;
+            // Transform works on supplied markup, so exhaustion is a failed
+            // conversion rather than a refusal by a target site.
+            let failure = match error {
+                spider_cloud_agent::Error::Exhausted { .. } => {
+                    Failure::new(Code::Failed, "transform produced no usable document")
+                }
+                error => Failure::from(error),
+            };
+            record(&mut emitter, &mut report, &mut worst, None, failure)?;
         }
     }
 

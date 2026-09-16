@@ -10,9 +10,24 @@ use std::process::ExitCode;
 
 use spider_cloud_agent::Error;
 
-/// Why the process stopped.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Code {
+// Declare the variants and their enumeration together so a new variant cannot
+// compile without also appearing in the schema and its coverage tests.
+macro_rules! codes {
+    ($( $(#[$meta:meta])* $variant:ident, )*) => {
+        /// Why the process stopped.
+        #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+        pub enum Code {
+            $( $(#[$meta])* $variant, )*
+        }
+
+        impl Code {
+            /// Every process outcome, used to enumerate the schema.
+            pub const ALL: &'static [Self] = &[$(Self::$variant),*];
+        }
+    };
+}
+
+codes! {
     /// The work finished.
     Ok,
     /// Something failed that none of the other codes describes.
@@ -171,16 +186,7 @@ mod tests {
 
     #[test]
     fn every_code_has_its_own_number() {
-        let codes = [
-            Code::Ok,
-            Code::Failed,
-            Code::Usage,
-            Code::Auth,
-            Code::Budget,
-            Code::Refused,
-            Code::Transport,
-            Code::Output,
-        ];
+        let codes = Code::ALL;
         let mut numbers: Vec<u8> = codes.iter().map(|c| c.number()).collect();
         numbers.sort_unstable();
         numbers.dedup();

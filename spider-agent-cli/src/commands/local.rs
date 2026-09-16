@@ -1,5 +1,6 @@
 //! The commands that make no call.
 
+use clap::CommandFactory;
 use serde_json::json;
 
 use spider_cloud_agent::{HeuristicRouter, RouteInput, Router};
@@ -33,8 +34,7 @@ pub fn route(global: &Global, args: &RouteArgs, log: Log) -> Run<Code> {
 /// The command tree and the record schema, as JSON.
 ///
 /// Here so a calling agent can learn the surface without parsing help text.
-/// It is a hand written constant rather than a reflection of the clap tree,
-/// because the point is the output contract and clap does not know that.
+/// The parser supplies the command tree; the record contract is kept here.
 pub fn schema(global: &Global) -> Run<Code> {
     let mut emitter = setup::emitter(global, Format::Json)?;
     emitter.write_sole(Item::structured(document()))?;
@@ -44,10 +44,32 @@ pub fn schema(global: &Global) -> Run<Code> {
 
 /// The document `schema` prints.
 fn document() -> serde_json::Value {
+    let mut command = crate::cli::Cli::command();
+    command.build();
+    let tree = command_tree(&command);
+    let codes: serde_json::Map<String, serde_json::Value> = Code::ALL
+        .iter()
+        .map(|code| (code.number().to_string(), json!(code.label())))
+        .collect();
     json!({
+        "command_tree": tree,
+        "commands": tree.get("commands"),
+        "plan": {
+            "type": "object",
+            "additionalProperties": false,
+            "properties": {
+                "goal": {"type": "string", "enum": goal_names()},
+                "urls": {"type": "array", "items": {"type": "string", "format": "uri"}},
+                "expand": {"type": "integer", "minimum": 0, "maximum": usize::MAX},
+                "max_pages": {"type": "integer", "minimum": 0, "maximum": usize::MAX},
+                "budget": {"type": "number", "minimum": 0},
+                "selectors": {"type": "object", "minProperties": 1, "additionalProperties": {"oneOf": [{"type": "string"}, {"type": "array", "items": {"type": "string"}}]}}
+            },
+            "notes": "All keys are optional. Explicit flags override plan values; URLs accumulate. Selectors imply fields. Goal defaults to markdown and expand to zero. A leading BOM is accepted."
+        },
         "tool": "spider-agent",
         "version": env!("CARGO_PKG_VERSION"),
-        "commands": {
+        "command_notes": {
             "scrape": "one page or a list of them, and what the bare form runs. Default format text.",
             "fetch": "one path under the config the service holds for it. Takes a host and a path, not an address, and is not scrape. Default format text.",
             "crawl": "a site, following its links. Default format ndjson.",
@@ -139,16 +161,7 @@ fn document() -> serde_json::Value {
                 "stopped": "budget|pages|time|null. budget and time leave with code 4, pages with 0."
             }
         },
-        "exit_codes": {
-            "0": "done",
-            "1": "failed, none of the others describes it",
-            "2": "usage, or an input that could not be read",
-            "3": "auth: no key, a refused key, or a balance of zero",
-            "4": "budget: a cap stopped the run",
-            "5": "the site refused every attempt",
-            "6": "transport: the call never reached the service, or it failed",
-            "7": "output: a destination could not be written"
-        },
+        "exit_codes": codes,
         "notes": [
             "results go to stdout, diagnostics to stderr, and no escape codes are written",
             "a reader that closes stdout early, such as head, ends the run quietly with code 0 and no further page is fetched",
@@ -156,6 +169,140 @@ fn document() -> serde_json::Value {
             "the key is read from SPIDER_API_KEY, SPIDER_CLOUD_API_KEY, then ~/.spider/credentials, and there is no flag for it"
         ]
     })
+}
+
+fn goal_names() -> Vec<String> {
+    use clap::ValueEnum;
+    crate::cli::Goal::value_variants()
+        .iter()
+        .filter_map(|goal| goal.to_possible_value().map(|v| v.get_name().to_owned()))
+        .collect()
+}
+
+/// Walk the built parser so inherited global flags and inferred arity are present.
+fn command_tree(command: &clap::Command) -> serde_json::Value {
+    let arguments: serde_json::Map<String, serde_json::Value> = command
+        .get_arguments()
+        .map(|arg| (arg.get_id().to_string(), argument_schema(command, arg)))
+        .collect();
+    let commands: serde_json::Map<String, serde_json::Value> = command
+        .get_subcommands()
+        .map(|sub| (sub.get_name().to_string(), command_tree(sub)))
+        .collect();
+    json!({"name": command.get_name(), "arguments": arguments, "commands": commands})
+}
+
+fn argument_schema(command: &clap::Command, arg: &clap::Arg) -> serde_json::Value {
+    let arity = arg.get_num_args().unwrap_or_default();
+    let maximum = (arity.max_values() != usize::MAX).then_some(arity.max_values());
+    let possible: Vec<String> = arg
+        .get_possible_values()
+        .iter()
+        .map(|value| value.get_name().to_string())
+        .collect();
+    let defaults: Vec<_> = arg
+        .get_default_values()
+        .iter()
+        .map(|value| value.to_string_lossy())
+        .collect();
+    let conflicts: Vec<&str> = command
+        .get_arguments()
+        .filter(|other| {
+            command
+                .get_arg_conflicts_with(arg)
+                .iter()
+                .any(|a| a.get_id() == other.get_id())
+                || command
+                    .get_arg_conflicts_with(other)
+                    .iter()
+                    .any(|a| a.get_id() == arg.get_id())
+        })
+        .map(|a| a.get_id().as_str())
+        .collect();
+    json!({
+        "long": arg.get_long(),
+        "short": arg.get_short(),
+        "position": arg.get_index(),
+        "arity": {"min": arity.min_values(), "max": maximum},
+        "value_type": value_type(arg),
+        "default": defaults,
+        "possible_values": possible,
+        "required": arg.is_required_set(),
+        "global": arg.is_global_set(),
+        "action": format!("{:?}", arg.get_action()),
+        "conflicts": conflicts,
+        "requires": requirements(command, arg),
+    })
+}
+
+fn value_type(arg: &clap::Arg) -> &'static str {
+    use std::any::TypeId;
+
+    let ty = arg.get_value_parser().type_id();
+    if !arg.get_possible_values().is_empty() {
+        "enum"
+    } else if ty == TypeId::of::<bool>() {
+        "boolean"
+    } else if ty == TypeId::of::<f64>() {
+        "number"
+    } else if [
+        TypeId::of::<usize>(),
+        TypeId::of::<u64>(),
+        TypeId::of::<u32>(),
+        TypeId::of::<u8>(),
+    ]
+    .iter()
+    .any(|candidate| ty == *candidate)
+    {
+        "integer"
+    } else {
+        "string"
+    }
+}
+
+/// Clap has no public requires getter. Probe its validator with required flags
+/// cleared and string values, then map its missing-argument context back to IDs.
+/// This reflects the unconditional requirements used by this CLI.
+fn requirements(command: &clap::Command, arg: &clap::Arg) -> Vec<String> {
+    use clap::error::{ContextKind, ContextValue, ErrorKind};
+    if matches!(
+        arg.get_action(),
+        clap::ArgAction::Help | clap::ArgAction::Version
+    ) {
+        return Vec::new();
+    }
+    let mut probe = clap::Command::new("probe")
+        .version("probe")
+        .disable_help_flag(true)
+        .disable_version_flag(true);
+    for candidate in command.get_arguments() {
+        let mut candidate = candidate.clone().required(false).global(false);
+        if candidate.get_action().takes_values() {
+            candidate = candidate.value_parser(clap::builder::ValueParser::string());
+        }
+        probe = probe.arg(candidate);
+    }
+    let mut argv = vec!["probe".to_string()];
+    if let Some(long) = arg.get_long() {
+        argv.push(format!("--{long}"));
+    } else if let Some(short) = arg.get_short() {
+        argv.push(format!("-{short}"));
+    }
+    for _ in 0..arg.get_num_args().unwrap_or_default().min_values() {
+        argv.push("value".to_string());
+    }
+    if let Err(error) = probe.try_get_matches_from(argv) {
+        if error.kind() == ErrorKind::MissingRequiredArgument {
+            if let Some(ContextValue::Strings(missing)) = error.get(ContextKind::InvalidArg) {
+                return command
+                    .get_arguments()
+                    .filter(|a| missing.contains(&a.to_string()))
+                    .map(|a| a.get_id().to_string())
+                    .collect();
+            }
+        }
+    }
+    Vec::new()
 }
 
 #[cfg(test)]
@@ -238,9 +385,54 @@ mod tests {
     #[test]
     fn the_schema_names_every_exit_code() {
         let document = document();
-        let codes = document["exit_codes"]
-            .as_object()
-            .expect("exit_codes is an object");
-        assert_eq!(codes.len(), 8, "a code was added without a line here");
+        let expected: serde_json::Map<String, serde_json::Value> = Code::ALL
+            .iter()
+            .map(|c| (c.number().to_string(), json!(c.label())))
+            .collect();
+        assert_eq!(document["exit_codes"], json!(expected));
+    }
+
+    #[test]
+    fn invocations_built_from_the_tree_round_trip_through_clap() {
+        use clap::Parser;
+        let doc = document();
+        let tree = &doc["commands"];
+        for (command, id, value) in [
+            ("transform", "input", "page.html"),
+            ("run", "expand", "0"),
+            ("fetch", "domain", "example.com"),
+        ] {
+            let arg = &tree[command]["arguments"][id];
+            let mut argv = vec!["spider-agent".to_string(), command.to_string()];
+            if let Some(long) = arg["long"].as_str() {
+                argv.push(format!("--{long}"));
+            }
+            assert_eq!(arg["arity"]["min"], 1);
+            argv.push(value.to_string());
+            assert!(crate::cli::Cli::try_parse_from(argv).is_ok());
+        }
+        assert_eq!(tree["transform"]["arguments"]["input"]["required"], true);
+        assert!(crate::cli::Cli::try_parse_from(["spider-agent", "transform"]).is_err());
+        let args = &tree["run"]["arguments"];
+        assert!(args["json"]["conflicts"]
+            .as_array()
+            .unwrap()
+            .contains(&json!("ndjson")));
+        assert_eq!(args["append"]["requires"], json!(["output"]));
+        let mut argv = vec![
+            "spider-agent".to_string(),
+            "run".to_string(),
+            "--append".to_string(),
+        ];
+        assert!(crate::cli::Cli::try_parse_from(&argv).is_err());
+        for required in args["append"]["requires"].as_array().unwrap() {
+            let arg = &args[required.as_str().unwrap()];
+            argv.push(format!("--{}", arg["long"].as_str().unwrap()));
+            argv.push("pages.ndjson".to_string());
+        }
+        assert!(crate::cli::Cli::try_parse_from(argv).is_ok());
+        assert!(
+            crate::cli::Cli::try_parse_from(["spider-agent", "run", "--json", "--ndjson"]).is_err()
+        );
     }
 }

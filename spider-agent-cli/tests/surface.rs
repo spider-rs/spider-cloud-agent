@@ -125,7 +125,7 @@ fn the_schema_is_machine_readable_and_lists_the_records() {
     assert_eq!(value["tool"], "spider-agent");
     assert!(value["records"]["page"].is_object());
     assert!(value["records"]["report"].is_object());
-    assert_eq!(value["exit_codes"]["4"], "budget: a cap stopped the run");
+    assert_eq!(value["exit_codes"]["4"], "budget");
 }
 
 #[test]
@@ -339,10 +339,10 @@ fn the_schema_names_scrape_and_fetch_separately() {
     let output = run(&["schema"]);
     let value: serde_json::Value =
         serde_json::from_str(stdout(&output).trim()).expect("a document");
-    let scrape = value["commands"]["scrape"]
+    let scrape = value["command_notes"]["scrape"]
         .as_str()
         .expect("a scrape command");
-    let fetch = value["commands"]["fetch"]
+    let fetch = value["command_notes"]["fetch"]
         .as_str()
         .expect("a fetch command");
     assert_ne!(scrape, fetch);
@@ -454,7 +454,7 @@ fn the_schema_names_the_account_reads_and_not_table() {
         assert!(commands.contains_key(name), "{name} is missing");
     }
     assert!(!commands.contains_key("table"), "table is back");
-    let keys = commands["keys"].as_str().expect("a line");
+    let keys = value["command_notes"]["keys"].as_str().expect("a line");
     assert!(
         keys.contains("metadata"),
         "the schema does not say what keys returns: {keys}"
@@ -1044,4 +1044,233 @@ fn an_interrupt_mid_run_keeps_what_was_written_and_leaves_promptly() {
         serde_json::from_str(written.lines().next().expect("a record")).expect("a record");
     assert_eq!(first["type"], "page", "{written}");
     let _ = std::fs::remove_file(&path);
+}
+
+/// Keep each plan private to its test, including concurrent test processes.
+fn plan_file(label: &str, text: &str) -> std::path::PathBuf {
+    let path = std::env::temp_dir().join(format!(
+        "spider-agent-plan-{label}-{}.json",
+        std::process::id()
+    ));
+    std::fs::write(&path, text).expect("write plan");
+    path
+}
+
+fn report(output: &Output) -> serde_json::Value {
+    serde_json::from_str(stdout(output).lines().last().expect("report")).expect("JSON report")
+}
+
+#[test]
+fn a_bom_plan_reads_all_six_keys_and_stops_at_its_page_cap() {
+    let path = plan_file("all", "\u{feff}{\"goal\":\"fields\",\"urls\":[\"https://example.com/\"],\"expand\":2,\"max_pages\":1,\"budget\":10,\"selectors\":{\"title\":[\"h1\",\"title\"]}}");
+    let (base, seen) = stub(PAGE_AND_LINKS);
+    let output = run_against(&base, &["run", "--plan", path.to_str().unwrap()]);
+    assert_eq!(
+        code(&output),
+        0,
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let request: serde_json::Value = serde_json::from_str(&seen.recv().unwrap()).unwrap();
+    assert_eq!(request["return_page_links"], true, "{request}");
+    assert!(request.to_string().contains("h1"), "{request}");
+    assert_eq!(report(&output)["served"], 1);
+    assert_eq!(report(&output)["stopped"], "pages");
+    assert!(seen.try_recv().is_err());
+    std::fs::remove_file(path).unwrap();
+}
+
+#[test]
+fn plan_budget_is_enforced() {
+    let path = plan_file(
+        "budget",
+        r#"{"urls":["https://example.com/","https://example.com/b"],"budget":1}"#,
+    );
+    let (base, seen) = stub(PAGE_AND_LINKS);
+    let output = run_against(&base, &["run", "--plan", path.to_str().unwrap()]);
+    assert_eq!(
+        code(&output),
+        4,
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert_eq!(report(&output)["served"], 1);
+    assert_eq!(seen.try_iter().count(), 1);
+    std::fs::remove_file(path).unwrap();
+}
+
+#[test]
+fn invalid_plan_values_fail_before_a_request_even_when_overridden() {
+    for (index, invalid) in [r#""10""#, "-1", "true", "1e999"].iter().enumerate() {
+        let path = plan_file(
+            &format!("invalid-{index}"),
+            &format!(r#"{{"urls":["https://example.com/"],"budget":{invalid}}}"#),
+        );
+        let (base, seen) = stub(PAGE_AND_LINKS);
+        let output = run_against(
+            &base,
+            &["run", "--plan", path.to_str().unwrap(), "--budget", "20"],
+        );
+        assert_eq!(code(&output), 2);
+        assert!(String::from_utf8_lossy(&output.stderr).contains("plan"));
+        assert!(output.stdout.is_empty());
+        assert!(seen.try_recv().is_err());
+        std::fs::remove_file(path).unwrap();
+    }
+}
+
+#[test]
+fn explicit_goal_and_zero_expand_win_and_urls_accumulate() {
+    let path = plan_file(
+        "override",
+        r#"{"goal":"html","expand":3,"max_pages":1,"budget":0,"urls":["https://example.com/b"]}"#,
+    );
+    let urls = plan_file("urls", "https://example.com/c\n");
+    let (base, seen) = stub(PAGE_AND_LINKS);
+    let output = run_against(
+        &base,
+        &[
+            "run",
+            "https://example.com/",
+            "--urls-from",
+            urls.to_str().unwrap(),
+            "--plan",
+            path.to_str().unwrap(),
+            "--goal",
+            "markdown",
+            "--expand",
+            "0",
+            "--max-pages",
+            "3",
+            "--budget",
+            "10",
+        ],
+    );
+    assert_eq!(
+        code(&output),
+        0,
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert_eq!(report(&output)["targets"], 3);
+    assert_eq!(report(&output)["served"], 3);
+    let requests: Vec<serde_json::Value> = seen
+        .try_iter()
+        .map(|s| serde_json::from_str(&s).unwrap())
+        .collect();
+    assert_eq!(requests.len(), 3);
+    for request in &requests {
+        assert_eq!(request["return_format"], "markdown", "{request}");
+        assert_ne!(request["return_page_links"], true, "{request}");
+    }
+    assert_eq!(requests[0]["url"], "https://example.com/");
+    assert_eq!(requests[1]["url"], "https://example.com/b");
+    assert_eq!(requests[2]["url"], "https://example.com/c");
+    std::fs::remove_file(path).unwrap();
+    std::fs::remove_file(urls).unwrap();
+}
+
+#[test]
+fn a_site_that_refuses_every_attempt_leaves_with_five() {
+    let (base, seen) =
+        stub(r#"[{"url":"https://example.com/","status":404,"content":"not found"}]"#);
+    let output = run_against(&base, &["run", "https://example.com/"]);
+    assert_eq!(
+        code(&output),
+        5,
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert!(String::from_utf8_lossy(&output.stderr).contains("no usable page"));
+    assert!(seen.try_iter().count() > 0);
+}
+
+#[test]
+fn an_unreachable_service_leaves_with_six() {
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let base = format!("http://{}", listener.local_addr().unwrap());
+    drop(listener);
+    let output = run_against(&base, &["credits"]);
+    assert_eq!(
+        code(&output),
+        6,
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert!(String::from_utf8_lossy(&output.stderr).contains("transport"));
+}
+
+#[test]
+fn a_failed_conversion_leaves_with_one_and_names_the_reason() {
+    let input = plan_file("conversion", "<h1>Example</h1>");
+    let (base, seen) =
+        stub(r#"[{"url":"https://example.com/","status":404,"content":"conversion failed"}]"#);
+    let output = run_against(&base, &["transform", "--input", input.to_str().unwrap()]);
+    assert_eq!(
+        code(&output),
+        1,
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert!(
+        String::from_utf8_lossy(&output.stderr).contains("transform produced no usable document")
+    );
+    assert!(seen.try_iter().count() > 0);
+    std::fs::remove_file(input).unwrap();
+}
+
+#[test]
+fn plan_goal_and_expansion_apply_without_flags() {
+    let path = plan_file(
+        "goal",
+        r#"{"goal":"html","urls":["https://example.com/"],"expand":1}"#,
+    );
+    let (base, seen) = stub(PAGE_AND_LINKS);
+    let output = run_against(&base, &["run", "--plan", path.to_str().unwrap()]);
+    assert_eq!(
+        code(&output),
+        0,
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert_eq!(report(&output)["served"], 2);
+    let requests: Vec<serde_json::Value> = seen
+        .try_iter()
+        .map(|s| serde_json::from_str(&s).unwrap())
+        .collect();
+    assert_eq!(requests.len(), 2);
+    assert_eq!(requests[0]["return_format"], "raw");
+    assert_eq!(requests[1]["url"], "https://example.com/a");
+    std::fs::remove_file(path).unwrap();
+}
+
+#[test]
+fn command_line_selectors_replace_the_plan_map() {
+    let path = plan_file(
+        "selectors",
+        r#"{"urls":["https://example.com/"],"selectors":{"title":"title"}}"#,
+    );
+    let fields = plan_file("fields", r#"{"price":".price"}"#);
+    let (base, seen) = stub(PAGE_AND_LINKS);
+    let output = run_against(
+        &base,
+        &[
+            "run",
+            "--plan",
+            path.to_str().unwrap(),
+            "--selectors",
+            fields.to_str().unwrap(),
+        ],
+    );
+    assert_eq!(
+        code(&output),
+        0,
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let request = seen.recv().unwrap();
+    assert!(request.contains(".price"), "{request}");
+    assert!(!request.contains("title"), "{request}");
+    std::fs::remove_file(path).unwrap();
+    std::fs::remove_file(fields).unwrap();
 }
