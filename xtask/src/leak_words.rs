@@ -276,3 +276,7 @@ mod tests {
         }
     }
 }
+
+#[cfg(test)]
+#[path = "private_denylist_tests.rs"]
+mod private_denylist_tests;

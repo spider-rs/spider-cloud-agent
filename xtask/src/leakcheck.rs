@@ -764,6 +764,15 @@ mod tests {
     use super::*;
 
     #[test]
+    fn private_list_is_required_only_when_requested() {
+        assert!(!parse_args(&[]).unwrap().require_private);
+        for mode in ["--tree", "--packaged", "--explain"] {
+            let options = parse_args(&[mode.into(), "--require-private".into()]).unwrap();
+            assert!(options.require_private);
+        }
+    }
+
+    #[test]
     fn rfc1918_is_caught_and_a_public_address_is_reported_separately() {
         assert_eq!(classify_ipv4([192, 168, 1, 1]), IpKind::Rfc1918);
         assert_eq!(classify_ipv4([10, 0, 0, 7]), IpKind::Rfc1918);

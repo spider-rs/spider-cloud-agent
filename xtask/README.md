@@ -73,5 +73,8 @@ cargo test -p xtask
 ```
 
 The tests cover the denylist matcher, the address classifier, the fixture host
-allowlist, the ASCII run detector and the redactor. A test filter that matches nothing
+allowlist, the ASCII run detector and the redactor. Private-list tests cover missing,
+unreadable, empty and usable files, plus the required-list option parser. They run in
+the unit test executable so another checkout sharing Cargo artifacts cannot replace
+the binary under test. A test filter that matches nothing
 exits 0, so read the reported count rather than the exit status.

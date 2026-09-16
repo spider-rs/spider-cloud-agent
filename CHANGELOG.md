@@ -9,7 +9,8 @@ error.
 
 - Release verification requires a readable private denylist with at least one term
   and cargo-deny. Ordinary verification keeps the private-list note and uses cached
-  advisories when cargo-deny is installed.
+  advisories when cargo-deny is installed. Private-list regression tests run inside
+  the unit test executable so concurrent checkouts cannot substitute an older CLI.
 - Ship Cargo.lock and declare Rust 1.88, the floor required by the locked ICU crates.
   Test and package with the lockfile, audit dependencies, dry-run all three crates
   in dependency order, and run the client and route allocation baselines.
