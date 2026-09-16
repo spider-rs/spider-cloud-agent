@@ -16,7 +16,7 @@ pub type CrawlBudget = BTreeMap<String, u32>;
 /// One rule applies to every link found. Use it when the site publishes links
 /// through a host you cannot fetch, such as a staging domain or a redirect
 /// wrapper, and you want the real target instead.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "type")]
 #[non_exhaustive]
 pub enum LinkRewriteRule {
@@ -42,6 +42,17 @@ pub enum LinkRewriteRule {
         /// What a match becomes. Capture groups can be referred to here.
         replace_with: String,
     },
+}
+
+// Payloads can contain login input, script literals or credential-bearing URLs.
+impl std::fmt::Debug for LinkRewriteRule {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let variant = match self {
+            Self::Replace { .. } => "Replace",
+            Self::Regex { .. } => "Regex",
+        };
+        f.debug_tuple(variant).field(&"<redacted>").finish()
+    }
 }
 
 impl LinkRewriteRule {

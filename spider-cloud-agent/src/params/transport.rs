@@ -128,7 +128,7 @@ pub enum RedirectPolicy {
 }
 
 /// Where to send progress, and which events are worth sending.
-#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct WebhookSettings {
     /// The URL that receives the calls.
     pub destination: String,
@@ -148,6 +148,19 @@ pub struct WebhookSettings {
     /// Include the page metadata in the find call.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub on_find_metadata: Option<bool>,
+}
+
+impl std::fmt::Debug for WebhookSettings {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("WebhookSettings")
+            .field("destination", &"<redacted>")
+            .field("on_credits_depleted", &self.on_credits_depleted)
+            .field("on_credits_half_depleted", &self.on_credits_half_depleted)
+            .field("on_website_status", &self.on_website_status)
+            .field("on_find", &self.on_find)
+            .field("on_find_metadata", &self.on_find_metadata)
+            .finish_non_exhaustive()
+    }
 }
 
 impl WebhookSettings {

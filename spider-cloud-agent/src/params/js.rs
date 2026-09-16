@@ -170,7 +170,7 @@ impl WaitFor {
 ///
 /// Steps run in order, per page, and a step that cannot find its target stops
 /// that page's chain rather than failing the request.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, PartialEq, Serialize, Deserialize)]
 #[non_exhaustive]
 pub enum WebAutomation {
     /// Run a script and carry on.
@@ -283,6 +283,37 @@ pub enum WebAutomation {
     /// Stop the chain here unless the previous step did what it said. Put it
     /// after a step whose failure makes the rest pointless.
     ValidateChain,
+}
+
+// Payloads can contain login input, script literals or credential-bearing URLs.
+impl std::fmt::Debug for WebAutomation {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let variant = match self {
+            Self::Evaluate(..) => "Evaluate",
+            Self::Click(..) => "Click",
+            Self::ClickAll(..) => "ClickAll",
+            Self::ClickAllClickable(..) => "ClickAllClickable",
+            Self::ClickPoint { .. } => "ClickPoint",
+            Self::ClickHold { .. } => "ClickHold",
+            Self::ClickHoldPoint { .. } => "ClickHoldPoint",
+            Self::ClickDrag { .. } => "ClickDrag",
+            Self::ClickDragPoint { .. } => "ClickDragPoint",
+            Self::Type { .. } => "Type",
+            Self::Wait(..) => "Wait",
+            Self::WaitForNavigation => "WaitForNavigation",
+            Self::WaitForDom { .. } => "WaitForDom",
+            Self::WaitFor(..) => "WaitFor",
+            Self::WaitForWithTimeout { .. } => "WaitForWithTimeout",
+            Self::WaitForAndClick(..) => "WaitForAndClick",
+            Self::ScrollX(..) => "ScrollX",
+            Self::ScrollY(..) => "ScrollY",
+            Self::Fill { .. } => "Fill",
+            Self::InfiniteScroll(..) => "InfiniteScroll",
+            Self::Screenshot { .. } => "Screenshot",
+            Self::ValidateChain => "ValidateChain",
+        };
+        f.debug_tuple(variant).field(&"<redacted>").finish()
+    }
 }
 
 /// Steps to run, keyed by the path they apply to.

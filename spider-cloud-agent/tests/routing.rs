@@ -332,6 +332,34 @@ async fn what_this_process_remembers_changes_the_next_call_to_the_same_site() {
 }
 
 #[tokio::test]
+async fn zero_capacity_keeps_routing_cold_while_sixteen_adapts() {
+    for capacity in [0, 16] {
+        let fake = Fake::always(200, REFUSED);
+        let spider = client(&fake)
+            .site_memory_capacity(capacity)
+            .router(HeuristicRouter::new())
+            .budget(Budget::default().with_attempts(2))
+            .build()
+            .expect("a client");
+        assert!(spider.scrape("https://example.com/a").send().await.is_err());
+        let first: serde_json::Value = serde_json::from_str(&fake.next_request()).unwrap();
+        let _ = fake.next_request();
+        assert!(spider.scrape("https://example.com/a").send().await.is_err());
+        let second: serde_json::Value = serde_json::from_str(&fake.next_request()).unwrap();
+        assert_eq!(spider.site_memory().capacity(), capacity);
+        if capacity == 0 {
+            assert_eq!(first, second);
+            assert!(spider.site_memory().is_empty());
+        } else {
+            assert_ne!(first["proxy"], second["proxy"]);
+            assert_eq!(second["proxy"], "residential");
+            assert_eq!(second["request"], "browser");
+            assert!(!spider.site_memory().is_empty());
+        }
+    }
+}
+
+#[tokio::test]
 async fn a_recorded_row_from_a_real_call_holds_no_host() {
     const DISTINCTIVE: &str = "zqxwvutsrqponmlk";
     let path =

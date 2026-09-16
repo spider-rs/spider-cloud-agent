@@ -51,7 +51,7 @@ pub type HeaderMap = BTreeMap<String, String>;
 /// Fields are grouped below roughly the way you would reach for them: what to
 /// fetch, how to fetch it, how far to go, what to run on the page, what to send
 /// back, and what you are willing to spend.
-#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Default, PartialEq, Serialize, Deserialize)]
 pub struct RequestParams {
     /// The address to fetch. Required by every endpoint that reads a page.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -266,6 +266,128 @@ pub struct RequestParams {
     pub skip_config_checks: Option<bool>,
 }
 
+// Keep free-form content out of diagnostics: URLs, scripts, selectors and text
+// can contain credentials. Serialization remains the original request body.
+impl std::fmt::Debug for RequestParams {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("RequestParams")
+            .field("url", &self.url.as_ref().map(|_| "<redacted>"))
+            .field("request", &self.request)
+            .field("proxy", &self.proxy)
+            .field("country_code", &self.country_code)
+            .field(
+                "remote_proxy",
+                &self.remote_proxy.as_deref().map(RedactedProxy),
+            )
+            .field("stealth", &self.stealth)
+            .field("fingerprint", &self.fingerprint)
+            .field(
+                "user_agent",
+                &self.user_agent.as_ref().map(|_| "<redacted>"),
+            )
+            .field("viewport", &self.viewport)
+            .field("locale", &self.locale.as_ref().map(|_| "<redacted>"))
+            .field("cookies", &self.cookies.as_ref().map(|_| "<redacted>"))
+            .field("headers", &self.headers.as_ref().map(RedactedHeaders))
+            .field("encoding", &self.encoding.as_ref().map(|_| "<redacted>"))
+            .field("storageless", &self.storageless)
+            .field("session", &self.session)
+            .field("redirect_policy", &self.redirect_policy)
+            .field("request_timeout", &self.request_timeout)
+            .field("limit", &self.limit)
+            .field("depth", &self.depth)
+            .field("budget", &self.budget.as_ref().map(|_| "<redacted>"))
+            .field("blacklist", &self.blacklist.as_ref().map(|_| "<redacted>"))
+            .field("whitelist", &self.whitelist.as_ref().map(|_| "<redacted>"))
+            .field("subdomains", &self.subdomains)
+            .field("tld", &self.tld)
+            .field(
+                "external_domains",
+                &self.external_domains.as_ref().map(|_| "<redacted>"),
+            )
+            .field("sitemap", &self.sitemap)
+            .field("respect_robots", &self.respect_robots)
+            .field(
+                "link_rewrite",
+                &self.link_rewrite.as_ref().map(|_| "<redacted>"),
+            )
+            .field("crawl_timeout", &self.crawl_timeout)
+            .field("run_in_background", &self.run_in_background)
+            .field("wait_for", &self.wait_for.as_ref().map(|_| "<redacted>"))
+            .field("scroll", &self.scroll)
+            .field(
+                "execution_scripts",
+                &self.execution_scripts.as_ref().map(|_| "<redacted>"),
+            )
+            .field(
+                "automation_scripts",
+                &self.automation_scripts.as_ref().map(|_| "<redacted>"),
+            )
+            .field(
+                "evaluate_on_new_document",
+                &self.evaluate_on_new_document.as_ref().map(|_| "<redacted>"),
+            )
+            .field("disable_intercept", &self.disable_intercept)
+            .field("full_resources", &self.full_resources)
+            .field("event_tracker", &self.event_tracker)
+            .field("return_format", &self.return_format)
+            .field(
+                "root_selector",
+                &self.root_selector.as_ref().map(|_| "<redacted>"),
+            )
+            .field("readability", &self.readability)
+            .field("clean_html", &self.clean_html)
+            .field(
+                "css_extraction_map",
+                &self.css_extraction_map.as_ref().map(|_| "<redacted>"),
+            )
+            .field("chunking_alg", &self.chunking_alg)
+            .field("metadata", &self.metadata)
+            .field("return_embeddings", &self.return_embeddings)
+            .field("return_headers", &self.return_headers)
+            .field("return_cookies", &self.return_cookies)
+            .field("return_page_links", &self.return_page_links)
+            .field("return_json_data", &self.return_json_data)
+            .field("text", &self.text.as_ref().map(|_| "<redacted>"))
+            .field("cache", &self.cache)
+            .field("webhooks", &self.webhooks)
+            .field("max_credits_allowed", &self.max_credits_allowed)
+            .field("max_credits_per_page", &self.max_credits_per_page)
+            .field("disable_hints", &self.disable_hints)
+            .field("skip_config_checks", &self.skip_config_checks)
+            .finish_non_exhaustive()
+    }
+}
+
+struct RedactedHeaders<'a>(&'a HeaderMap);
+
+impl std::fmt::Debug for RedactedHeaders<'_> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_map()
+            .entries(self.0.keys().map(|name| (name, "<redacted>")))
+            .finish()
+    }
+}
+
+// Only the proxy endpoint is useful in diagnostics. Paths, queries and
+// fragments can carry credentials too. Invalid input is never echoed.
+struct RedactedProxy<'a>(&'a str);
+
+impl std::fmt::Debug for RedactedProxy<'_> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match url::Url::parse(self.0) {
+            Ok(url) if url.has_host() => f
+                .debug_struct("Proxy")
+                .field("scheme", &url.scheme())
+                .field("userinfo", &"<redacted>")
+                .field("host", &url.host_str())
+                .field("port", &url.port())
+                .finish_non_exhaustive(),
+            _ => f.write_str("<redacted>"),
+        }
+    }
+}
+
 impl RequestParams {
     /// Parameters for one address, with everything else left to the service.
     pub fn url(url: impl Into<String>) -> RequestParams {
@@ -313,6 +435,65 @@ mod tests {
         clippy::string_slice
     )]
     use super::*;
+
+    #[test]
+    fn credential_payloads_are_redacted_but_still_serialize() {
+        let secret = "synthetic-private-value";
+        let automation = [
+            WebAutomation::Evaluate(secret.into()),
+            WebAutomation::Type {
+                value: secret.into(),
+                modifier: None,
+            },
+            WebAutomation::Fill {
+                selector: "input".into(),
+                value: secret.into(),
+            },
+        ];
+        let webhook = WebhookSettings::new(format!("https://example.com/{secret}"));
+        let rewrite = LinkRewriteRule::replace("old", secret);
+        let mut params = RequestParams::url(format!("https://user:{secret}@example.com"));
+        params.execution_scripts = Some([("/".into(), secret.into())].into());
+        params.evaluate_on_new_document = Some(secret.into());
+        params.automation_scripts = Some([("/".into(), automation.to_vec())].into());
+        params.webhooks = Some(webhook.clone());
+        params.link_rewrite = Some(rewrite.clone());
+        params.text = Some(secret.into());
+        for value in [
+            format!("{params:?}"),
+            format!("{automation:?}"),
+            format!("{webhook:?}"),
+            format!("{rewrite:?}"),
+        ] {
+            assert!(!value.contains(secret), "credential in Debug");
+            assert!(value.contains("<redacted>"));
+        }
+        let wire = serde_json::to_value(&params).expect("serialize");
+        assert!(wire["execution_scripts"]["/"] == secret);
+        assert!(wire["automation_scripts"]["/"][1]["Type"]["value"] == secret);
+        assert!(wire["evaluate_on_new_document"] == secret);
+        assert!(wire["text"] == secret);
+        assert!(wire["webhooks"]["destination"] == webhook.destination);
+    }
+
+    #[test]
+    fn proxy_debug_redacts_userinfo_and_rejects_malformed_input() {
+        for proxy in [
+            "http://synthetic-user:synthetic-password@example.com:8080",
+            "http://synthetic-user:synthetic-password@example.com:8080/private?token=synthetic-token",
+            "not a proxy synthetic-password",
+        ] {
+            let params = RequestParams { remote_proxy: Some(proxy.into()), ..RequestParams::default() };
+            let printed = format!("{params:#?}");
+            assert!(!printed.contains("synthetic-"), "credential in Debug");
+            assert!(printed.contains("<redacted>"));
+            if proxy.starts_with("http://") {
+                assert!(printed.contains("example.com"));
+                assert!(printed.contains("8080"));
+            }
+            assert!(serde_json::to_value(params).expect("serialize")["remote_proxy"] == proxy);
+        }
+    }
 
     #[test]
     fn default_params_serialize_to_an_empty_object() {

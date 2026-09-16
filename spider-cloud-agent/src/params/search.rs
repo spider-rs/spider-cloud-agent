@@ -31,7 +31,7 @@ pub enum TimeWindow {
 /// The fetch settings are the ordinary ones: everything in [`RequestParams`]
 /// applies to the pages behind the results, so a search that also reads the
 /// pages costs a search plus that many fetches.
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[derive(Clone, Default, Serialize, Deserialize)]
 pub struct SearchParams {
     /// The fetch settings applied to each result.
     #[serde(default, flatten)]
@@ -89,6 +89,30 @@ pub struct SearchParams {
     /// bill grows with the pages, so pair it with a credit cap.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub auto_pagination: Option<bool>,
+}
+
+impl std::fmt::Debug for SearchParams {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("SearchParams")
+            .field("base", &self.base)
+            .field("search", &"<redacted>")
+            .field("search_limit", &self.search_limit)
+            .field("fetch_page_content", &self.fetch_page_content)
+            .field("location", &self.location.as_ref().map(|_| "<redacted>"))
+            .field("country", &self.country)
+            .field("language", &self.language.as_ref().map(|_| "<redacted>"))
+            .field("latitude", &self.latitude)
+            .field("longitude", &self.longitude)
+            .field("radius", &self.radius)
+            .field("num", &self.num)
+            .field("tbs", &self.tbs)
+            .field("page", &self.page)
+            .field("website_limit", &self.website_limit)
+            .field("engine", &self.engine)
+            .field("quick_search", &self.quick_search)
+            .field("auto_pagination", &self.auto_pagination)
+            .finish_non_exhaustive()
+    }
 }
 
 impl SearchParams {
