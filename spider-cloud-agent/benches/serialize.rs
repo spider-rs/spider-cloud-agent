@@ -92,7 +92,7 @@ fn populated() -> RequestParams {
     params.return_headers = Some(true);
     params.return_cookies = Some(true);
     params.return_page_links = Some(true);
-    params.cache = Some(true);
+    params.cache = Some(spider_cloud_agent::params::Cache::Enabled(true));
 
     params
 }
