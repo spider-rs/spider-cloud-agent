@@ -7,6 +7,12 @@ error.
 
 ## Unreleased
 
+- Recheck retry and escalation waits against the operation deadline after observer
+  work. Refuse waits that no longer fit instead of consuming the remaining wall.
+  `f2_wait_admission_uses_time_spent_outside_the_policy` checks the exact boundary
+  with a paused clock.
+  `f1_retry_sleep_uses_the_operation_deadline` fixes its backoff so per-client
+  jitter cannot turn the deadline regression into a different two-call scenario.
 - Check attempt and credit room before every page or search send, including the
   first call. Retry and escalation estimates use the same cost floor as preflight,
   and remaining caps are mirrored onto each request. `f2_zero_caps_send_nothing_on_scrape_and_search`

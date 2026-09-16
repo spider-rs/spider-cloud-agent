@@ -302,6 +302,9 @@ async fn f1_retry_sleep_uses_the_operation_deadline() {
         .key("not-a-real-key")
         .base_url(stub.base.clone())
         .router(SlowObserver)
+        // Keep the 500 ms wait fixed: random jitter can legitimately leave
+        // room for another call after the observer's 200 ms of work.
+        .policy(spider_cloud_agent::policy::Policy::standard())
         .budget(Budget::default().with_wall(Duration::from_millis(600)))
         .build()
         .unwrap();

@@ -74,6 +74,14 @@ impl Deadline {
     pub(crate) fn expired(self) -> bool {
         self.0.is_some_and(|end| DeadlineInstant::now() >= end)
     }
+
+    /// Observer work is outside the pure policy's elapsed accounting. Recheck
+    /// its chosen wait against the actual clock before sleeping, without
+    /// shortening a server-directed wait to fit the remaining wall.
+    fn allows_wait(self, after: Duration) -> bool {
+        self.0
+            .is_none_or(|end| after < end.saturating_duration_since(DeadlineInstant::now()))
+    }
 }
 
 /// Run one call under a wall, or under none.
@@ -616,6 +624,9 @@ impl<'a> Call<'a> {
                     return Ok(outcome);
                 }
                 Next::Retry { after } => {
+                    if !deadline.allows_wait(after) {
+                        return Err(out_of_time(attempts));
+                    }
                     estimate = Budget::floor(if observed.was_billed() {
                         state.last_cost
                     } else {
@@ -632,6 +643,9 @@ impl<'a> Call<'a> {
                     }
                 }
                 Next::Escalate { step, after, .. } => {
+                    if !deadline.allows_wait(after) {
+                        return Err(out_of_time(attempts));
+                    }
                     estimate = step.estimate(if observed.was_billed() {
                         state.last_cost
                     } else {
@@ -1445,5 +1459,19 @@ mod tests {
         let mut shot = Body::Screenshot(bytes::Bytes::from_static(b"png"));
         replace_text(&mut shot, "nonsense".into());
         assert_eq!(shot, Body::Screenshot(bytes::Bytes::from_static(b"png")));
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn f2_wait_admission_uses_time_spent_outside_the_policy() {
+        let deadline = Deadline::new(Some(Duration::from_millis(600))).unwrap();
+        let wait = Duration::from_millis(500);
+        assert!(deadline.allows_wait(wait));
+        tokio::time::advance(Duration::from_millis(200)).await;
+        assert!(!deadline.allows_wait(wait));
+        assert!(!deadline.allows_wait(Duration::from_millis(400)));
+        assert!(deadline.allows_wait(Duration::from_millis(399)));
+        tokio::time::advance(Duration::from_millis(400)).await;
+        assert!(!deadline.allows_wait(Duration::ZERO));
+        assert!(Deadline::new(None).unwrap().allows_wait(Duration::MAX));
     }
 }
