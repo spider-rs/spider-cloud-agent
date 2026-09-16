@@ -202,98 +202,86 @@ fn queue(
 /// without fighting argv quoting. Anything named on the command line wins,
 /// because that is the thing the caller typed last.
 fn settle(global: &Global, args: &RunArgs) -> Run<Plan> {
-    let mut goal = args.goal;
-    let mut urls: Vec<String> = args.targets.urls.clone();
-    let mut expand = args.expand;
-    let mut max_pages = args.max_pages;
-    let mut credits = global.budget;
-    let mut selectors: Option<Value> = None;
-
-    if let Some(spec) = &args.plan {
-        let text = setup::source(spec)?;
-        let value: Value = serde_json::from_str(&text)
-            .map_err(|e| Failure::usage(format!("the plan in {spec} is not JSON: {e}")))?;
-        let Value::Object(plan) = value else {
-            return Err(Failure::usage(format!(
-                "the plan in {spec} has to be a JSON object."
-            )));
-        };
-        if let Some(Value::String(named)) = plan.get("goal") {
-            goal = parse_goal(named)?;
-        }
-        if let Some(Value::Array(listed)) = plan.get("urls") {
-            for one in listed {
-                match one {
-                    Value::String(url) => urls.push(url.clone()),
-                    other => {
-                        return Err(Failure::usage(format!(
-                            "an address in the plan is not a string: {other}"
-                        )))
-                    }
-                }
-            }
-        }
-        if let Some(value) = plan.get("expand").and_then(Value::as_u64) {
-            if args.expand == 0 {
-                expand = value as usize;
-            }
-        }
-        if max_pages.is_none() {
-            max_pages = plan
-                .get("max_pages")
-                .and_then(Value::as_u64)
-                .map(|n| n as usize);
-        }
-        if credits.is_none() {
-            credits = plan.get("budget").and_then(Value::as_f64);
-        }
-        if let Some(map) = plan.get("selectors") {
-            selectors = Some(map.clone());
-        }
-    }
-
-    let need = match (&args.selectors, selectors) {
-        (Some(spec), _) => setup::fields(spec, None)?,
-        (None, Some(map)) => setup::fields_from_value(&map, None)?,
-        (None, None) => setup::need(goal, None, None)?,
+    let plan: PlanFile = if let Some(spec) = &args.plan {
+        serde_json::from_str(&setup::source(spec)?)
+            .map_err(|e| Failure::usage(format!("the plan in {spec} is invalid: {e}")))?
+    } else {
+        PlanFile::default()
     };
-
-    if urls.is_empty() {
-        let listed = setup::addresses(&args.targets)?;
-        return Ok(Plan {
-            need,
-            urls: listed,
-            expand,
-            max_pages,
-            credits,
-        });
-    }
-
+    // Validate even values that a command line flag will replace.
+    let planned_goal = plan.goal.as_deref().map(parse_goal).transpose()?;
+    let planned_budget = plan
+        .budget
+        .map(|n| crate::cli::credits(&n.to_string()))
+        .transpose()
+        .map_err(|e| Failure::usage(format!("plan budget: {e}")))?;
+    let planned_fields = plan
+        .selectors
+        .as_ref()
+        .map(|map| setup::fields_from_value(map, None))
+        .transpose()?;
+    let goal = args.goal.or(planned_goal).unwrap_or(Goal::Markdown);
+    let need = if let Some(spec) = &args.selectors {
+        setup::fields(spec, None)?
+    } else if let Some(fields) = planned_fields {
+        fields
+    } else {
+        setup::need(goal, None, None)?
+    };
+    let mut urls = args.targets.urls.clone();
+    urls.extend(plan.urls);
+    let targets = crate::cli::Targets {
+        urls,
+        urls_from: args.targets.urls_from.clone(),
+    };
     Ok(Plan {
         need,
-        urls: setup::parse_all(&urls)?,
-        expand,
-        max_pages,
-        credits,
+        urls: setup::addresses(&targets)?,
+        expand: args.expand.or(plan.expand).unwrap_or(0),
+        max_pages: args.max_pages.or(plan.max_pages),
+        credits: global.budget.or(planned_budget),
     })
+}
+
+/// Values read from JSON before command line overrides are applied.
+#[derive(Default, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+struct PlanFile {
+    #[serde(default, deserialize_with = "present")]
+    goal: Option<String>,
+    #[serde(default)]
+    urls: Vec<String>,
+    #[serde(default, deserialize_with = "present")]
+    expand: Option<usize>,
+    #[serde(default, deserialize_with = "present")]
+    max_pages: Option<usize>,
+    #[serde(default, deserialize_with = "present")]
+    budget: Option<f64>,
+    #[serde(default, deserialize_with = "present")]
+    selectors: Option<Value>,
+}
+
+/// Missing keys are optional; a supplied null is not a typed value.
+fn present<'de, D, T>(deserializer: D) -> Result<Option<T>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+    T: serde::Deserialize<'de>,
+{
+    T::deserialize(deserializer).map(Some)
 }
 
 /// A goal named in a plan file.
 fn parse_goal(named: &str) -> Run<Goal> {
-    Ok(match named {
-        "text" => Goal::Text,
-        "markdown" => Goal::Markdown,
-        "html" => Goal::Html,
-        "links" => Goal::Links,
-        "metadata" => Goal::Metadata,
-        "fields" => Goal::Fields,
-        "screenshot" => Goal::Screenshot,
-        "raw" => Goal::Raw,
-        other => {
-            return Err(Failure::usage(format!(
-                "{other} is not a goal. The goals are text, markdown, html, links, metadata, fields, screenshot and raw."
-            )))
-        }
+    use clap::ValueEnum;
+    Goal::from_str(named, false).map_err(|_| {
+        let goals: Vec<String> = Goal::value_variants()
+            .iter()
+            .filter_map(|goal| goal.to_possible_value().map(|v| v.get_name().to_owned()))
+            .collect();
+        Failure::usage(format!(
+            "{named} is not a goal. The goals are {}.",
+            goals.join(", ")
+        ))
     })
 }
 
@@ -303,6 +291,58 @@ mod tests {
     // fail loudly rather than quietly measure nothing.
     #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
     use super::*;
+
+    #[test]
+    fn typed_plan_values_are_checked_before_overrides() {
+        use clap::Parser;
+        let path = std::env::temp_dir().join(format!(
+            "spider-agent-plan-unit-{}.json",
+            std::process::id()
+        ));
+        let parsed = crate::cli::Cli::try_parse_from([
+            "spider-agent",
+            "run",
+            "https://example.com/",
+            "--plan",
+            path.to_str().unwrap(),
+            "--goal",
+            "markdown",
+            "--expand",
+            "0",
+            "--budget",
+            "10",
+        ])
+        .unwrap();
+        let Some(crate::cli::Command::Run(ref args)) = parsed.command else {
+            panic!("run arguments")
+        };
+        for body in [
+            r#"{"budget":"10"}"#,
+            r#"{"budget":-1}"#,
+            r#"{"budget":null}"#,
+            r#"{"expand":-1}"#,
+            r#"{"expand":1.5}"#,
+            r#"{"max_pages":"2"}"#,
+            r#"{"goal":"typo"}"#,
+            r#"{"urls":[1]}"#,
+            r#"{"selectors":{}}"#,
+        ] {
+            std::fs::write(&path, body).unwrap();
+            let error = settle(&parsed.global, args).err().expect("invalid plan");
+            assert_eq!(error.code, Code::Usage, "{body}");
+        }
+        std::fs::write(
+            &path,
+            r#"{"goal":"html","expand":4,"budget":0,"urls":["https://example.com/b"]}"#,
+        )
+        .unwrap();
+        let plan = settle(&parsed.global, args).unwrap();
+        assert_eq!(plan.need, Need::Markdown);
+        assert_eq!(plan.expand, 0);
+        assert_eq!(plan.credits, Some(10.0));
+        assert_eq!(plan.urls.len(), 2);
+        std::fs::remove_file(path).unwrap();
+    }
 
     #[test]
     fn a_goal_that_is_not_one_names_the_goals() {

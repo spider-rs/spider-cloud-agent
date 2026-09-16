@@ -233,7 +233,7 @@ pub struct Global {
 /// NaN compares false against everything and a negative is spent before the
 /// first page, so each is a cap that does not do what the caller who typed
 /// one meant. Refused here, where the answer is a usage failure.
-fn credits(text: &str) -> Result<f64, String> {
+pub(crate) fn credits(text: &str) -> Result<f64, String> {
     let value: f64 = text
         .parse()
         .map_err(|_| format!("{text} is not a number of credits"))?;
@@ -448,16 +448,16 @@ pub struct RunArgs {
     pub targets: Targets,
 
     /// What counts as done for every address.
-    #[arg(long, value_enum, default_value = "markdown")]
-    pub goal: Goal,
+    #[arg(long, value_enum)]
+    pub goal: Option<Goal>,
 
     /// Named fields, as a JSON object. Use - for stdin. Implies --goal fields.
     #[arg(long, value_name = "FILE")]
     pub selectors: Option<String>,
 
     /// Follow up to this many same-host links found on the pages already read.
-    #[arg(long, default_value_t = 0, value_name = "N")]
-    pub expand: usize,
+    #[arg(long, value_name = "N")]
+    pub expand: Option<usize>,
 
     /// Stop after this many pages, however they were reached.
     #[arg(long, value_name = "N")]

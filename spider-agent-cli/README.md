@@ -45,6 +45,8 @@ Exit codes:
 A site that refused is code 5 and a key that was refused is code 3, which is
 the same split the library makes between the two status planes. Retrying the
 first from another address can work. Retrying the second buys the same refusal.
+`transform` uses code 1 when conversion attempts produce no usable document,
+because it works on supplied markup and fetches no site.
 
 ## Three invocations worth copying
 
@@ -134,6 +136,48 @@ spider-agent run https://example.com --goal markdown --expand 20 --budget 40 --n
 
 No large model is called anywhere in this. The decisions above are rules,
 a local classifier over the shape of a URL, and arithmetic against a budget.
+
+## Run from a plan file
+
+`spider-agent run --plan plan.json --ndjson` reads a JSON object such as:
+
+```json
+{
+  "goal": "fields",
+  "urls": ["https://example.com/", "https://example.com/products"],
+  "expand": 20,
+  "max_pages": 50,
+  "budget": 10,
+  "selectors": {
+    "price": ".price",
+    "title": ["h1", ".product-title"]
+  }
+}
+```
+
+All six keys are optional. `goal` takes the same names as `run --goal` and
+otherwise defaults to `markdown`. `urls` is a list of address strings.
+`expand` and `max_pages` are nonnegative integers; expansion defaults to zero
+and the page count has no default cap. `budget` is a finite, nonnegative number
+of credits, not a quoted string. `selectors` is a nonempty object mapping field
+names to a selector string or a list of strings, and implies the fields goal.
+Unknown keys and invalid values stop with exit 2 before a request goes out,
+even when a flag would replace that value.
+
+Explicit command line flags win over the matching plan values, including
+`--goal markdown` and `--expand 0`. `--selectors` replaces the plan's selector
+map. Addresses accumulate in order: positional URLs, plan URLs, then
+`--urls-from`. With none of these, `run` reads addresses from stdin.
+`--plan -` reads the JSON from stdin. A leading UTF-8 byte order mark is accepted.
+
+`spider-agent schema` includes the plan shape under `plan`. Its `command_tree`
+comes from clap and includes the bare invocation, subcommands and inherited
+flags. `commands` holds the same subcommand map. Each argument names its long
+and short flags or positional index, arity (`max: null` means unbounded), value
+type, defaults, possible values, required status, conflicts and requirements.
+Conflicts and requirements refer to argument IDs in that command. `command_notes`
+keeps the command descriptions, and `exit_codes` maps numbers to the labels used
+in error records.
 
 ## Where results go
 

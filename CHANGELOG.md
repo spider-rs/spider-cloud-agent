@@ -15,6 +15,25 @@ error.
   return no record and writes do nothing. Unit tests cover disabled storage, and
   a loopback routing test compares repeated calls with capacities 0 and 16.
 
+- `spider-agent run --plan` now validates typed plan values before making a call.
+  Explicit flags override the plan, including `--goal markdown` and `--expand 0`.
+  A quoted or negative budget leaves with code 2 instead of dropping the cap.
+  Plan addresses accumulate with positional URLs and `--urls-from`.
+- `spider-agent schema` now emits clap's command tree with argument types, arity,
+  defaults, choices, required flags, conflicts and requirements, plus the plan
+  format. Command prose lives under `command_notes`; `commands` contains structured
+  subcommands. The exit table uses the labels from the process exit code type.
+- `spider-agent transform` leaves with code 1 and names the failed conversion
+  when its attempts produce no usable document. It previously used the site
+  refusal code even though transform fetches no site.
+
+### Breaking schema output changes
+
+`commands` now maps names to structured command objects instead of prose. Readers
+that need the old command descriptions must use `command_notes`. `exit_codes`
+now maps numbers to bare labels such as `budget`, replacing descriptions such as
+`budget: a cap stopped the run`. These labels match error records.
+
 ## [0.3.1]
 
 `spider-agent --budget` and `--wall` now cap the whole run on every command. They were
