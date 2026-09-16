@@ -154,8 +154,8 @@ citations. Run `scripts/check-anchors.sh` after moving code so these references 
 13. **Every ladder step sets documented request parameters and nothing else.** The exact changed
     keys are checked for every rung and standard step on default and populated requests at
     `spider-cloud-agent/src/policy/ladder.rs:368`
-    (`fn every_rung_and_standard_step_changes_exactly_its_documented_keys`).
-    (`spider-cloud-agent/src/policy/mod.rs:31` (`Every step sets documented request parameters`).)
+    (`fn every_rung_and_standard_step_changes_exactly_its_documented_keys`), matching the contract
+    at `spider-cloud-agent/src/policy/mod.rs:31` (`Every step sets documented request parameters`).
     An escalation is therefore always a change the caller could have made by hand and can read back
     off the request afterwards. Nothing in the ladder selects the software that performs a rendered
     fetch, and nothing in it touches the measures the service applies on the caller's behalf, which

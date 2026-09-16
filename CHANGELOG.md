@@ -36,6 +36,7 @@ now maps numbers to bare labels such as `budget`, replacing descriptions such as
 
 - Re-anchor every principle to its named code or check. The anchor gate checks
   symbols within two lines and requires at least 48 citations.
+  Moving the bearer anchor to line 1 was rejected; restoring it passed all 52 anchors.
 - Gate the router's normal dependencies and production source, and the policy's
   freedom from I/O. Each source check counts the files it visits.
 - Check every ladder rung and standard step for exactly its documented changed
