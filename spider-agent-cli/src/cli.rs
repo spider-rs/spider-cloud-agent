@@ -129,6 +129,25 @@ For what is left to spend right now, `credits` is the shorter answer."
     Route(RouteArgs),
     /// The command tree and the record schema, as JSON.
     Schema,
+    /// Install the newest release now instead of on a later run.
+    #[command(
+        long_about = "Install the newest release now instead of on a later run.
+
+Once a day, a run checks for a newer release in the background, downloads it, \
+checks it against the release's SHA256SUMS.txt, and leaves it beside the \
+binary. The next run moves it into place and carries on under the new \
+version. This command does all of that at once and says what it did on \
+stderr.
+
+Exit codes: 0 installed or already the newest, 1 the release was refused or \
+the install failed, 2 self update is turned off, 6 the release host could not \
+be reached, 7 this binary belongs to cargo, a package manager, or a directory \
+this user cannot write, so it is left alone.
+
+Set SPIDER_AGENT_NO_UPDATE to any value, or pass --no-update, to turn self \
+update off, including the background check and an update already waiting."
+    )]
+    Update,
 }
 
 /// Settings every command reads.
@@ -220,6 +239,11 @@ pub struct Global {
     /// Keep cookies and headers across the requests made to one site.
     #[arg(long, global = true)]
     pub session: bool,
+
+    /// Do not check for, download or install a new release on this run. The
+    /// same as setting SPIDER_AGENT_NO_UPDATE.
+    #[arg(long, global = true)]
+    pub no_update: bool,
 
     /// Print nothing on stderr but failures.
     #[arg(short, long, global = true, conflicts_with = "verbose")]

@@ -94,6 +94,7 @@ spider-agent <url>            scrape, which is what you get with no command
   login      sign in through a browser and store the key
   route      what transport would be chosen. Local, no call, no spend
   schema     the command tree and the record contract, as JSON
+  update     install the newest release now
 ```
 
 Scrape and fetch are two endpoints, not two spellings. Scrape sends the address
@@ -206,6 +207,78 @@ the default ACL; the keyring is tried first if that feature is enabled.
 The key is never logged. `spider-agent login --print` writes it to stdout,
 including in a key record with `--json`, and does not store it.
 
+## Updates
+
+A release binary keeps itself current. Once every 24 hours, a run starts a
+detached `spider-agent update` and goes on with its own command without
+waiting. The child's standard streams are closed, so the command's output,
+exit code and timing are the same whether a check happened or not.
+
+The child reads the newest release tag from the redirect that
+`github.com/spider-rs/spider-cloud-agent/releases/latest` answers with. That
+is the web page, not `api.github.com`, so it does not count against the API's
+limit of 60 unauthenticated calls an hour. When the tag is newer than the
+running binary, the child downloads `SHA256SUMS.txt` and the archive for this
+platform from that release. It refuses the archive unless its SHA-256 matches
+the line for it. Only then does it open the archive, take out `spider-agent`,
+run it with `--version`, and require the tagged version back. It stages the
+binary as `.spider-agent.update` beside the installed one and records its
+digest in `~/.spider/update.json`, which is mode 0600 like the credentials file.
+
+The next run hashes the staged file. If the digest matches the recorded one,
+it renames the file over the binary and starts the new binary in its place
+with the same arguments, so that run already uses the new version. A staged
+file that no check recorded, or whose bytes changed since, gets deleted and
+never runs. The one line this prints goes to stderr, and `--quiet` silences it.
+
+Nothing here can fail your command. An outage, a rate limit or a missing
+release is a silent skip until the next day's check. An archive that failed
+its checksum, or would not open, gets one line on stderr on the next run, even
+under `--quiet`, and nothing is installed.
+
+Some installs are left alone, with one note on stderr per release saying how
+to update:
+
+- A binary under a `cargo install` root, one with `.crates.toml` or
+  `.crates2.json` next to its `bin`. Replacing it would leave cargo's record
+  claiming the old version. Run `cargo install spider-agent-cli --locked`.
+- A binary under a Homebrew `Cellar` or `/nix/store`.
+- A binary in a directory you cannot write, such as `/usr/local/bin` owned by
+  root.
+
+`spider-agent update` does all of this in the foreground and installs at once.
+It writes nothing to stdout. It exits 0 when it installed a release or the
+binary is already the newest, 1 when the release was refused or the install
+failed, 2 when updates are turned off, 6 when the release host could not be
+reached or is limiting requests, and 7 when the install is one of those left
+alone.
+
+Set `SPIDER_AGENT_NO_UPDATE` to any non-empty value, or pass `--no-update`,
+to turn all of it off. Then no check runs, nothing downloads, a file staged
+earlier stays uninstalled, and `update` exits 2. Put `--no-update` after the
+command name, like every other flag. Debug builds never update themselves.
+
+### What a release must contain
+
+The updater builds every URL from the tag, so a release has to use these
+names exactly:
+
+- The tag is `v` followed by three numbers, such as `v0.4.1`, marked as the
+  latest release. A tag with a suffix such as `-rc.1` is never picked up.
+- One archive per platform, named `spider-agent-<version>-<target>.tar.gz`,
+  for the targets `aarch64-apple-darwin`, `x86_64-apple-darwin`,
+  `aarch64-unknown-linux-gnu` and `x86_64-unknown-linux-gnu`. Other platforms
+  do not update themselves.
+- Each archive holds a regular file named `spider-agent` at its root, which
+  prints `spider-agent <version>` for `--version`. The updater ignores other
+  entries. On macOS, build the archive with `COPYFILE_DISABLE=1` to keep the
+  `._spider-agent` entry out.
+- `SHA256SUMS.txt` in the same release, as `shasum -a 256` writes it, with one
+  line for every archive.
+
+Every machine that checks refuses a release with no checksum line for its
+archive, or whose binary answers `--version` with another version.
+
 ## Environment
 
 | variable | effect |
@@ -213,6 +286,7 @@ including in a key record with `--json`, and does not store it.
 | `SPIDER_API_KEY` | First environment source for the API key. Empty values after trimming are skipped. |
 | `SPIDER_CLOUD_API_KEY` | Fallback API key when `SPIDER_API_KEY` is empty or unset. |
 | `SPIDER_API_URL` | Overrides the API base, normally `https://api.spider.cloud`, for every key-bearing API request. The API base must use https. |
+| `SPIDER_AGENT_NO_UPDATE` | Any non-empty value turns off the update check, the download and the install of a staged update. The same as `--no-update`. |
 | `SPIDER_MCP_SERVER` | Overrides the sign-in discovery server, normally `https://mcp.spider.cloud/mcp`, when OAuth is enabled. |
 
 Set either server override only to a server you trust: one receives API requests

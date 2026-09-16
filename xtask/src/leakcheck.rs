@@ -20,6 +20,12 @@ pub const ALLOWED_ENV_VARS: &[&str] = &[
     "SPIDER_CLOUD_API_KEY",
     "SPIDER_API_URL",
     "SPIDER_MCP_SERVER",
+    // Self update in spider-agent: the opt out, the internal marker the
+    // background check runs under, and the release base read by debug builds
+    // only, so a test can point it at a loopback stub.
+    "SPIDER_AGENT_NO_UPDATE",
+    "SPIDER_AGENT_UPDATE_BACKGROUND",
+    "SPIDER_AGENT_UPDATE_BASE",
 ];
 
 /// Bytes at the front of a model artifact that may hold printable ASCII, for a magic

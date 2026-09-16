@@ -350,29 +350,88 @@ fn tighten(path: &Path) -> std::io::Result<Option<PathBuf>> {
 /// rather than writing through it. The new file is always at [`FILE_MODE`], so
 /// an old file with a wider mode is gone rather than narrowed.
 fn write_key_file(home: &Path, key: &str) -> std::io::Result<PathBuf> {
-    use std::io::Write;
+    write_owner_only(&home.join(CREDENTIALS_PATH), key.as_bytes())
+}
 
-    let path = home.join(CREDENTIALS_PATH);
-    let parent = path.parent().ok_or_else(|| {
-        std::io::Error::new(std::io::ErrorKind::InvalidInput, "no parent directory")
-    })?;
+/// The directory the credentials file lives in, relative to the home directory.
+pub const SPIDER_DIR: &str = ".spider";
 
+/// `~/.spider`, or `None` when there is no home directory. Nothing is created.
+pub fn spider_dir() -> Option<PathBuf> {
+    home_dir().map(|home| home.join(SPIDER_DIR))
+}
+
+/// Create `~/.spider` if it is missing, at [`DIR_MODE`] on Unix, and return it.
+///
+/// A directory that was already there keeps the mode it has, for the reason
+/// the credentials file keeps its mode on read.
+pub fn ensure_spider_dir() -> std::io::Result<PathBuf> {
+    let dir = spider_dir()
+        .ok_or_else(|| std::io::Error::new(std::io::ErrorKind::NotFound, "no home directory"))?;
+    create_owner_only_dir(&dir)?;
+    Ok(dir)
+}
+
+/// Replace a small file inside `~/.spider` the way the credentials file is
+/// replaced: a fresh owner only file beside it, synced, then renamed over it.
+///
+/// For state that sits beside the key and is nobody else's business, such as
+/// when the command line tool last looked for a release. `name` is one plain
+/// file name. A separator, `..`, or the credentials file's own name is
+/// refused, so this cannot be pointed at the key or out of the directory.
+pub fn write_private_file(name: &str, contents: &[u8]) -> std::io::Result<PathBuf> {
+    let plain = !name.is_empty()
+        && name != "."
+        && name != ".."
+        && !name.contains(['/', '\\'])
+        && Some(name)
+            != Path::new(CREDENTIALS_PATH)
+                .file_name()
+                .and_then(|n| n.to_str());
+    if !plain {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidInput,
+            "a private file name is one plain name, and not the credentials file",
+        ));
+    }
+    let dir = spider_dir()
+        .ok_or_else(|| std::io::Error::new(std::io::ErrorKind::NotFound, "no home directory"))?;
+    write_owner_only(&dir.join(name), contents)
+}
+
+/// The directory, created with its final mode at the moment it is created.
+fn create_owner_only_dir(dir: &Path) -> std::io::Result<()> {
     #[cfg(unix)]
     {
         use std::os::unix::fs::DirBuilderExt;
         std::fs::DirBuilder::new()
             .recursive(true)
             .mode(DIR_MODE)
-            .create(parent)?;
+            .create(dir)
         // A directory that was already there keeps whatever mode it has. Only
         // the file is forced, because that is the one holding the key.
     }
     #[cfg(not(unix))]
-    std::fs::create_dir_all(parent)?;
+    std::fs::create_dir_all(dir)
+}
 
-    let (mut file, staged) = create_staging_file(parent)?;
+/// The body of [`write_key_file`], for any file that must be owner only from
+/// the moment it exists and replaced whole rather than rewritten in place.
+fn write_owner_only(path: &Path, contents: &[u8]) -> std::io::Result<PathBuf> {
+    use std::io::Write;
+
+    let parent = path.parent().ok_or_else(|| {
+        std::io::Error::new(std::io::ErrorKind::InvalidInput, "no parent directory")
+    })?;
+    let stem = path
+        .file_name()
+        .and_then(|name| name.to_str())
+        .unwrap_or("private");
+    create_owner_only_dir(parent)?;
+
+    let (mut file, staged) = create_staging_file(parent, stem)?;
     let written = file
-        .write_all(key.as_bytes())
+        .write_all(contents)
         .and_then(|()| file.flush())
         .and_then(|()| file.sync_all());
     drop(file);
@@ -380,7 +439,7 @@ fn write_key_file(home: &Path, key: &str) -> std::io::Result<PathBuf> {
         let _ = std::fs::remove_file(&staged);
         return Err(e);
     }
-    if let Err(e) = std::fs::rename(&staged, &path) {
+    if let Err(e) = std::fs::rename(&staged, path) {
         let _ = std::fs::remove_file(&staged);
         return Err(e);
     }
@@ -391,7 +450,7 @@ fn write_key_file(home: &Path, key: &str) -> std::io::Result<PathBuf> {
     if let Ok(dir) = std::fs::File::open(parent) {
         let _ = dir.sync_all();
     }
-    Ok(path)
+    Ok(path.to_path_buf())
 }
 
 /// How many names are tried for the staging file before giving up. Two writers
@@ -405,7 +464,7 @@ const STAGING_ATTEMPTS: u32 = 8;
 /// `create_new` is what makes it fresh: it fails rather than opening a file
 /// that is already there, so it never follows a symlink someone planted and
 /// never truncates another process's half written key.
-fn create_staging_file(parent: &Path) -> std::io::Result<(std::fs::File, PathBuf)> {
+fn create_staging_file(parent: &Path, stem: &str) -> std::io::Result<(std::fs::File, PathBuf)> {
     let pid = std::process::id();
     let mut last = std::io::Error::new(std::io::ErrorKind::AlreadyExists, "no free staging name");
     for attempt in 0..STAGING_ATTEMPTS {
@@ -413,7 +472,7 @@ fn create_staging_file(parent: &Path) -> std::io::Result<(std::fs::File, PathBuf
             .duration_since(std::time::UNIX_EPOCH)
             .map(|d| d.as_nanos())
             .unwrap_or(0);
-        let staged = parent.join(format!(".credentials.{pid}.{nanos}.{attempt}.tmp"));
+        let staged = parent.join(format!(".{stem}.{pid}.{nanos}.{attempt}.tmp"));
         let mut options = std::fs::OpenOptions::new();
         options.write(true).create_new(true);
         #[cfg(unix)]
@@ -701,6 +760,22 @@ mod tests {
         let printed = format!("{:?}", Stored::File(PathBuf::from("/tmp/x")));
         assert!(!printed.contains(SECRET), "{printed}");
         assert!(!format!("{:?}", Stored::Keyring).contains(SECRET));
+    }
+
+    #[test]
+    fn a_private_file_cannot_be_the_key_or_leave_the_directory() {
+        for name in [
+            "credentials",
+            "",
+            ".",
+            "..",
+            "../credentials",
+            "a/b",
+            "a\\b",
+        ] {
+            let refused = write_private_file(name, b"x").unwrap_err();
+            assert_eq!(refused.kind(), std::io::ErrorKind::InvalidInput, "{name:?}");
+        }
     }
 
     #[test]

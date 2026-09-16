@@ -5,6 +5,25 @@ response gives back, or what an escalation costs gets one whether or not it brea
 signature, because those are the changes that show up on a bill rather than in a compiler
 error.
 
+## Unreleased
+
+- `spider-agent` updates itself. Once a day a run starts a background check
+  against the GitHub releases, downloads the archive for its platform, and
+  stages the binary only after the archive matches the release's
+  `SHA256SUMS.txt` and the binary answers `--version` with the tagged version.
+  The next run renames it into place and runs the command on it. The check
+  never changes a command's output or exit code. A `cargo install` binary, a
+  Homebrew or Nix one, and one in a directory the user cannot write stay as
+  they are, with a note on how to update.
+- New `spider-agent update` command. It installs the newest release in the
+  foreground, reports on stderr, and exits 0, 1, 2, 6 or 7.
+- New `--no-update` flag and `SPIDER_AGENT_NO_UPDATE` variable. Either one
+  turns off the check, the download and the install of a staged update.
+- `spider_cloud_agent::auth::store` gains `spider_dir`, `ensure_spider_dir`
+  and `write_private_file`. They write into `~/.spider` with the credentials
+  file's modes and its write-then-rename. The CLI keeps its update state there.
+- The CLI depends on `reqwest`, `sha2` and `flate2` directly.
+
 ## 0.4.0 (2026-09-16)
 
 - Reject redirects in the built-in API transport with `Error::Transport` before

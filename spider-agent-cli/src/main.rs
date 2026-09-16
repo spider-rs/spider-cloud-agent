@@ -19,6 +19,7 @@ mod exit;
 mod progress;
 mod records;
 mod setup;
+mod update;
 
 use std::io::Write;
 use std::process::ExitCode;
@@ -35,6 +36,10 @@ fn main() -> ExitCode {
         Err(error) => return from_clap(error),
     };
     let log = Log::new(parsed.global.quiet, parsed.global.verbose);
+
+    // Before anything else, so an update staged by an earlier run is in place
+    // and running this command. Nothing in here can fail the command.
+    update::before_command(&parsed.global, parsed.command.as_ref(), log);
 
     let runtime = match tokio::runtime::Builder::new_current_thread()
         .enable_all()
@@ -80,6 +85,7 @@ async fn dispatch(parsed: &Cli, log: Log) -> Result<Code, Failure> {
         Some(Command::Login(args)) => commands::account::login(global, args, log).await,
         Some(Command::Route(args)) => commands::local::route(global, args, log),
         Some(Command::Schema) => commands::local::schema(global),
+        Some(Command::Update) => update::command(global, log).await,
     }
 }
 

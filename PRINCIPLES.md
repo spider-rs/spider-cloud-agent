@@ -196,3 +196,34 @@ citations. Run `scripts/check-anchors.sh` after moving code so these references 
     `docs/action-vocabulary.md`. Every promotion is a label the router has to learn and a column the
     trainer has to carry, and a new routing action lands in `spider-route` first
     (`docs/action-vocabulary.md`). The extra step is there to be paid, not routed around.
+
+## Self update
+
+18. **Bytes from a release are never staged, run or installed before they match the release's
+    `SHA256SUMS.txt`, and a staged file is installed only if it still hashes to what was
+    verified.** The archive digest is compared before the archive is opened
+    (`spider-agent-cli/src/update/release.rs:238` (`if actual != expected {`)). The apply step
+    hashes the staged file and deletes it on a mismatch
+    (`spider-agent-cli/src/update/install.rs:308` (`Ok(actual) if actual == *expected`)), against a
+    digest kept in the owner only `~/.spider/update.json`, not beside the binary. Only https is
+    fetched (`spider-agent-cli/src/update/release.rs:43` (`pub fn allowed(`)), and the one
+    exception for a loopback test stub exists only in a debug build
+    (`spider-agent-cli/src/update/mod.rs:75` (`fn settings() -> Option<Settings>`)). The tests that
+    hold this are `spider-agent-cli/tests/update.rs:427`
+    (`fn an_archive_that_does_not_match_its_checksum_is_refused`) and
+    `spider-agent-cli/tests/update.rs:644`
+    (`fn a_staged_file_whose_bytes_changed_is_deleted_and_the_command_still_runs`). An updater
+    replaces the program people run next, often from scripts nobody watches. One that installs
+    unverified bytes hands that program to whoever can tamper with a download or write a file
+    next to the binary.
+
+19. **An update never changes what the caller's command does.** The check runs in a detached
+    child with its standard streams closed, and every failure becomes a stderr line or nothing
+    (`spider-agent-cli/src/update/mod.rs:210` (`pub fn before_command(`)). Binaries owned by
+    cargo, a package manager, or a directory the user cannot write are left alone
+    (`spider-agent-cli/src/update/install.rs:84` (`pub fn not_ours(`)). The test is
+    `spider-agent-cli/tests/update.rs:611`
+    (`fn a_failing_update_leaves_the_command_its_own_exit_code_and_output`), which compares code,
+    stdout and stderr against an opted out run. This tool is called by other programs that branch
+    on its exit code, and an updater that can turn a scrape into a failure breaks them for a
+    reason unrelated to the page.

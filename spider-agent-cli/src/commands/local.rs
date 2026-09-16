@@ -86,7 +86,8 @@ fn document() -> serde_json::Value {
             "profile": "the account itself: plan limits, totals and billing caps. One row. Default format ndjson.",
             "login": "sign in through a browser and store the key.",
             "route": "what transport would be chosen. Local, no call, no spend.",
-            "schema": "this document."
+            "schema": "this document.",
+            "update": "install the newest release now. Reports on stderr. Exit 0 installed or current, 1 refused or failed, 2 turned off, 6 unreachable, 7 not this tool's to replace."
         },
         "goals": ["text", "markdown", "html", "links", "metadata", "fields", "screenshot", "raw"],
         "formats": {
@@ -383,12 +384,13 @@ mod tests {
             "login",
             "route",
             "schema",
+            "update",
         ] {
             assert!(commands.contains_key(name), "{name} is missing");
         }
         assert_eq!(
             commands.len(),
-            17,
+            18,
             "a command was added or removed without a line here"
         );
     }
