@@ -137,10 +137,10 @@ fn a_page_with_every_extra_keeps_each_one_where_it_belongs() {
         meta.final_url.as_deref(),
         Some("https://example.com/pricing")
     );
-    assert_eq!(
-        meta.crawl_id.as_deref(),
-        Some("3f1c2a9e-5b7d-4c8e-9f01-2a3b4c5d6e7f")
-    );
+    // The crawl id is a UUID, which reads as a credential to the redactor,
+    // so the fixture carries the replacement and not the id. What matters
+    // here is that the field lands typed rather than in the extra map.
+    assert_eq!(meta.crawl_id.as_deref(), Some("REDACTED"));
     assert_eq!(meta.embedding.as_ref().map(Vec::len), Some(4));
     assert!(meta.extra.is_empty(), "{:?}", meta.extra);
 
