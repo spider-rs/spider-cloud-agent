@@ -1851,26 +1851,30 @@ fn fast_client(stub: &Stub) -> Spider {
 async fn api_401_and_402_stop_after_one_wire_attempt() {
     for code in [401, 402] {
         let stub = serve_answers(&[Answer::with(code, "", r#"{"error":"account refused"}"#)]);
-        let result = fast_client(&stub)
+        let error = fast_client(&stub)
             .scrape("https://example.com")
             .send()
-            .await;
+            .await
+            .unwrap_err();
         match code {
             401 => assert!(
                 matches!(
-                    result,
-                    Err(Error::Auth {
+                    error.cause(),
+                    Error::Auth {
                         cause: AuthCause::Refused,
                         ..
-                    })
+                    }
                 ),
-                "{result:?}"
+                "{error:?}"
             ),
             _ => assert!(
-                matches!(result, Err(Error::InsufficientCredits)),
-                "{result:?}"
+                matches!(error.cause(), Error::InsufficientCredits),
+                "{error:?}"
             ),
         }
+        assert_eq!(error.attempts().len(), 1);
+        assert_eq!(error.attempts()[0].api.code(), code);
+        assert!(!error.attempts()[0].charge_unknown);
         assert_eq!(stub.sent().len(), 1);
     }
 }
@@ -1882,14 +1886,18 @@ async fn api_401_and_402_stop_after_one_wire_attempt() {
 #[tokio::test]
 async fn api_403_stops_after_one_wire_attempt() {
     let stub = serve_answers(&[Answer::with(403, "", r#"{"error":"forbidden"}"#)]);
-    let result = fast_client(&stub)
+    let error = fast_client(&stub)
         .scrape("https://example.com")
         .send()
-        .await;
+        .await
+        .unwrap_err();
     assert!(
-        matches!(result, Err(Error::Api { status, .. }) if status.code() == 403),
-        "{result:?}"
+        matches!(error.cause(), Error::Api { status, .. } if status.code() == 403),
+        "{error:?}"
     );
+    assert_eq!(error.attempts().len(), 1);
+    assert_eq!(error.attempts()[0].api.code(), 403);
+    assert!(!error.attempts()[0].charge_unknown);
     assert_eq!(stub.sent().len(), 1);
 }
 
@@ -1981,11 +1989,14 @@ async fn a_body_shorter_than_content_length_is_a_transport_error() {
         PAGE_ANSWER.len() + 10
     );
     let stub = serve_raw(&[raw.into_bytes()]);
-    let result = fast_client(&stub)
+    let error = fast_client(&stub)
         .scrape("https://example.com")
         .send()
-        .await;
-    assert!(matches!(result, Err(Error::Transport(_))), "{result:?}");
+        .await
+        .unwrap_err();
+    assert!(matches!(error.cause(), Error::Transport(_)), "{error:?}");
+    assert_eq!(error.attempts().len(), 1);
+    assert!(error.attempts()[0].charge_unknown);
     assert_eq!(stub.sent().len(), 1);
 }
 
@@ -1997,11 +2008,14 @@ async fn a_body_shorter_than_content_length_is_a_transport_error() {
 async fn a_connection_closed_mid_body_is_a_transport_error() {
     let raw = b"HTTP/1.1 200 OK\r\ntransfer-encoding: chunked\r\nconnection: close\r\n\r\n40\r\n{\"url\":";
     let stub = serve_raw(&[raw.to_vec()]);
-    let result = fast_client(&stub)
+    let error = fast_client(&stub)
         .scrape("https://example.com")
         .send()
-        .await;
-    assert!(matches!(result, Err(Error::Transport(_))), "{result:?}");
+        .await
+        .unwrap_err();
+    assert!(matches!(error.cause(), Error::Transport(_)), "{error:?}");
+    assert_eq!(error.attempts().len(), 1);
+    assert!(error.attempts()[0].charge_unknown);
     assert_eq!(stub.sent().len(), 1);
 }
 
@@ -2048,11 +2062,15 @@ async fn gzip_is_not_decoded_by_the_builtin_transport() {
     .into_bytes();
     raw.extend_from_slice(body);
     let stub = serve_raw(&[raw]);
-    let result = fast_client(&stub)
+    let error = fast_client(&stub)
         .scrape("https://example.com")
         .send()
-        .await;
-    assert!(matches!(result, Err(Error::Decode(_))), "{result:?}");
+        .await
+        .unwrap_err();
+    assert!(matches!(error.cause(), Error::Decode(_)), "{error:?}");
+    assert_eq!(error.attempts().len(), 1);
+    assert_eq!(error.attempts()[0].api.code(), 200);
+    assert!(error.attempts()[0].charge_unknown);
     assert_eq!(stub.sent().len(), 1);
 }
 
@@ -2068,11 +2086,14 @@ async fn a_302_redirect_is_a_transport_error_after_one_request() {
         Answer::with(302, "location: /redirected\r\n", ""),
         Answer::ok(PAGE_ANSWER),
     ]);
-    let result = fast_client(&stub)
+    let error = fast_client(&stub)
         .scrape("https://example.com")
         .send()
-        .await;
-    assert!(matches!(result, Err(Error::Transport(_))), "{result:?}");
+        .await
+        .unwrap_err();
+    assert!(matches!(error.cause(), Error::Transport(_)), "{error:?}");
+    assert_eq!(error.attempts().len(), 1);
+    assert!(error.attempts()[0].charge_unknown);
     let sent = stub.sent();
     assert_eq!(sent.len(), 1);
     assert_eq!(sent[0].line, "POST /scrape HTTP/1.1");
@@ -2118,33 +2139,41 @@ async fn recorded_api_errors_keep_status_headers_and_retry_bounds() {
     ] {
         let stub = serve_answers(&[recorded_answer(file)]);
         let spider = fast_client(&stub);
-        let result = spider.scrape("https://example.com").send().await;
+        let error = spider
+            .scrape("https://example.com")
+            .send()
+            .await
+            .unwrap_err();
         match code {
             401 => assert!(
                 matches!(
-                    result,
-                    Err(Error::Auth {
+                    error.cause(),
+                    Error::Auth {
                         cause: AuthCause::Refused,
                         ..
-                    })
+                    }
                 ),
-                "{result:?}"
+                "{error:?}"
             ),
             402 => assert!(
-                matches!(result, Err(Error::InsufficientCredits)),
-                "{result:?}"
+                matches!(error.cause(), Error::InsufficientCredits),
+                "{error:?}"
             ),
             _ => {
                 assert!(
-                    matches!(result, Err(Error::Api { status, retry_after: Some(wait), .. })
-                    if status.code() == code && wait == Duration::from_secs(1)),
-                    "{result:?}"
+                    matches!(error.cause(), Error::Api { status, retry_after: Some(wait), .. }
+                    if status.code() == code && *wait == Duration::from_secs(1)),
+                    "{error:?}"
                 );
                 let limits = spider.raw().rate_limit();
                 assert_eq!(limits.limit, Some(100));
                 assert_eq!(limits.remaining, Some(0));
                 assert_eq!(limits.reset, Some(Duration::from_secs(2)));
             }
+        }
+        assert_eq!(error.attempts().len(), count, "{file}");
+        for attempt in error.attempts() {
+            assert_eq!(attempt.api.code(), code, "{file}");
         }
         assert_eq!(stub.sent().len(), count, "{file}");
     }

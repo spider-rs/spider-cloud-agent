@@ -30,7 +30,11 @@ error.
   which is the F1 classification held in place. The stub can write raw bytes, so
   a body shorter than its declared length, a connection closed mid body, chunked
   framing, a gzip body and a 302 each have a case that names the terminal result
-  and the request count.
+  and the request count. Every one of these errors arrives inside
+  `Error::Accounted`, so the tests read the variant through `Error::cause` and
+  check that the attempt trail has one entry per request the stub saw, with the
+  API status on each entry and the charge marked unknown when the body never
+  decoded.
 
 - Fixtures for `/links`, `/transform`, `/fetch/{domain}/{path}`, `/data/{table}`
   and for 401, 402, 429 and 503 error envelopes, each the output of
