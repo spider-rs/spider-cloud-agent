@@ -1685,21 +1685,37 @@ async fn api_403_stops_after_one_wire_attempt() {
     assert_eq!(stub.sent().len(), 1);
 }
 
-// Pending red check (sandbox denies socket bind). Deliberate mutation: the send loop stopped immediately on API 500.
+/// API 500 retries once per ladder step, then climbs. The default attempt cap
+/// ends the walk after five calls, retaining each API status in the budget error.
+/// It does not share the retry-only rule used by API 429 and 503.
+// The previous two-call assertion was red in the supervisor's attempt 1 run
+// on cf7370b: the actual result was BudgetExceeded with five API 500 attempts.
+// Mutation check remains blocked locally by the sandbox's socket bind restriction.
 #[tokio::test]
-async fn api_500_retries_once_on_the_wire() {
+async fn api_500_retries_and_climbs_until_the_attempt_cap_on_the_wire() {
     let stub = serve_answers(&[Answer::with(500, "", r#"{"error":"server failed"}"#)]);
     let result = fast_client(&stub)
         .scrape("https://example.com")
         .send()
         .await;
-    assert!(
-        matches!(result, Err(Error::Api { status, .. }) if status.code() == 500),
-        "{result:?}"
-    );
+    let Err(Error::BudgetExceeded {
+        kind: BudgetKind::Attempts,
+        attempts,
+    }) = result
+    else {
+        panic!("expected the attempt cap, got {result:?}");
+    };
+    assert_eq!(attempts.len(), 5);
+    for attempt in attempts {
+        assert_eq!(attempt.api.code(), 500);
+        assert!(attempt.page.is_none());
+    }
     let sent = stub.sent();
-    assert_eq!(sent.len(), 2);
+    assert_eq!(sent.len(), 5);
     assert_eq!(sent[0].body, sent[1].body, "retry must not climb");
+    assert_ne!(sent[1].body, sent[2].body, "then climb one step");
+    assert_eq!(sent[2].body, sent[3].body, "retry the new step once");
+    assert_ne!(sent[3].body, sent[4].body, "then climb again");
 }
 
 // Pending red check (sandbox denies socket bind). Deliberate mutation: is_mirrored_page_status always returned false.
