@@ -7,6 +7,32 @@ error.
 
 ## Unreleased
 
+- Check attempt and credit room before every page or search send, including the
+  first call. Retry and escalation estimates use the same cost floor as preflight,
+  and remaining caps are mirrored onto each request. `f2_zero_caps_send_nothing_on_scrape_and_search`
+  and the preflight table in `policy_sim` hold zero caps and exhausted attempts.
+- Add `RunBudget` and `SpiderBuilder::run_budget` for shared credit admission across
+  operations and cloned clients. Atomic reservations exclude concurrent spend and
+  settlement replaces estimates with known bills. Unknown charges and cancellation
+  retain reservations. Run errors include aggregate call counts and known spend;
+  operation errors keep their full attempt trail. The `f2_run_credits`,
+  `f2_concurrent_operations` wire tests and reservation unit tests hold these rules.
+  Account reads remain free and raw transport remains outside policy admission.
+- Return paid successes with `Outcome::overrun`, identifying a page, operation or run cap
+  and the reported spend beyond it. Keep this through outcome mapping and single-page
+  selection. `f2_paid_success` and `f2_concurrent_bills` hold both overrun scopes.
+- Preserve decode, authentication, API and transport error trails in `Error::Accounted`.
+  `Error::spent` reads known charges, `attempts` exposes uncertain charges, and `cause`
+  retains the original variant and recovery advice. `f2_decode_failure` and
+  `f2_search_decode` hold previously paid and newly recovered bills. The CLI uses the
+  shared library cap and records error spend before classifying the underlying error;
+  its run-wide budget and wall surface tests keep their existing behavior.
+- Seed the default client's retry jitter once outside the pure policy engine.
+  `SpiderBuilder::jitter_seed` makes it reproducible; explicitly supplied policy
+  backoff settings stay deterministic. Add bounded positive jitter after a server
+  wait and never shorten that wait to the curve's ceiling. The seeded 429 wire test,
+  oversized wait test and policy simulator hold the waits and wall refusal. Clarify
+  that the atomic rate limit snapshot is for callers of `Spider::rate_limit`.
 - Release verification requires a readable private denylist with at least one term
   and cargo-deny. Ordinary verification keeps the private-list note and uses cached
   advisories when cargo-deny is installed. Private-list regression tests run inside

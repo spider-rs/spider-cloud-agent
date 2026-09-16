@@ -34,7 +34,7 @@ pub async fn search(global: &Global, args: &SearchArgs, log: Log) -> Run<Code> {
         match call.send_all().await {
             Ok(outcome) => absorb(&mut emitter, &mut report, outcome)?,
             Err(error) => {
-                let failure = Failure::from(error);
+                let failure = super::failure(&mut report, error);
                 emitter.write(error_item(None, &failure))?;
                 worsen(&mut worst, failure);
             }
@@ -55,7 +55,7 @@ pub async fn search(global: &Global, args: &SearchArgs, log: Log) -> Run<Code> {
                 }
             }
             Err(error) => {
-                let failure = Failure::from(error);
+                let failure = super::failure(&mut report, error);
                 emitter.write(error_item(None, &failure))?;
                 worsen(&mut worst, failure);
             }

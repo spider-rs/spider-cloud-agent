@@ -18,6 +18,16 @@ use std::time::Duration;
 #[derive(Debug, thiserror::Error)]
 #[non_exhaustive]
 pub enum Error {
+    /// A call error together with its operation trail and optional run totals.
+    #[error("{source}")]
+    Accounted {
+        /// Original error, preserving its variant and recovery advice.
+        source: Box<Error>,
+        /// Every attempted call in this operation.
+        attempts: Vec<Attempt>,
+        /// Totals across the shared run, when configured.
+        run: Option<crate::client::RunSpend>,
+    },
     /// The service rejected the call itself. This is never a target site's
     /// status, only the status of your request to Spider Cloud.
     #[error("{status}{}", .message.as_deref().map(|m| format!(": {m}")).unwrap_or_default())]
@@ -36,7 +46,7 @@ pub enum Error {
 
     /// Pages came back, none of them usable, and the walk then stopped.
     ///
-    /// A walk that never got a page back fails with the call error itself,
+    /// A walk that never got a page back keeps the call error in [`Error::Accounted`],
     /// [`Error::Api`], [`Error::Auth`] or [`Error::Transport`], because what
     /// stopped it is a fact about the call rather than about a page.
     #[error(
@@ -77,7 +87,7 @@ pub enum Error {
         message: String,
     },
 
-    /// The request never reached the service.
+    /// Sending the request or reading its response failed at the HTTP layer.
     #[error("transport: {0}")]
     Transport(#[from] reqwest::Error),
 
@@ -165,6 +175,62 @@ impl std::fmt::Display for BudgetKind {
 }
 
 impl Error {
+    /// Original error without the accounting wrapper.
+    pub fn cause(&self) -> &Error {
+        match self {
+            Self::Accounted { source, .. } => source.cause(),
+            _ => self,
+        }
+    }
+
+    /// Consume the accounting wrapper after recording its trail.
+    pub fn into_cause(self) -> Error {
+        match self {
+            Self::Accounted { source, .. } => source.into_cause(),
+            _ => self,
+        }
+    }
+
+    /// Run totals on an error from a client with shared credit admission.
+    pub fn run_spend(&self) -> Option<crate::RunSpend> {
+        match self {
+            Self::Accounted { run, .. } => *run,
+            _ => None,
+        }
+    }
+
+    pub(crate) fn with_run(mut self, snapshot: crate::RunSpend) -> Self {
+        if let Self::Accounted { run, .. } = &mut self {
+            *run = Some(snapshot);
+            self
+        } else {
+            let attempts = self.attempts().to_vec();
+            self.accounted(attempts, Some(snapshot))
+        }
+    }
+
+    /// Calls made before this error, including calls with unknown charges.
+    pub fn attempts(&self) -> &[Attempt] {
+        match self {
+            Self::Accounted { attempts, .. }
+            | Self::Exhausted { attempts, .. }
+            | Self::BudgetExceeded { attempts, .. } => attempts,
+            _ => &[],
+        }
+    }
+
+    pub(crate) fn accounted(
+        self,
+        attempts: Vec<Attempt>,
+        run: Option<crate::client::RunSpend>,
+    ) -> Self {
+        Self::Accounted {
+            source: Box::new(self),
+            attempts,
+            run,
+        }
+    }
+
     /// Whether trying the same call again could plausibly work.
     ///
     /// False for anything caused by the request itself, and false for running
@@ -173,6 +239,7 @@ impl Error {
     /// the send loop retries.
     pub fn is_retryable(&self) -> bool {
         match self {
+            Error::Accounted { source, .. } => source.is_retryable(),
             Error::Api { status, .. } => status.code() == 429 || status.is_transient(),
             Error::Transport(e) => e.is_timeout() || e.is_connect(),
             _ => false,
@@ -190,6 +257,7 @@ impl Error {
     /// stopped it, when there was one, and from the policy's reason otherwise.
     pub fn recovery(&self) -> Recovery {
         match self {
+            Error::Accounted { source, .. } => source.recovery(),
             Error::Api {
                 status,
                 retry_after,
@@ -226,9 +294,9 @@ impl Error {
     /// The spend that has already happened, when the error knows about any.
     pub fn spent(&self) -> Credits {
         match self {
-            Error::Exhausted { attempts, .. } | Error::BudgetExceeded { attempts, .. } => {
-                attempts.iter().map(|a| a.cost).sum()
-            }
+            Error::Accounted { attempts, .. }
+            | Error::Exhausted { attempts, .. }
+            | Error::BudgetExceeded { attempts, .. } => attempts.iter().map(|a| a.cost).sum(),
             _ => Credits::ZERO,
         }
     }

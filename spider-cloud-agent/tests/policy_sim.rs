@@ -28,6 +28,52 @@ use spider_cloud_agent::response::Hint;
 use spider_cloud_agent::{BudgetKind, Credits, WholeCredits};
 use std::time::Duration;
 
+#[test]
+fn f2_preflight_checks_the_first_call_and_every_later_call() {
+    for (budget, made, spent, estimate, expected) in [
+        (
+            Budget::default().with_attempts(0),
+            0,
+            0.0,
+            0.0,
+            Err(BudgetKind::Attempts),
+        ),
+        (
+            Budget::default().with_credits(Credits::ZERO),
+            0,
+            0.0,
+            0.0,
+            Err(BudgetKind::Credits),
+        ),
+        (
+            Budget::default().with_credits(ASSUMED_MINIMUM_COST),
+            0,
+            0.0,
+            0.0,
+            Ok(()),
+        ),
+        (
+            Budget::default().with_credits(Credits(1.0)),
+            1,
+            0.9,
+            0.2,
+            Err(BudgetKind::Credits),
+        ),
+        (
+            Budget::default().with_attempts(1),
+            1,
+            0.0,
+            0.0,
+            Err(BudgetKind::Attempts),
+        ),
+    ] {
+        assert_eq!(
+            budget.preflight(made, Credits(spent), Credits(estimate)),
+            expected
+        );
+    }
+}
+
 /// One scripted answer to one attempt.
 #[derive(Debug, Clone, Copy)]
 struct Scripted {

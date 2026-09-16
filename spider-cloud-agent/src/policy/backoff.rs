@@ -26,7 +26,7 @@ pub enum Jitter {
 pub struct Backoff {
     /// The first wait. Each further retry doubles it.
     pub base: Duration,
-    /// The longest any single wait may be, the service's own figure included.
+    /// The longest computed wait. A server-directed wait is never shortened.
     pub cap: Duration,
     /// How much of the wait is drawn at random.
     pub jitter: Jitter,
@@ -62,13 +62,17 @@ impl Backoff {
     ///
     /// `retry_after` is the span the service asked for, taken from `Retry-After` and
     /// falling back to `RateLimit-Reset`. It wins over the curve when
-    /// [`Backoff::honor_retry_after`] is set, and is still held to
-    /// [`Backoff::cap`], because a service asking for an hour is not a reason to
-    /// block a caller for an hour.
+    /// [`Backoff::honor_retry_after`] is set, and is never shortened. Seeded jitter
+    /// adds at most the base delay plus one millisecond. The budget refuses a wait
+    /// that cannot fit its wall.
     pub fn delay(&self, retries: u32, retry_after: Option<Duration>) -> Duration {
         if self.honor_retry_after {
             if let Some(asked) = retry_after {
-                return asked.min(self.cap);
+                return asked.saturating_add(match self.jitter {
+                    Jitter::None => Duration::ZERO,
+                    Jitter::Seeded(seed) => Duration::from_millis(1)
+                        .saturating_add(self.base.min(self.cap).mul_f64(unit_draw(seed, retries))),
+                });
             }
         }
 
@@ -128,7 +132,7 @@ mod tests {
     }
 
     #[test]
-    fn the_service_figure_wins_and_is_still_capped() {
+    fn the_service_figure_is_never_shortened() {
         let backoff = Backoff {
             cap: Duration::from_secs(10),
             ..Backoff::default()
@@ -139,7 +143,7 @@ mod tests {
         );
         assert_eq!(
             backoff.delay(0, Some(Duration::from_secs(600))),
-            Duration::from_secs(10)
+            Duration::from_secs(600)
         );
     }
 
@@ -172,6 +176,16 @@ mod tests {
             Backoff::seeded(1).delay(2, None),
             Backoff::seeded(2).delay(2, None)
         );
+    }
+
+    #[test]
+    fn f2_server_waits_get_positive_bounded_seeded_jitter() {
+        let asked = Duration::from_secs(600);
+        let first = Backoff::seeded(1).delay(0, Some(asked));
+        assert_eq!(first, Backoff::seeded(1).delay(0, Some(asked)));
+        assert_ne!(first, Backoff::seeded(2).delay(0, Some(asked)));
+        assert!(first > asked);
+        assert!(first <= asked + Duration::from_millis(501));
     }
 
     #[test]
