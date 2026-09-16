@@ -7,6 +7,33 @@ error.
 
 ## [0.3.0]
 
+A page and the links on it are one call. `return_page_links` was set in two places inside
+the crate and was nowhere on the curated surface, so a caller who wanted both paid for two
+calls. The service never asked for that. Measured against https://spider.cloud on
+2026-09-15, one scrape asking for both came back with 4,704 bytes of markdown and 91 links
+for 3.5393 credits, where the same page without the links cost 3.5180 and a links call on
+its own costs about 0.36. A crawl that is already paying for pages can now read the link
+graph for half a percent more.
+
+- `page_links(bool)` is on `scrape`, `crawl`, `fetch`, `screenshot` and `search`. It is not
+  on `links`, which asks for them already, and not on `transform`, which fetches nothing.
+- `spider-agent --with-links` does the same from the command line, on `scrape`, `crawl`,
+  `fetch`, `extract`, `screenshot` and `search`. The links are written on the `page` record
+  beside the content.
+- `Pages::links()` reads the whole set as one list, in the order the links were found and
+  with repeats removed. `Spider::links` returns that same list and is unchanged.
+- `ThriftReport` counts the links it handed back as payload. It counted the text, the
+  extractions and the metadata, so a request that returned ninety addresses and no body
+  read as a hundred per cent saving, which is a true number and a dishonest one.
+
+A mode the caller named now survives an escalation. Every rung of the ladder renders the
+page, and a rung was written over the request after the caller's own settings, so someone
+who asked for plain HTTP to hold the bill down was sent up to a browser and billed for it.
+The router already respected that pin, twice over, which is what made the gap in the
+ladder easy to miss. The three modes reach the wire as `http`, `smart` and `browser`, and
+there are tests on the socket for all of it now. An unrecognised `--mode` is a usage
+failure rather than a value the service quietly reads as `http`.
+
 `spider-agent table <name>` is gone. It took any name and read it under `/data`, which
 made the tool a way to ask the service which tables it holds and what is in them. That is
 a wider reach than a command line tool needs, and nothing anybody used it for needed the

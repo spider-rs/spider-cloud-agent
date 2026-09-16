@@ -39,4 +39,4 @@ impl<'a> Scrape<'a> {
     }
 }
 
-curated_surface!(Scrape);
+curated_surface!(Scrape, page_links);

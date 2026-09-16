@@ -86,4 +86,4 @@ impl<'a> Fetch<'a> {
     }
 }
 
-curated_surface!(Fetch);
+curated_surface!(Fetch, page_links);

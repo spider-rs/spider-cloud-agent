@@ -197,6 +197,11 @@ pub struct Global {
     #[arg(long, global = true, value_enum)]
     pub mode: Option<Mode>,
 
+    /// Ask for the links on every page as well as its content. They come back
+    /// in the same call rather than costing another.
+    #[arg(long, global = true)]
+    pub with_links: bool,
+
     /// Fix which pool the request leaves from.
     #[arg(long, global = true, value_enum)]
     pub proxy: Option<Pool>,

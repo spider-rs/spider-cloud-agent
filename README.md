@@ -61,6 +61,15 @@ let fields = spider.scrape("https://example.com/product/1")
     .need(Need::fields([("price", ".price"), ("title", "h1")]))
     .send()
     .await?;
+
+// The page and the links on it, in one call. `spider-agent --with-links` on
+// the command line.
+let page = spider.scrape("https://example.com")
+    .need(Need::Markdown)
+    .page_links(true)
+    .send()
+    .await?;
+let found = page.links.as_deref().unwrap_or_default();
 ```
 
 ## What it does that a plain binding does not

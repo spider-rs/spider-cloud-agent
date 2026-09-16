@@ -34,7 +34,7 @@ pub async fn scrape(global: &Global, args: &ScrapeArgs, log: Log) -> Run<Code> {
 
     for url in &urls {
         log.note(format!("reading {url}"));
-        let call = pin!(spider.scrape(url.clone()).need(need.clone()), global);
+        let call = pin!(spider.scrape(url.clone()).need(need.clone()), global, links);
         match call.send_all().await {
             Ok(outcome) => {
                 if let Some(route) = &outcome.route {
@@ -97,7 +97,8 @@ pub async fn fetch(global: &Global, args: &FetchArgs, log: Log) -> Run<Code> {
         spider
             .fetch(args.domain.clone(), args.path.clone())
             .need(need),
-        global
+        global,
+        links
     );
     match call.send_all().await {
         Ok(outcome) => absorb(&mut emitter, &mut report, outcome)?,
@@ -127,7 +128,7 @@ pub async fn crawl(global: &Global, args: &CrawlArgs, log: Log) -> Run<Code> {
 
     for url in &urls {
         log.note(format!("crawling {url}"));
-        let mut call = pin!(spider.crawl(url.clone()).need(need.clone()), global);
+        let mut call = pin!(spider.crawl(url.clone()).need(need.clone()), global, links);
         if let Some(limit) = args.limit {
             call = call.limit(limit);
         }
@@ -167,7 +168,7 @@ pub async fn extract(global: &Global, args: &ExtractArgs, log: Log) -> Run<Code>
 
     for url in &urls {
         log.note(format!("extracting from {url}"));
-        let call = pin!(spider.scrape(url.clone()).need(need.clone()), global);
+        let call = pin!(spider.scrape(url.clone()).need(need.clone()), global, links);
         match call.send_all().await {
             Ok(outcome) => absorb(&mut emitter, &mut report, outcome)?,
             Err(error) => {
@@ -260,7 +261,7 @@ pub async fn screenshot(global: &Global, args: &ScreenshotArgs, log: Log) -> Run
 
     for url in &urls {
         log.note(format!("shooting {url}"));
-        let call = pin!(spider.screenshot(url.clone()), global);
+        let call = pin!(spider.screenshot(url.clone()), global, links);
         match call.send_all().await {
             Ok(outcome) => absorb(&mut emitter, &mut report, outcome)?,
             Err(error) => {

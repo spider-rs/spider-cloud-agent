@@ -78,4 +78,4 @@ fn body(search: &SearchParams, params: &crate::params::RequestParams) -> SearchP
     body
 }
 
-curated_surface!(Search);
+curated_surface!(Search, page_links);

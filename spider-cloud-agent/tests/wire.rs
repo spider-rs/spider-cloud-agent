@@ -428,3 +428,211 @@ async fn a_fetch_carries_the_settings_as_overrides() {
         requests[0]
     );
 }
+
+/// A page and the links on it, the way the service answers a scrape that asked
+/// for both.
+const PAGE_AND_LINKS_ANSWER: &str = r##"[{"url":"https://example.com/","status":200,
+    "content":"# Example\nBody text.",
+    "links":["https://example.com/a","https://example.com/b"],
+    "costs":{"total_cost":0.00035305315}}]"##;
+
+/// The gap this closes: links were reachable only from the links operation, so
+/// a caller who wanted a page and its links paid for two calls. Measured live
+/// on 2026-09-15 against the service, one scrape asking for both came back with
+/// 6,365 bytes of markdown and 91 links for 0.00035305315 credits.
+///
+/// The assertions are the request line and the request body. A version of this
+/// that only read the links off the answer passed while the links still cost a
+/// second call.
+#[tokio::test]
+async fn a_page_and_its_links_come_back_in_one_call() {
+    let stub = serve(&[PAGE_AND_LINKS_ANSWER]);
+    let spider = client(&stub);
+
+    let outcome = spider
+        .scrape("https://example.com")
+        .need(spider_cloud_agent::Need::Markdown)
+        .page_links(true)
+        .send()
+        .await
+        .expect("the page");
+
+    let sent = stub.sent();
+    assert_eq!(sent.len(), 1, "the links cost a second call");
+    // The links are asked for without the request being moved to the links
+    // endpoint, which would have dropped the content.
+    assert_eq!(sent[0].line, "POST /scrape HTTP/1.1");
+    assert!(
+        sent[0].body.contains(r#""return_page_links":true"#),
+        "the request never asked for the links: {}",
+        sent[0].body
+    );
+    assert!(
+        sent[0].body.contains(r#""return_format":"markdown""#),
+        "asking for links suppressed the body: {}",
+        sent[0].body
+    );
+
+    assert_eq!(outcome.value.text(), Some("# Example\nBody text."));
+    let links = outcome.value.links.as_deref().expect("the links");
+    assert_eq!(links.len(), 2);
+    assert_eq!(links[0].as_str(), "https://example.com/a");
+}
+
+/// What the report counts. Links handed to the caller are payload, and a report
+/// that ignored them called a request that returned ninety addresses a total
+/// saving, the same way the body-only count did before extractions and metadata
+/// were added to it.
+#[tokio::test]
+async fn the_report_counts_the_links_it_handed_back() {
+    let stub = serve(&[PAGE_AND_LINKS_ANSWER]);
+    let spider = client(&stub);
+
+    let outcome = spider
+        .scrape("https://example.com")
+        .need(spider_cloud_agent::Need::Markdown)
+        .page_links(true)
+        .send()
+        .await
+        .expect("the page");
+
+    let text = outcome.value.text().unwrap_or_default().len();
+    let addresses: usize = outcome
+        .value
+        .links
+        .iter()
+        .flatten()
+        .map(|link| link.as_str().len())
+        .sum();
+    assert!(addresses > 0);
+    assert_eq!(
+        outcome.thrift.returned_bytes,
+        text + addresses,
+        "the report counted {} bytes for {text} of text and {addresses} of links",
+        outcome.thrift.returned_bytes
+    );
+}
+
+/// The links operation still answers in one call, and the whole set is readable
+/// off the pages.
+#[tokio::test]
+async fn the_links_operation_still_answers_from_the_links_endpoint() {
+    let stub = serve(&[LINKS_ANSWER]);
+    let spider = client(&stub);
+
+    let outcome = spider
+        .links("https://example.com")
+        .send_all()
+        .await
+        .expect("the links");
+
+    let sent = stub.sent();
+    assert_eq!(sent.len(), 1);
+    assert_eq!(sent[0].line, "POST /links HTTP/1.1");
+    assert_eq!(outcome.value.links().len(), 1);
+}
+
+/// The three spellings the service reads. An unrecognised value becomes plain
+/// HTTP at the service without saying so, so what goes out has to be exact.
+#[tokio::test]
+async fn every_request_mode_reaches_the_wire_with_the_spelling_the_service_reads() {
+    use spider_cloud_agent::RequestMode;
+
+    for (mode, spelling) in [
+        (RequestMode::Http, r#""request":"http""#),
+        (RequestMode::Smart, r#""request":"smart""#),
+        (RequestMode::Browser, r#""request":"browser""#),
+    ] {
+        let stub = serve(&[PAGE_ANSWER]);
+        let spider = client(&stub);
+
+        spider
+            .scrape("https://example.com")
+            .mode(mode)
+            .send()
+            .await
+            .expect("the page");
+
+        let requests = stub.requests();
+        assert_eq!(requests.len(), 1);
+        assert!(
+            requests[0].contains(spelling),
+            "{mode:?} reached the wire as {}",
+            requests[0]
+        );
+    }
+}
+
+/// The router fills in what the caller left alone and never argues with what
+/// they set. Three modes against one address, and the router has one answer, so
+/// two of the three prove the caller won.
+#[tokio::test]
+async fn the_router_never_argues_with_a_mode_the_caller_named() {
+    use spider_cloud_agent::RequestMode;
+
+    let stub = serve(&[PAGE_ANSWER]);
+    let spider = client(&stub);
+    spider
+        .scrape("https://example.com")
+        .send()
+        .await
+        .expect("the page");
+    let routed = stub.requests().remove(0);
+
+    let mut differed = 0;
+    for (mode, spelling) in [
+        (RequestMode::Http, r#""request":"http""#),
+        (RequestMode::Smart, r#""request":"smart""#),
+        (RequestMode::Browser, r#""request":"browser""#),
+    ] {
+        let stub = serve(&[PAGE_ANSWER]);
+        let spider = client(&stub);
+        spider
+            .scrape("https://example.com")
+            .mode(mode)
+            .send()
+            .await
+            .expect("the page");
+        let sent = stub.requests().remove(0);
+        assert!(sent.contains(spelling), "{mode:?} went out as {sent}");
+        if !routed.contains(spelling) {
+            differed += 1;
+        }
+    }
+    assert_eq!(differed, 2, "the router answered {routed}");
+}
+
+/// The bug this pins: every rung of the ladder renders the page, and the rung
+/// was written over the request after the caller's own settings, so a caller
+/// who asked for plain HTTP to hold the bill down was sent up to a browser and
+/// billed for it. The router already respected the same pin, which is what made
+/// the gap easy to miss.
+#[tokio::test]
+async fn an_escalation_never_argues_with_a_mode_the_caller_named() {
+    use spider_cloud_agent::{Budget, RequestMode};
+
+    // A page the site refused, which is what sends the walk up the ladder.
+    let refused = r#"[{"url":"https://example.com/","status":403,"content":"",
+        "costs":{"total_cost":0.0001}}]"#;
+    let stub = serve(&[refused]);
+    let spider = client(&stub);
+
+    let _ = spider
+        .scrape("https://example.com")
+        .mode(RequestMode::Http)
+        .budget(Budget::default().with_attempts(3))
+        .send()
+        .await;
+
+    let requests = stub.requests();
+    assert!(
+        requests.len() > 1,
+        "nothing escalated, so nothing was proved: {requests:?}"
+    );
+    for (step, request) in requests.iter().enumerate() {
+        assert!(
+            request.contains(r#""request":"http""#),
+            "attempt {step} went out as {request}"
+        );
+    }
+}

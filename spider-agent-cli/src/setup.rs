@@ -262,6 +262,16 @@ macro_rules! pin {
         }
         builder
     }};
+    // The operations that fetch a page and can hand its links back with it.
+    // Separate from the common form because the links operation already
+    // returns them and the transform operation fetches nothing.
+    ($builder:expr, $global:expr, links) => {{
+        let mut builder = $crate::setup::pin!($builder, $global);
+        if $global.with_links {
+            builder = builder.page_links(true);
+        }
+        builder
+    }};
 }
 
 pub(crate) use pin;

@@ -450,6 +450,13 @@ fn charged(body: &serde_json::Value) -> Credits {
 /// without a socket.
 fn escalate(step: &Step, params: &mut RequestParams, plan: &Plan, caller: &RequestParams) {
     step.apply(params);
+    // A mode the caller named is theirs, here as much as it is when the router
+    // answers. Every rung on the ladder renders the page, so without this a
+    // caller who asked for plain HTTP to keep the bill down was billed for a
+    // browser they had refused, and nothing in the result said so.
+    if let Some(mode) = caller.request {
+        params.request = Some(mode);
+    }
     plan.apply_over(params, caller);
 }
 
@@ -508,9 +515,10 @@ fn representative(pages: &Pages) -> Option<PageStatus> {
 /// The bytes and tokens a caller receives that are not the page text.
 ///
 /// `Need::Fields` and `Need::Metadata` deliberately return no body, so the
-/// answer arrives in the extractions or the metadata block. A report that
-/// measured only the text called both of those a total saving, which flattered
-/// the number by ignoring the thing the caller asked for.
+/// answer arrives in the extractions or the metadata block, and a request that
+/// asked for links gets its answer in the link list. A report that measured
+/// only the text called all of those a total saving, which flattered the
+/// number by ignoring the thing the caller asked for.
 fn payload_beside_the_text(page: &Page) -> (usize, usize) {
     let mut bytes = 0usize;
 
@@ -524,6 +532,13 @@ fn payload_beside_the_text(page: &Page) -> (usize, usize) {
         if let Ok(encoded) = serde_json::to_string(meta) {
             bytes += encoded.len();
         }
+    }
+
+    // Links are the payload on a links request and half the payload on a page
+    // request that asked for both. Leaving them out reported a request that
+    // handed back ninety addresses as having returned nothing.
+    if let Some(links) = &page.links {
+        bytes += links.iter().map(|link| link.as_str().len()).sum::<usize>();
     }
 
     // Structured payload is denser than prose, so the prose ratio would
@@ -619,6 +634,37 @@ pub(crate) fn timeout_secs(timeout: Duration) -> u8 {
 /// Written once here rather than eight times, so the curated surface cannot
 /// drift apart between endpoints.
 macro_rules! curated_surface {
+    // The operations that fetch a page and can hand back its links in the same
+    // answer. Written as an arm rather than as part of the common surface so
+    // that an operation which fetches nothing cannot offer it.
+    ($builder:ident, page_links) => {
+        curated_surface!($builder);
+
+        impl<'a> $builder<'a> {
+            /// Ask for the links found on the page alongside its content.
+            ///
+            /// They arrive in the same answer, so a run that is already paying
+            /// for pages gets the link graph without a second call.
+            ///
+            /// ```no_run
+            /// # use spider_cloud_agent::{Need, Spider};
+            /// # async fn show(spider: Spider) -> spider_cloud_agent::Result<()> {
+            /// let page = spider.scrape("https://example.com")
+            ///     .need(Need::Markdown)
+            ///     .page_links(true)
+            ///     .send()
+            ///     .await?;
+            /// let found = page.links.as_deref().unwrap_or_default();
+            /// # let _ = found;
+            /// # Ok(())
+            /// # }
+            /// ```
+            pub fn page_links(mut self, on: bool) -> Self {
+                self.call.params.return_page_links = Some(on);
+                self
+            }
+        }
+    };
     ($builder:ident) => {
         impl<'a> $builder<'a> {
             /// Whether the page is rendered before it is read.

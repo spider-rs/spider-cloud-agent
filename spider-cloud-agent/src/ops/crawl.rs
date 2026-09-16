@@ -54,4 +54,4 @@ impl<'a> Crawl<'a> {
     }
 }
 
-curated_surface!(Crawl);
+curated_surface!(Crawl, page_links);

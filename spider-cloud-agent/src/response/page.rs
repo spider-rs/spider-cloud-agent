@@ -327,6 +327,23 @@ impl Pages {
         self.ok().next()
     }
 
+    /// Every link found across the set, in the order they were seen, with
+    /// repeats removed.
+    ///
+    /// Empty unless the request asked for links, which the links operation does
+    /// on its own and any page operation does through `page_links`.
+    pub fn links(&self) -> Vec<Url> {
+        let mut out: Vec<Url> = Vec::new();
+        for page in self.ok() {
+            for link in page.links.iter().flatten() {
+                if !out.contains(link) {
+                    out.push(link.clone());
+                }
+            }
+        }
+        out
+    }
+
     /// What the whole set cost, failures included.
     pub fn total_cost(&self) -> Credits {
         self.0.iter().map(PageResult::cost).sum()

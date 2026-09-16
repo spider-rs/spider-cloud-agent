@@ -1,4 +1,8 @@
 //! Collect the links on a page without paying for its content.
+//!
+//! A caller who wants the content as well does not need this operation. Every
+//! page operation takes `page_links`, and the links then arrive in the same
+//! answer as the page.
 
 use url::Url;
 
@@ -29,17 +33,7 @@ impl<'a> Links<'a> {
     /// Pages the site refused contribute nothing and do not fail the call, so an
     /// empty list means no page was read rather than no links existed.
     pub async fn send(self) -> Result<Outcome<Vec<Url>>> {
-        Ok(self.send_all().await?.map(|pages| {
-            let mut out: Vec<Url> = Vec::new();
-            for page in pages.ok() {
-                for link in page.links.iter().flatten() {
-                    if !out.contains(link) {
-                        out.push(link.clone());
-                    }
-                }
-            }
-            out
-        }))
+        Ok(self.send_all().await?.map(|pages| pages.links()))
     }
 
     /// Every page the request touched, links and refusals alike.

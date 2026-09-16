@@ -26,7 +26,7 @@ pub async fn search(global: &Global, args: &SearchArgs, log: Log) -> Run<Code> {
 
     if args.fetch_pages {
         log.note(format!("searching for {query} and reading every result"));
-        let call = pin!(spider.search(&query), global);
+        let call = pin!(spider.search(&query), global, links);
         let mut call = call;
         if let Some(limit) = args.limit {
             call = call.limit(limit);

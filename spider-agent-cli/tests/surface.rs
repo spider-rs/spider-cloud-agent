@@ -457,3 +457,179 @@ fn the_schema_names_the_account_reads_and_not_table() {
         "the schema does not say what keys returns: {keys}"
     );
 }
+
+/// A stub of the service, for the cases that have to read what the tool sent.
+///
+/// It answers one request from a script and hands the body back down a channel.
+/// The binary is pointed at it with `SPIDER_API_URL`, so nothing here reaches
+/// the network.
+fn stub(reply: &'static str) -> (String, std::sync::mpsc::Receiver<String>) {
+    use std::io::{BufRead, BufReader, Read, Write};
+
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("a port");
+    let address = listener.local_addr().expect("an address");
+    let (sender, seen) = std::sync::mpsc::channel();
+
+    std::thread::spawn(move || {
+        for stream in listener.incoming() {
+            let Ok(mut stream) = stream else { break };
+            let Ok(clone) = stream.try_clone() else { break };
+            let mut reader = BufReader::new(clone);
+            let mut length = 0usize;
+            let mut line = String::new();
+            if reader.read_line(&mut line).unwrap_or(0) == 0 {
+                break;
+            }
+            loop {
+                let mut header = String::new();
+                if reader.read_line(&mut header).unwrap_or(0) == 0 {
+                    break;
+                }
+                if header == "\r\n" {
+                    break;
+                }
+                if let Some(value) = header.to_ascii_lowercase().strip_prefix("content-length:") {
+                    length = value.trim().parse().unwrap_or(0);
+                }
+            }
+            let mut body = vec![0u8; length];
+            if reader.read_exact(&mut body).is_err() {
+                break;
+            }
+            if sender
+                .send(String::from_utf8_lossy(&body).to_string())
+                .is_err()
+            {
+                break;
+            }
+            let head = format!(
+                "HTTP/1.1 200 OK\r\ncontent-type: application/json\r\ncontent-length: {}\r\nconnection: close\r\n\r\n",
+                reply.len()
+            );
+            let _ = stream.write_all(head.as_bytes());
+            let _ = stream.write_all(reply.as_bytes());
+            let _ = stream.flush();
+        }
+    });
+
+    (format!("http://{address}"), seen)
+}
+
+/// Run the binary with a key and an address that go nowhere but the stub.
+fn run_against(base: &str, args: &[&str]) -> Output {
+    Command::new(env!("CARGO_BIN_EXE_spider-agent"))
+        .args(args)
+        .env("SPIDER_API_KEY", "not-a-real-key")
+        .env("SPIDER_API_URL", base)
+        .env("HOME", std::env::temp_dir())
+        .env("USERPROFILE", std::env::temp_dir())
+        .output()
+        .expect("the binary runs")
+}
+
+/// One page and its links, the way the service answers a scrape that asked for
+/// both.
+const PAGE_AND_LINKS: &str = r##"[{"url":"https://example.com/","status":200,
+    "content":"# Example","links":["https://example.com/a"],
+    "costs":{"total_cost":0.0003}}]"##;
+
+/// Every mode the service reads is a mode the tool takes.
+#[test]
+fn the_mode_flag_takes_the_three_the_service_reads() {
+    for mode in ["http", "smart", "browser"] {
+        let output = run(&["route", "https://example.com", "--mode", mode, "--json"]);
+        assert_eq!(
+            code(&output),
+            0,
+            "--mode {mode} was refused: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
+}
+
+/// An unrecognised mode is read as plain HTTP at the service and nothing says
+/// so, so the tool refuses it here rather than sending a request that quietly
+/// does something else.
+#[test]
+fn a_mode_that_is_not_one_is_a_usage_failure_rather_than_a_fallback() {
+    let output = run(&["route", "https://example.com", "--mode", "headful"]);
+    assert_eq!(code(&output), 2);
+    assert!(output.stdout.is_empty(), "{}", stdout(&output));
+    let said = String::from_utf8_lossy(&output.stderr);
+    for mode in ["http", "smart", "browser"] {
+        assert!(said.contains(mode), "the refusal names no modes: {said}");
+    }
+}
+
+/// The mode the caller fixed reaches the socket with the spelling the service
+/// reads, rather than stopping at the builder.
+#[test]
+fn the_mode_flag_reaches_the_wire() {
+    for (mode, spelling) in [
+        ("http", r#""request":"http""#),
+        ("smart", r#""request":"smart""#),
+        ("browser", r#""request":"browser""#),
+    ] {
+        let (base, seen) = stub(PAGE_AND_LINKS);
+        let output = run_against(
+            &base,
+            &["scrape", "https://example.com", "--mode", mode, "--json"],
+        );
+        assert_eq!(
+            code(&output),
+            0,
+            "{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        let sent = seen.recv().expect("a request");
+        assert!(sent.contains(spelling), "--mode {mode} sent {sent}");
+    }
+}
+
+/// The links arrive with the page rather than costing a second call, and they
+/// are written out with it.
+#[test]
+fn asking_for_links_sends_one_request_and_writes_them_out() {
+    let (base, seen) = stub(PAGE_AND_LINKS);
+    let output = run_against(
+        &base,
+        &["scrape", "https://example.com", "--with-links", "--json"],
+    );
+    assert_eq!(
+        code(&output),
+        0,
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let sent = seen.recv().expect("a request");
+    assert!(
+        sent.contains(r#""return_page_links":true"#),
+        "the flag never reached the wire: {sent}"
+    );
+    assert!(seen.try_recv().is_err(), "the links cost a second call");
+
+    let document: serde_json::Value =
+        serde_json::from_str(stdout(&output).trim()).expect("one document");
+    let page = &document["items"][0];
+    assert_eq!(page["links"][0], "https://example.com/a");
+    assert!(
+        page["body"]
+            .as_str()
+            .unwrap_or_default()
+            .contains("Example"),
+        "the content went missing: {page}"
+    );
+}
+
+/// The help has to say the links come back in the same call, because the
+/// reason to reach for the flag is that they cost no extra call.
+#[test]
+fn the_links_flag_help_says_it_costs_no_second_call() {
+    let help = stdout(&run(&["--help"]));
+    assert!(help.contains("--with-links"), "{help}");
+    assert!(
+        help.contains("same call"),
+        "the help does not say where the links come from: {help}"
+    );
+}

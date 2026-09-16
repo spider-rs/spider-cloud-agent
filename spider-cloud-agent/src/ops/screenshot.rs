@@ -67,4 +67,4 @@ fn as_pictures(pages: Pages) -> Pages {
     )
 }
 
-curated_surface!(Screenshot);
+curated_surface!(Screenshot, page_links);
