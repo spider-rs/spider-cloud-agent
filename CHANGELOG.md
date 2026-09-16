@@ -34,7 +34,7 @@ that need the old command descriptions must use `command_notes`. `exit_codes`
 now maps numbers to bare labels such as `budget`, replacing descriptions such as
 `budget: a cap stopped the run`. These labels match error records.
 
-## [0.3.1]
+## 0.3.1 (2026-09-16)
 
 `spider-agent --budget` and `--wall` now cap the whole run on every command. They were
 handed to each operation afresh, and a command that works a list of addresses runs one
@@ -95,7 +95,7 @@ not opened after 30 seconds.
 - `spider-route` reads a NaN success rate as no history and a NaN confidence as zero. The
   first landed in the highest success band.
 
-## [0.3.0]
+## 0.3.0 (2026-09-15)
 
 A page and the links on it are one call. `return_page_links` was set in two places inside
 the crate and was nowhere on the curated surface, so a caller who wanted both paid for two
@@ -168,7 +168,7 @@ All three take `--json`, `--ndjson`, `-o` and `-d` like the rest, and all three 
   `{"data": [...]}`, and the second shape was the only one being unwrapped, so a profile
   arrived as one row whose only column was `data`.
 
-## [0.2.0]
+## 0.2.0 (2026-09-15)
 
 The operation called `fetch` was posting to `/scrape`. It came back with pages and nobody
 noticed, because a scrape is what most callers wanted. Two things were wrong underneath
@@ -212,7 +212,7 @@ replacement is a better hour than a silent change of endpoint.
 - `spider-agent schema` lists `scrape` and `fetch` separately and says which is which, and
   a test fails if a command is added without a line there.
 
-## [0.1.1]
+## 0.1.1 (2026-09-15)
 
 Four fixes, every one of them found by driving the library from the command line
 tool against the live service rather than by reading it. The first one is a bill.

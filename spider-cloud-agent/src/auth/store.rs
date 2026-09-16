@@ -165,10 +165,11 @@ impl Credentials {
 
     /// Write a key where the next run and the command line tools will find it.
     ///
-    /// The keychain is tried first. When there is no keychain, or it refuses,
-    /// the key goes to `~/.spider/credentials`, which is created at
-    /// [`FILE_MODE`] inside a directory created at [`DIR_MODE`] before the key
-    /// is written into it, never after.
+    /// The keychain is tried first when the `keyring` feature is enabled.
+    /// When there is no keychain, or it refuses, the key goes to
+    /// `~/.spider/credentials`. On Unix, the file is created at mode 0600
+    /// inside a directory created at mode 0700 before the key is written.
+    /// On Windows, the file uses the default ACL.
     ///
     /// Returns where it landed.
     pub fn store(key: &str) -> Result<Stored> {
@@ -188,15 +189,17 @@ impl Credentials {
         Ok(Stored::File(path))
     }
 
-    /// Narrow an existing credentials file to owner only.
+    /// Narrow an existing credentials file to owner only on Unix.
     ///
     /// Reading never does this on its own. A file whose permissions are wider
     /// than owner only has already been readable for as long as it has existed,
     /// and silently changing a mode the user chose hides that from them, so the
-    /// crate warns and leaves it. Call this to fix it.
+    /// crate warns on Unix and leaves it. Call this to fix it on Unix.
     ///
     /// Returns the path when a mode was changed, and `None` when there was
-    /// nothing to change. Does nothing on platforms without Unix permissions.
+    /// nothing to change. The permission check and tightening are Unix only.
+    /// On Windows, files use the default ACL, with no permission warning or
+    /// tightening; storage tries the keyring first when that feature is enabled.
     pub fn tighten_file_permissions() -> Result<Option<PathBuf>> {
         let home =
             home_dir().ok_or_else(|| Error::Auth("no home directory to read".to_string()))?;
@@ -244,8 +247,9 @@ fn resolve_in(lookup: &Lookup<'_>) -> Option<Credentials> {
     })
 }
 
-/// Read the credentials file, warning once when anyone but the owner can read
-/// it. The mode is left exactly as it was found.
+/// Read the credentials file, warning once on Unix when anyone but the owner
+/// has access. The mode is left exactly as it was found. Windows uses the
+/// default ACL without this permission check.
 ///
 /// The read stops at [`MAX_KEY_FILE_BYTES`], and a file past that is no key.
 /// Reading to the end would read whatever the path points at, and a symlink

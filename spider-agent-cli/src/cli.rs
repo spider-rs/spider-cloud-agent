@@ -5,6 +5,9 @@
 
 use clap::{Args, Parser, Subcommand, ValueEnum};
 
+/// Shared by help and schema so callers see the same resolution order.
+pub const KEY_RESOLUTION: &str = "The key comes from SPIDER_API_KEY, then SPIDER_CLOUD_API_KEY, then the keychain, when the binary was built with the keyring feature, then ~/.spider/credentials.";
+
 /// Fetch, crawl, search and extract, choosing transport locally and stopping on
 /// a budget.
 #[derive(Debug, Parser)]
@@ -25,9 +28,9 @@ arrives, and that schema is a contract: `spider-agent schema` prints it.
 Exit codes: 0 done, 1 failed, 2 usage, 3 auth, 4 budget, 5 the site refused, \
 6 transport, 7 output refused.
 
-The key comes from SPIDER_API_KEY, then SPIDER_CLOUD_API_KEY, then \
-~/.spider/credentials. There is no flag for it, because an argument is \
+There is no flag for the key, because an argument is \
 readable in the process list.",
+    after_long_help = KEY_RESOLUTION,
     args_conflicts_with_subcommands = true,
     subcommand_negates_reqs = true,
     disable_help_subcommand = true

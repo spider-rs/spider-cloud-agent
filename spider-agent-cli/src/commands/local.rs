@@ -166,7 +166,9 @@ fn document() -> serde_json::Value {
             "results go to stdout, diagnostics to stderr, and no escape codes are written",
             "a reader that closes stdout early, such as head, ends the run quietly with code 0 and no further page is fetched",
             "addresses can be piped in on stdin, one per line",
-            "the key is read from SPIDER_API_KEY, SPIDER_CLOUD_API_KEY, then ~/.spider/credentials, and there is no flag for it"
+            crate::cli::KEY_RESOLUTION,
+            "There is no flag for the key, because an argument is readable in the process list.",
+            "Environment: SPIDER_API_KEY is the first environment source for the API key; empty values after trimming are skipped. SPIDER_CLOUD_API_KEY is the fallback when SPIDER_API_KEY is empty or unset. SPIDER_API_URL overrides the API base (normally https://api.spider.cloud) for every key-bearing API request; the API base must use https. SPIDER_MCP_SERVER overrides the sign-in discovery server (normally https://mcp.spider.cloud/mcp) when OAuth is enabled. Set either server override only to a server you trust: one receives API requests with your key, and the other directs sign-in."
         ]
     })
 }

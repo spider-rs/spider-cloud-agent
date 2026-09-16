@@ -13,7 +13,8 @@ for critical issues within 7 days.
 
 ## Scope
 
-This policy covers the `spider-cloud-agent` and `spider-route` crates in this repository.
+This policy covers `spider-cloud-agent`, `spider-route` and `spider-agent-cli`.
+The CLI runs `login`, binds the OAuth loopback listener and stores the key.
 
 ## Credential handling
 
@@ -21,13 +22,19 @@ This crate holds a Spider Cloud API key. Three things are worth knowing if you a
 reviewing it for that reason.
 
 The key is read from, in order, an explicit argument, `SPIDER_API_KEY`,
-`SPIDER_CLOUD_API_KEY`, the operating system keyring, and finally `~/.spider/credentials`.
-When the crate writes a key it tries the keyring first and falls back to that file at
-permissions 0600. It warns once if it reads a credentials file that is readable by anyone
-else, and it does not change the permissions unless you ask it to.
-The keyring and the browser sign in described below are the `keyring` and `oauth`
-features, both off by default, so a build that only reads a key from the environment
-carries neither.
+`SPIDER_CLOUD_API_KEY`, the operating system keyring when the `keyring` feature is
+enabled, and finally `~/.spider/credentials`. The first non-empty value after
+trimming wins. When the crate writes a key it tries the keyring when enabled and
+falls back to that file. On Unix, the file is created at mode 0600. Reading a file
+with broader permissions logs a warning once; `Credentials::tighten_file_permissions`
+narrows its mode only when called. The permission check and tightening are Unix
+only. On Windows, the file uses the default ACL; the keyring is tried first if
+that feature is enabled.
+
+The library's `keyring` and `oauth` features are both off by default.
+`spider-agent-cli` enables `oauth` by default and leaves `keyring` off. Build the
+CLI with `--features keyring` to enable keyring storage, or
+`--no-default-features` to omit browser sign-in.
 
 The key is never logged. Error types redact it, including in `Debug`. If you find a path
 where it can reach a log line or an error message, that is a vulnerability under this
