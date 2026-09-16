@@ -62,18 +62,24 @@ fn fixture(name: &str) -> String {
 /// Every fixture in the directory, so a new one is covered the moment it lands.
 fn every_fixture() -> Vec<(String, String)> {
     let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures");
-    let mut out = Vec::new();
-    for entry in std::fs::read_dir(&dir).expect("the fixture directory") {
-        let path = entry.expect("a directory entry").path();
-        if path.extension().and_then(|e| e.to_str()) == Some("json") {
-            let name = path
-                .file_name()
-                .and_then(|n| n.to_str())
-                .expect("a file name")
-                .to_string();
-            out.push((name, std::fs::read_to_string(&path).expect("a fixture")));
+    fn walk(root: &std::path::Path, dir: &std::path::Path, out: &mut Vec<(String, String)>) {
+        for entry in std::fs::read_dir(dir).expect("the fixture directory") {
+            let path = entry.expect("a directory entry").path();
+            if path.is_dir() {
+                walk(root, &path, out);
+            } else if path.extension().and_then(|e| e.to_str()) == Some("json") {
+                let name = path
+                    .strip_prefix(root)
+                    .unwrap()
+                    .to_str()
+                    .unwrap()
+                    .to_string();
+                out.push((name, std::fs::read_to_string(&path).expect("a fixture")));
+            }
         }
     }
+    let mut out = Vec::new();
+    walk(&dir, &dir, &mut out);
     out.sort();
     out
 }
@@ -89,6 +95,7 @@ fn there_are_fixtures_to_read() {
     );
 }
 
+// Red with deliberately malformed JSON in thrift/product_page.json.
 #[test]
 fn every_fixture_is_json() {
     for (name, text) in every_fixture() {
@@ -97,6 +104,7 @@ fn every_fixture_is_json() {
     }
 }
 
+// Red with a deliberately forbidden URL host in thrift/product_page.json.
 #[test]
 fn every_fixture_names_only_documentation_hosts() {
     // The leak checker enforces this at publish time. Asserting it here means a
@@ -238,4 +246,18 @@ fn crawl_records_stay_json_because_their_columns_are_the_services_own() {
     let rows = value["data"].as_array().expect("rows");
     assert_eq!(rows.len(), 2);
     assert_eq!(rows[0]["domain"].as_str(), Some("example.com"));
+}
+
+// Red on the starting directory walker: it omits both named thrift fixtures.
+#[test]
+fn the_nested_fixture_inventory_is_included() {
+    let nested: Vec<_> = every_fixture()
+        .into_iter()
+        .map(|(name, _)| name)
+        .filter(|name| name.starts_with("thrift/"))
+        .collect();
+    assert_eq!(
+        nested,
+        ["thrift/crawl_widgets.json", "thrift/product_page.json"]
+    );
 }

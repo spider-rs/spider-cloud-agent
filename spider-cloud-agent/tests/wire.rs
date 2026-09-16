@@ -30,7 +30,7 @@ use spider_cloud_agent::policy::StopReason;
 use spider_cloud_agent::{Body, Budget, Credits, Error, Spider};
 use std::future::Future;
 use std::io::{BufRead, BufReader, Read, Write};
-use std::net::{TcpListener, TcpStream};
+use std::net::{Ipv4Addr, TcpListener, TcpStream};
 use std::sync::mpsc::{channel, Receiver, Sender};
 use std::time::Duration;
 use url::Url;
@@ -101,11 +101,38 @@ fn serve(script: &[&str]) -> Stub {
 
 /// The same, with the status and the headers scripted too.
 fn serve_answers(script: &[Answer]) -> Stub {
-    let listener = TcpListener::bind("127.0.0.1:0").expect("a port");
-    let address = listener.local_addr().expect("an address");
-    let script: Vec<Answer> = script.to_vec();
-    let (sender, seen) = channel();
+    let script: Vec<Vec<u8>> = script.iter().map(|reply| {
+        let chunked = reply.headers.contains("transfer-encoding: chunked\r\n");
+        let length = if chunked { String::new() } else {
+            format!("content-length: {}\r\n", reply.body.len())
+        };
+        let mut bytes = format!(
+            "HTTP/1.1 {} Scripted\r\ncontent-type: application/json\r\n{length}connection: close\r\n{}\r\n",
+            reply.status, reply.headers
+        ).into_bytes();
+        if chunked {
+            for chunk in reply.body.as_bytes().chunks(16 * 1024) {
+                bytes.extend_from_slice(format!("{:x}\r\n", chunk.len()).as_bytes());
+                bytes.extend_from_slice(chunk);
+                bytes.extend_from_slice(b"\r\n");
+            }
+            bytes.extend_from_slice(b"0\r\n\r\n");
+        } else {
+            bytes.extend_from_slice(reply.body.as_bytes());
+        }
+        bytes
+    }).collect();
+    serve_raw(&script)
+}
 
+/// Write exactly these bytes and close the connection, without repairing framing.
+/// Repeat the final answer so an unexpected retry is counted too.
+fn serve_raw(script: &[Vec<u8>]) -> Stub {
+    assert!(!script.is_empty());
+    let listener = TcpListener::bind((Ipv4Addr::new(127, 0, 0, 1), 0)).expect("a port");
+    let address = listener.local_addr().expect("an address");
+    let script = script.to_vec();
+    let (sender, seen) = channel();
     std::thread::spawn(move || {
         for (answered, stream) in listener.incoming().enumerate() {
             let Ok(mut stream) = stream else { break };
@@ -115,42 +142,13 @@ fn serve_answers(script: &[Answer]) -> Stub {
             if sender.send(request).is_err() {
                 break;
             }
-            let fallback = Answer::ok("[]");
             let reply = script
                 .get(answered)
-                .or_else(|| script.last())
-                .unwrap_or(&fallback);
-            let chunked = reply.headers.contains("transfer-encoding: chunked\r\n");
-            let length = if chunked {
-                String::new()
-            } else {
-                format!("content-length: {}\r\n", reply.body.len())
-            };
-            let head = format!(
-                "HTTP/1.1 {} Scripted\r\ncontent-type: application/json\r\n{length}connection: close\r\n{}\r\n",
-                reply.status,
-                reply.headers
-            );
-            if stream.write_all(head.as_bytes()).is_err() {
-                break;
-            }
-            if chunked {
-                for chunk in reply.body.as_bytes().chunks(16 * 1024) {
-                    if write!(stream, "{:x}\r\n", chunk.len()).is_err()
-                        || stream.write_all(chunk).is_err()
-                        || stream.write_all(b"\r\n").is_err()
-                    {
-                        break;
-                    }
-                }
-                let _ = stream.write_all(b"0\r\n\r\n");
-            } else {
-                let _ = stream.write_all(reply.body.as_bytes());
-            }
+                .unwrap_or_else(|| script.last().unwrap());
+            let _ = stream.write_all(reply);
             let _ = stream.flush();
         }
     });
-
     Stub {
         base: Url::parse(&format!("http://{address}")).expect("a base url"),
         seen,
@@ -171,7 +169,7 @@ struct Stalled {
 }
 
 fn stall() -> Stalled {
-    let listener = TcpListener::bind("127.0.0.1:0").expect("a port");
+    let listener = TcpListener::bind((Ipv4Addr::new(127, 0, 0, 1), 0)).expect("a port");
     let address = listener.local_addr().expect("an address");
     let (sender, seen) = channel();
     let (release, held) = channel::<()>();
@@ -1624,4 +1622,315 @@ async fn a_site_that_refuses_every_attempt_ends_with_the_policy_reason() {
         failed.to_string().starts_with("no usable page after"),
         "{failed}"
     );
+}
+
+/// Keep the standard rules and retry bounds, but avoid waiting on backoff in tests.
+fn fast_client(stub: &Stub) -> Spider {
+    use spider_cloud_agent::policy::backoff::Backoff;
+    Spider::builder()
+        .key("not-a-real-key")
+        .base_url(stub.base.clone())
+        .policy(
+            spider_cloud_agent::Policy::standard().with_backoff(Backoff {
+                base: Duration::ZERO,
+                cap: Duration::ZERO,
+                ..Backoff::default()
+            }),
+        )
+        .build()
+        .unwrap()
+}
+
+// Pending red check (sandbox denies socket bind). Deliberate mutation: as_error mapped 401 and 402 to Error::Api.
+#[tokio::test]
+async fn api_401_and_402_stop_after_one_wire_attempt() {
+    for code in [401, 402] {
+        let stub = serve_answers(&[Answer::with(code, "", r#"{"error":"account refused"}"#)]);
+        let result = fast_client(&stub)
+            .scrape("https://example.com")
+            .send()
+            .await;
+        match code {
+            401 => assert!(
+                matches!(
+                    result,
+                    Err(Error::Auth {
+                        cause: AuthCause::Refused,
+                        ..
+                    })
+                ),
+                "{result:?}"
+            ),
+            _ => assert!(
+                matches!(result, Err(Error::InsufficientCredits)),
+                "{result:?}"
+            ),
+        }
+        assert_eq!(stub.sent().len(), 1);
+    }
+}
+
+// Pending red check (sandbox denies socket bind). Deliberate mutation: as_error returned None for API 403.
+#[tokio::test]
+async fn api_403_stops_after_one_wire_attempt() {
+    let stub = serve_answers(&[Answer::with(403, "", r#"{"error":"forbidden"}"#)]);
+    let result = fast_client(&stub)
+        .scrape("https://example.com")
+        .send()
+        .await;
+    assert!(
+        matches!(result, Err(Error::Api { status, .. }) if status.code() == 403),
+        "{result:?}"
+    );
+    assert_eq!(stub.sent().len(), 1);
+}
+
+// Pending red check (sandbox denies socket bind). Deliberate mutation: the send loop stopped immediately on API 500.
+#[tokio::test]
+async fn api_500_retries_once_on_the_wire() {
+    let stub = serve_answers(&[Answer::with(500, "", r#"{"error":"server failed"}"#)]);
+    let result = fast_client(&stub)
+        .scrape("https://example.com")
+        .send()
+        .await;
+    assert!(
+        matches!(result, Err(Error::Api { status, .. }) if status.code() == 500),
+        "{result:?}"
+    );
+    let sent = stub.sent();
+    assert_eq!(sent.len(), 2);
+    assert_eq!(sent[0].body, sent[1].body, "retry must not climb");
+}
+
+// Pending red check (sandbox denies socket bind). Deliberate mutation: is_mirrored_page_status always returned false.
+#[tokio::test]
+async fn account_and_server_codes_in_page_bodies_take_the_page_path() {
+    for code in [401, 402, 403, 500] {
+        let body =
+            format!(r#"{{"url":"https://example.com","status":{code},"content":"refused"}}"#);
+        let stub = serve_answers(&[Answer::with(code, "", &body)]);
+        let spider = Spider::builder()
+            .key("not-a-real-key")
+            .base_url(stub.base.clone())
+            .policy(spider_cloud_agent::Policy::standard().with_max_attempts(1))
+            .build()
+            .unwrap();
+        let result = spider.scrape("https://example.com").send().await;
+        // A page 403 or 500 asks for another attempt; the explicit cap stops it.
+        // Login and payment pages stop without needing another attempt.
+        let attempts = match result {
+            Err(Error::Exhausted {
+                attempts,
+                last: Some(last),
+                source: None,
+                ..
+            }) if code < 403 => {
+                assert_eq!(last.status.code(), code);
+                attempts
+            }
+            Err(Error::BudgetExceeded {
+                kind: BudgetKind::Attempts,
+                attempts,
+            }) if code >= 403 => attempts,
+            other => panic!("page {code}: {other:?}"),
+        };
+        assert_eq!(attempts.len(), 1);
+        assert_eq!(attempts[0].api.code(), 0);
+        assert_eq!(attempts[0].page.unwrap().code(), code);
+        assert_eq!(stub.sent().len(), 1);
+    }
+}
+
+// Pending red check (sandbox denies socket bind). Deliberate mutation: the raw stub repaired the declared length.
+#[tokio::test]
+async fn a_body_shorter_than_content_length_is_a_transport_error() {
+    // Complete JSON still fails when the HTTP message is incomplete.
+    let raw = format!(
+        "HTTP/1.1 200 OK\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{PAGE_ANSWER}",
+        PAGE_ANSWER.len() + 10
+    );
+    let stub = serve_raw(&[raw.into_bytes()]);
+    let result = fast_client(&stub)
+        .scrape("https://example.com")
+        .send()
+        .await;
+    assert!(matches!(result, Err(Error::Transport(_))), "{result:?}");
+    assert_eq!(stub.sent().len(), 1);
+}
+
+// Pending red check (sandbox denies socket bind). Deliberate mutation: the raw stub supplied a complete page reply.
+#[tokio::test]
+async fn a_connection_closed_mid_body_is_a_transport_error() {
+    let stub = serve_raw(&[b"HTTP/1.1 200 OK\r\ntransfer-encoding: chunked\r\nconnection: close\r\n\r\n40\r\n{\"url\":".to_vec()]);
+    let result = fast_client(&stub)
+        .scrape("https://example.com")
+        .send()
+        .await;
+    assert!(matches!(result, Err(Error::Transport(_))), "{result:?}");
+    assert_eq!(stub.sent().len(), 1);
+}
+
+// Pending red check (sandbox denies socket bind). Deliberate mutation: the raw stub dropped the final chunk marker.
+#[tokio::test]
+async fn chunked_transfer_decodes_a_page_once() {
+    let (first, second) = PAGE_ANSWER.split_at(20);
+    let raw = format!("HTTP/1.1 200 OK\r\ntransfer-encoding: chunked\r\nconnection: close\r\n\r\n{:x}\r\n{first}\r\n{:x}\r\n{second}\r\n0\r\n\r\n", first.len(), second.len());
+    let stub = serve_raw(&[raw.into_bytes()]);
+    let page = fast_client(&stub)
+        .scrape("https://example.com")
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(page.status.code(), 200);
+    assert!(!page.body.is_empty());
+    assert_eq!(stub.sent().len(), 1);
+}
+
+/// The built-in client has no gzip decoder enabled. A valid gzip member reaches
+/// the JSON decoder as compressed bytes and ends in Error::Decode, without retry.
+// Pending red check (sandbox denies socket bind). Deliberate mutation: the raw stub sent plain JSON in place of gzip.
+#[tokio::test]
+async fn gzip_is_not_decoded_by_the_builtin_transport() {
+    // A gzip member containing [], made with gzip.compress(b"[]", mtime=0).
+    let body: &[u8] = &[
+        31, 139, 8, 0, 0, 0, 0, 0, 2, 3, 139, 142, 5, 0, 41, 187, 76, 13, 2, 0, 0, 0,
+    ];
+    let mut raw = format!("HTTP/1.1 200 OK\r\ncontent-encoding: gzip\r\ncontent-length: {}\r\nconnection: close\r\n\r\n", body.len()).into_bytes();
+    raw.extend_from_slice(body);
+    let stub = serve_raw(&[raw]);
+    let result = fast_client(&stub)
+        .scrape("https://example.com")
+        .send()
+        .await;
+    assert!(matches!(result, Err(Error::Decode(_))), "{result:?}");
+    assert_eq!(stub.sent().len(), 1);
+}
+
+/// Reqwest follows a same-origin 302 and changes POST to GET. The send loop sees
+/// one successful attempt, while the socket sees two requests.
+// Pending red check (sandbox denies socket bind). Deliberate mutation: the built-in client disabled redirects.
+#[tokio::test]
+async fn a_302_redirect_is_followed_on_the_wire() {
+    let stub = serve_answers(&[
+        Answer::with(302, "location: /redirected\r\n", ""),
+        Answer::ok(PAGE_ANSWER),
+    ]);
+    let page = fast_client(&stub)
+        .scrape("https://example.com")
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(page.status.code(), 200);
+    assert_eq!(page.attempts.len(), 1);
+    let sent = stub.sent();
+    assert_eq!(sent.len(), 2);
+    assert_eq!(sent[0].line, "POST /scrape HTTP/1.1");
+    assert_eq!(sent[1].line, "GET /redirected HTTP/1.1");
+}
+
+/// New response records keep the HTTP envelope beside the JSON body. These are
+/// synthetic examples of the endpoint contracts, passed through xtask redact;
+/// they are not evidence of a live service revision.
+fn recorded_answer(name: &str) -> Answer {
+    let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("tests/fixtures")
+        .join(name);
+    let record: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(path).unwrap()).unwrap();
+    let headers: String = record["headers"]
+        .as_object()
+        .unwrap()
+        .iter()
+        .map(|(name, value)| format!("{name}: {}\r\n", value.as_str().unwrap()))
+        .collect();
+    Answer::with(
+        record["http_status"].as_u64().unwrap().try_into().unwrap(),
+        &headers,
+        &serde_json::to_string(&record["body"]).unwrap(),
+    )
+}
+
+// Pending red check (sandbox denies socket bind). Deliberate mutation:
+// remove retry-after and ratelimit headers from recorded_answer.
+#[tokio::test]
+async fn recorded_api_errors_keep_status_headers_and_retry_bounds() {
+    for (file, code, count) in [
+        ("api_401.json", 401, 1),
+        ("api_402.json", 402, 1),
+        ("api_429.json", 429, 4),
+        ("api_503.json", 503, 4),
+    ] {
+        let stub = serve_answers(&[recorded_answer(file)]);
+        let spider = fast_client(&stub);
+        let result = spider.scrape("https://example.com").send().await;
+        match code {
+            401 => assert!(
+                matches!(
+                    result,
+                    Err(Error::Auth {
+                        cause: AuthCause::Refused,
+                        ..
+                    })
+                ),
+                "{result:?}"
+            ),
+            402 => assert!(
+                matches!(result, Err(Error::InsufficientCredits)),
+                "{result:?}"
+            ),
+            _ => {
+                assert!(
+                    matches!(result, Err(Error::Api { status, retry_after: Some(wait), .. })
+                    if status.code() == code && wait == Duration::from_secs(1)),
+                    "{result:?}"
+                );
+                let limits = spider.raw().rate_limit();
+                assert_eq!(limits.limit, Some(100));
+                assert_eq!(limits.remaining, Some(0));
+                assert_eq!(limits.reset, Some(Duration::from_secs(2)));
+            }
+        }
+        assert_eq!(stub.sent().len(), count, "{file}");
+    }
+}
+
+// Pending red check (sandbox denies socket bind). Deliberate mutation:
+// replace recorded bodies with null in recorded_answer.
+#[tokio::test]
+async fn recorded_endpoint_answers_reach_their_builders() {
+    for (file, request) in [
+        ("links.json", "POST /links HTTP/1.1"),
+        ("transform.json", "POST /transform HTTP/1.1"),
+        ("fetch.json", "POST /fetch/example.com/docs HTTP/1.1"),
+        ("data_table.json", "GET /data/pages HTTP/1.1"),
+    ] {
+        let stub = serve_answers(&[recorded_answer(file)]);
+        let spider = fast_client(&stub);
+        match file {
+            "links.json" => {
+                let page = spider.links("https://example.com").send().await.unwrap();
+                assert_eq!(page.value[0].as_str(), "https://example.org/docs");
+            }
+            "transform.json" => {
+                let page = spider
+                    .transform(vec![Document::html("<p>Converted</p>")])
+                    .send()
+                    .await
+                    .unwrap();
+                assert_eq!(page.text(), Some("<p>Converted</p>"));
+            }
+            "fetch.json" => {
+                let page = spider.fetch("example.com", "docs").send().await.unwrap();
+                assert_eq!(page.text(), Some("<p>Cached</p>"));
+            }
+            _ => {
+                let rows = spider.table("pages").send().await.unwrap();
+                assert_eq!(rows.len(), 1);
+                assert_eq!(rows[0]["url"], "https://example.com/docs");
+            }
+        }
+        let sent = stub.sent();
+        assert_eq!(sent.len(), 1, "{file}");
+        assert_eq!(sent[0].line, request);
+    }
 }

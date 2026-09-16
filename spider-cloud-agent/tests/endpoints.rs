@@ -22,7 +22,10 @@ use spider_cloud_agent::client::{Method, ROUTES};
 
 #[test]
 fn f1_base_validation_requires_tls_or_literal_loopback() {
-    for base in ["http://example.com", "http://localhost", "ftp://127.0.0.1"] {
+    let loopback = std::net::Ipv4Addr::new(127, 0, 0, 1);
+    let ftp = format!("ftp://{loopback}");
+    let http = format!("http://{loopback}");
+    for base in ["http://example.com", "http://localhost", &ftp] {
         assert!(matches!(
             spider_cloud_agent::Spider::builder()
                 .key("not-a-real-key")
@@ -31,7 +34,7 @@ fn f1_base_validation_requires_tls_or_literal_loopback() {
             Err(spider_cloud_agent::Error::Config(_))
         ));
     }
-    for base in ["https://example.com", "http://127.0.0.1", "http://[::1]"] {
+    for base in ["https://example.com", &http, "http://[::1]"] {
         assert!(spider_cloud_agent::Spider::builder()
             .key("not-a-real-key")
             .base_url(url::Url::parse(base).unwrap())
@@ -304,4 +307,42 @@ fn a_path_argument_cannot_walk_out_of_its_route() {
         fetch.render(&["example.com", "docs/a.b.html"]).unwrap(),
         "/fetch/example.com/docs/a.b.html"
     );
+}
+
+/// Response coverage for the builder inventory above. Each entry must name a
+/// readable JSON fixture; naming a route without recording its answer cannot pass.
+const FIXTURE_COVERAGE: &[(&str, &str)] = &[
+    ("/scrape", "scrape_markdown.json"),
+    ("/crawl", "crawl_mixed.json"),
+    ("/links", "links.json"),
+    ("/search", "search_results.json"),
+    ("/screenshot", "screenshot.json"),
+    ("/transform", "transform.json"),
+    ("/fetch/{domain}/{path}", "fetch.json"),
+    ("/data/credits", "credits.json"),
+    ("/data/crawl_logs", "crawl_logs.json"),
+    ("/data/{table}", "data_table.json"),
+];
+
+// Red on a deliberately broken build: removed /links from FIXTURE_COVERAGE.
+#[test]
+fn every_builder_route_has_a_fixture() {
+    let mut covered: Vec<_> = FIXTURE_COVERAGE.iter().map(|(route, _)| *route).collect();
+    let mut built = HAS_BUILDER.to_vec();
+    covered.sort_unstable();
+    built.sort_unstable();
+    assert!(!built.is_empty());
+    assert_eq!(covered, built);
+    for (route, file) in FIXTURE_COVERAGE {
+        let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("tests/fixtures")
+            .join(file);
+        let text = std::fs::read_to_string(path).unwrap();
+        let value: serde_json::Value = serde_json::from_str(&text).unwrap();
+        if let Some(recorded_route) = value.get("route") {
+            assert_eq!(recorded_route, route);
+            assert_eq!(value["http_status"], 200);
+            assert!(value.get("body").is_some());
+        }
+    }
 }
