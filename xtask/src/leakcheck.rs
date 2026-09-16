@@ -26,6 +26,9 @@ pub const ALLOWED_ENV_VARS: &[&str] = &[
     "SPIDER_AGENT_NO_UPDATE",
     "SPIDER_AGENT_UPDATE_BACKGROUND",
     "SPIDER_AGENT_UPDATE_BASE",
+    "SPIDER_AGENT_UPDATE_KEY",
+    // Read by spider-agent to skip the background update check in CI.
+    "CI",
 ];
 
 /// Bytes at the front of a model artifact that may hold printable ASCII, for a magic

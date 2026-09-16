@@ -199,30 +199,39 @@ citations. Run `scripts/check-anchors.sh` after moving code so these references 
 
 ## Self update
 
-18. **Bytes from a release are never staged, run or installed before they match the release's
-    `SHA256SUMS.txt`, and a staged file is installed only if it still hashes to what was
-    verified.** The archive digest is compared before the archive is opened
-    (`spider-agent-cli/src/update/release.rs:238` (`if actual != expected {`)). The apply step
-    hashes the staged file and deletes it on a mismatch
+18. **Bytes from a release are never staged, run or installed before a pinned release key has
+    signed the release's `SHA256SUMS.txt` for that version and the bytes match it, and a staged
+    file is installed only if it still hashes to what was verified.** Nothing in the sums file
+    is read until the minisign signature over it verifies against a key in
+    `spider-agent-cli/src/update/release-keys.pub`
+    (`spider-agent-cli/src/update/signature.rs:78` (`if !signed {`)). The signed trusted comment
+    must name the tag's version, so a sums file signed for one release cannot be served for
+    another (`spider-agent-cli/src/update/signature.rs:84`
+    (`if signature.trusted_comment() != expected`)). The archive digest is compared before the
+    archive is opened (`spider-agent-cli/src/update/release.rs:275` (`if actual != expected {`)).
+    The apply step hashes the staged file and deletes it on a mismatch
     (`spider-agent-cli/src/update/install.rs:308` (`Ok(actual) if actual == *expected`)), against a
     digest kept in the owner only `~/.spider/update.json`, not beside the binary. Only https is
-    fetched (`spider-agent-cli/src/update/release.rs:43` (`pub fn allowed(`)), and the one
-    exception for a loopback test stub exists only in a debug build
-    (`spider-agent-cli/src/update/mod.rs:75` (`fn settings() -> Option<Settings>`)). The tests that
-    hold this are `spider-agent-cli/tests/update.rs:427`
+    fetched (`spider-agent-cli/src/update/release.rs:45` (`pub fn allowed(`)). The loopback test
+    stub and the test signing key are honoured only in a debug build
+    (`spider-agent-cli/src/update/mod.rs:86` (`fn settings() -> Option<Settings>`)). The tests that
+    hold this are `spider-agent-cli/tests/update.rs:917`
+    (`fn a_release_without_a_signature_is_refused_and_reported_once_in_the_background`),
+    `spider-agent-cli/tests/update.rs:946` (`fn a_sums_file_changed_after_signing_is_refused`),
+    `spider-agent-cli/tests/update.rs:608`
     (`fn an_archive_that_does_not_match_its_checksum_is_refused`) and
-    `spider-agent-cli/tests/update.rs:644`
+    `spider-agent-cli/tests/update.rs:825`
     (`fn a_staged_file_whose_bytes_changed_is_deleted_and_the_command_still_runs`). An updater
-    replaces the program people run next, often from scripts nobody watches. One that installs
-    unverified bytes hands that program to whoever can tamper with a download or write a file
-    next to the binary.
+    replaces the program people run next, often from scripts nobody watches. A checksum from the
+    same release proves only that a download was not damaged. Without the signature, whoever can
+    publish a release decides what that program is.
 
 19. **An update never changes what the caller's command does.** The check runs in a detached
     child with its standard streams closed, and every failure becomes a stderr line or nothing
-    (`spider-agent-cli/src/update/mod.rs:210` (`pub fn before_command(`)). Binaries owned by
+    (`spider-agent-cli/src/update/mod.rs:235` (`pub fn before_command(`)). Binaries owned by
     cargo, a package manager, or a directory the user cannot write are left alone
     (`spider-agent-cli/src/update/install.rs:84` (`pub fn not_ours(`)). The test is
-    `spider-agent-cli/tests/update.rs:611`
+    `spider-agent-cli/tests/update.rs:792`
     (`fn a_failing_update_leaves_the_command_its_own_exit_code_and_output`), which compares code,
     stdout and stderr against an opted out run. This tool is called by other programs that branch
     on its exit code, and an updater that can turn a scrape into a failure breaks them for a

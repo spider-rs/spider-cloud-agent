@@ -134,7 +134,8 @@ For what is left to spend right now, `credits` is the shorter answer."
         long_about = "Install the newest release now instead of on a later run.
 
 Once a day, a run checks for a newer release in the background, downloads it, \
-checks it against the release's SHA256SUMS.txt, and leaves it beside the \
+checks it against the release's SHA256SUMS.txt and the minisign signature \
+on that file, and leaves it beside the \
 binary. The next run moves it into place and carries on under the new \
 version. This command does all of that at once and says what it did on \
 stderr.
@@ -145,7 +146,9 @@ be reached, 7 this binary belongs to cargo, a package manager, or a directory \
 this user cannot write, so it is left alone.
 
 Set SPIDER_AGENT_NO_UPDATE to any value, or pass --no-update, to turn self \
-update off, including the background check and an update already waiting."
+update off, including the background check and an update already waiting. \
+With CI set, runs skip the background check and the waiting update, and this \
+command still works."
     )]
     Update,
 }

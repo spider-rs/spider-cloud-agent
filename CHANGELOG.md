@@ -22,7 +22,14 @@ error.
 - `spider_cloud_agent::auth::store` gains `spider_dir`, `ensure_spider_dir`
   and `write_private_file`. They write into `~/.spider` with the credentials
   file's modes and its write-then-rename. The CLI keeps its update state there.
-- The CLI depends on `reqwest`, `sha2` and `flate2` directly.
+- Self update refuses any release whose `SHA256SUMS.txt` lacks a valid minisign
+  signature from the key pinned in `spider-agent-cli/src/update/release-keys.pub`
+  (key id `43EBB605B452BC13`), or whose signed trusted comment is not
+  `spider-agent v<version> SHA256SUMS.txt` for the tag being installed. The check
+  runs before the sums file is read. Releases now carry `SHA256SUMS.txt.minisig`.
+- With `CI` set to a non-empty value, a run starts no background check and does
+  not install a staged update. `spider-agent update` still works.
+- The CLI depends on `reqwest`, `sha2`, `flate2` and `minisign-verify` directly.
 
 ## 0.4.0 (2026-09-16)
 

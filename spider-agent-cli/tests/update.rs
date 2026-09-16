@@ -29,6 +29,8 @@ use std::process::{Command, Output};
 use std::sync::mpsc::{channel, Receiver};
 use std::time::{Duration, Instant};
 
+use base64::Engine;
+use ring::signature::{Ed25519KeyPair, KeyPair};
 use sha2::{Digest, Sha256};
 
 const NEW: &str = "9.9.9";
@@ -127,11 +129,18 @@ fn serve(routes: Vec<Route>) -> Stub {
     }
 }
 
-/// A release at `version` with this archive and this checksum file. The
-/// archive download goes through one redirect, the way GitHub's does.
+/// A release at `version` with this archive and this checksum file, signed
+/// by the test key for that version. The archive download goes through one
+/// redirect, the way GitHub's does.
 fn release(version: &str, archive: &[u8], sums: &str) -> Stub {
+    let signature = TEST_KEY.sign(sums.as_bytes(), &comment(version));
+    release_with(version, archive, sums, Some(&signature))
+}
+
+/// The same, with the signature file chosen by the test, or none at all.
+fn release_with(version: &str, archive: &[u8], sums: &str, signature: Option<&str>) -> Stub {
     let tag = format!("v{version}");
-    serve(vec![
+    let mut routes = vec![
         route("/latest", 302, &format!("location: /tag/{tag}\r\n"), b""),
         route(
             &format!("/download/{tag}/SHA256SUMS.txt"),
@@ -146,7 +155,177 @@ fn release(version: &str, archive: &[u8], sums: &str) -> Stub {
             b"",
         ),
         route("/storage/archive", 200, "", archive),
-    ])
+    ];
+    if let Some(signature) = signature {
+        routes.push(route(
+            &format!("/download/{tag}/SHA256SUMS.txt.minisig"),
+            200,
+            "",
+            signature.as_bytes(),
+        ));
+    }
+    serve(routes)
+}
+
+fn comment(version: &str) -> String {
+    format!("spider-agent v{version} SHA256SUMS.txt")
+}
+
+// ---------------------------------------------------------------------------
+// a signer for test releases
+// ---------------------------------------------------------------------------
+
+/// A minisign key made from a fixed seed. It exists only in this file, and
+/// the binary under test trusts it only because a debug build reads
+/// `SPIDER_AGENT_UPDATE_KEY`. A release build ignores that variable.
+struct TestOnlyKey {
+    seed: [u8; 32],
+    key_id: [u8; 8],
+}
+
+const TEST_KEY: TestOnlyKey = TestOnlyKey {
+    seed: [7; 32],
+    key_id: [1, 2, 3, 4, 5, 6, 7, 8],
+};
+
+/// A second test key, for a signature nobody trusts.
+const OTHER_TEST_KEY: TestOnlyKey = TestOnlyKey {
+    seed: [9; 32],
+    key_id: [8, 7, 6, 5, 4, 3, 2, 1],
+};
+
+impl TestOnlyKey {
+    fn pair(&self) -> Ed25519KeyPair {
+        Ed25519KeyPair::from_seed_unchecked(&self.seed).unwrap()
+    }
+
+    /// The public key line, as `minisign -G` writes it.
+    fn public(&self) -> String {
+        let mut bytes = b"Ed".to_vec();
+        bytes.extend_from_slice(&self.key_id);
+        bytes.extend_from_slice(self.pair().public_key().as_ref());
+        b64(&bytes)
+    }
+
+    /// A signature file as `minisign -S` writes one: Ed25519 over the
+    /// BLAKE2b-512 of the file, then a global signature over that signature
+    /// and the trusted comment.
+    fn sign(&self, data: &[u8], trusted_comment: &str) -> String {
+        let pair = self.pair();
+        let signature = pair.sign(&blake2b_512(data));
+        let mut line = b"ED".to_vec();
+        line.extend_from_slice(&self.key_id);
+        line.extend_from_slice(signature.as_ref());
+        let mut global = signature.as_ref().to_vec();
+        global.extend_from_slice(trusted_comment.as_bytes());
+        let global = pair.sign(&global);
+        format!(
+            "untrusted comment: signature from a test-only key\n{}\ntrusted comment: {trusted_comment}\n{}\n",
+            b64(&line),
+            b64(global.as_ref())
+        )
+    }
+}
+
+fn b64(bytes: &[u8]) -> String {
+    base64::engine::general_purpose::STANDARD.encode(bytes)
+}
+
+/// BLAKE2b with a 64 byte digest and no key, per RFC 7693. Minisign prehashes
+/// with it, and no crate in the lockfile provides it.
+fn blake2b_512(data: &[u8]) -> [u8; 64] {
+    const IV: [u64; 8] = [
+        0x6a09_e667_f3bc_c908,
+        0xbb67_ae85_84ca_a73b,
+        0x3c6e_f372_fe94_f82b,
+        0xa54f_f53a_5f1d_36f1,
+        0x510e_527f_ade6_82d1,
+        0x9b05_688c_2b3e_6c1f,
+        0x1f83_d9ab_fb41_bd6b,
+        0x5be0_cd19_137e_2179,
+    ];
+    const SIGMA: [[usize; 16]; 12] = [
+        [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15],
+        [14, 10, 4, 8, 9, 15, 13, 6, 1, 12, 0, 2, 11, 7, 5, 3],
+        [11, 8, 12, 0, 5, 2, 15, 13, 10, 14, 3, 6, 7, 1, 9, 4],
+        [7, 9, 3, 1, 13, 12, 11, 14, 2, 6, 5, 10, 4, 0, 15, 8],
+        [9, 0, 5, 7, 2, 4, 10, 15, 14, 1, 11, 12, 6, 8, 3, 13],
+        [2, 12, 6, 10, 0, 11, 8, 3, 4, 13, 7, 5, 15, 14, 1, 9],
+        [12, 5, 1, 15, 14, 13, 4, 10, 0, 7, 6, 3, 9, 2, 8, 11],
+        [13, 11, 7, 14, 12, 1, 3, 9, 5, 0, 15, 4, 8, 6, 2, 10],
+        [6, 15, 14, 9, 11, 3, 0, 8, 12, 2, 13, 7, 1, 4, 10, 5],
+        [10, 2, 8, 4, 7, 6, 1, 5, 15, 11, 9, 14, 3, 12, 13, 0],
+        [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15],
+        [14, 10, 4, 8, 9, 15, 13, 6, 1, 12, 0, 2, 11, 7, 5, 3],
+    ];
+    fn mix(v: &mut [u64; 16], a: usize, b: usize, c: usize, d: usize, x: u64, y: u64) {
+        v[a] = v[a].wrapping_add(v[b]).wrapping_add(x);
+        v[d] = (v[d] ^ v[a]).rotate_right(32);
+        v[c] = v[c].wrapping_add(v[d]);
+        v[b] = (v[b] ^ v[c]).rotate_right(24);
+        v[a] = v[a].wrapping_add(v[b]).wrapping_add(y);
+        v[d] = (v[d] ^ v[a]).rotate_right(16);
+        v[c] = v[c].wrapping_add(v[d]);
+        v[b] = (v[b] ^ v[c]).rotate_right(63);
+    }
+    fn compress(h: &mut [u64; 8], block: &[u8; 128], counter: u128, last: bool) {
+        let mut m = [0u64; 16];
+        for (i, word) in m.iter_mut().enumerate() {
+            *word = u64::from_le_bytes(block[i * 8..i * 8 + 8].try_into().unwrap());
+        }
+        let mut v = [0u64; 16];
+        v[..8].copy_from_slice(h);
+        v[8..].copy_from_slice(&IV);
+        v[12] ^= counter as u64;
+        v[13] ^= (counter >> 64) as u64;
+        if last {
+            v[14] = !v[14];
+        }
+        for s in SIGMA {
+            mix(&mut v, 0, 4, 8, 12, m[s[0]], m[s[1]]);
+            mix(&mut v, 1, 5, 9, 13, m[s[2]], m[s[3]]);
+            mix(&mut v, 2, 6, 10, 14, m[s[4]], m[s[5]]);
+            mix(&mut v, 3, 7, 11, 15, m[s[6]], m[s[7]]);
+            mix(&mut v, 0, 5, 10, 15, m[s[8]], m[s[9]]);
+            mix(&mut v, 1, 6, 11, 12, m[s[10]], m[s[11]]);
+            mix(&mut v, 2, 7, 8, 13, m[s[12]], m[s[13]]);
+            mix(&mut v, 3, 4, 9, 14, m[s[14]], m[s[15]]);
+        }
+        for i in 0..8 {
+            h[i] ^= v[i] ^ v[i + 8];
+        }
+    }
+    let mut h = IV;
+    h[0] ^= 0x0101_0000 ^ 64;
+    let mut offset = 0usize;
+    loop {
+        let remaining = data.len() - offset;
+        let mut block = [0u8; 128];
+        if remaining > 128 {
+            block.copy_from_slice(&data[offset..offset + 128]);
+            offset += 128;
+            compress(&mut h, &block, offset as u128, false);
+        } else {
+            block[..remaining].copy_from_slice(&data[offset..]);
+            compress(&mut h, &block, data.len() as u128, true);
+            break;
+        }
+    }
+    let mut out = [0u8; 64];
+    for (chunk, word) in out.chunks_exact_mut(8).zip(h) {
+        chunk.copy_from_slice(&word.to_le_bytes());
+    }
+    out
+}
+
+#[test]
+fn the_test_signer_hashes_like_blake2b() {
+    // RFC 7693, appendix A.
+    let digest = blake2b_512(b"abc");
+    assert_eq!(
+        &digest[..8],
+        &[0xba, 0x80, 0xa5, 0x3f, 0x98, 0x1c, 0x4d, 0x0d]
+    );
 }
 
 /// A well formed release of [`NEW`] whose binary is `binary`.
@@ -252,7 +431,9 @@ impl Install {
             .env("SPIDER_CLOUD_API_KEY", "")
             .env("SPIDER_AGENT_UPDATE_BASE", base)
             .env_remove("SPIDER_AGENT_NO_UPDATE")
-            .env_remove("SPIDER_AGENT_UPDATE_BACKGROUND");
+            .env("SPIDER_AGENT_UPDATE_KEY", TEST_KEY.public())
+            .env_remove("SPIDER_AGENT_UPDATE_BACKGROUND")
+            .env_remove("CI");
         command
     }
 
@@ -681,4 +862,141 @@ fn the_fixture_archive_matches_the_contract() {
     assert_eq!(&bytes[..2], &[0x1f, 0x8b]);
     assert!(asset(NEW).starts_with("spider-agent-9.9.9-"));
     assert!(Path::new(env!("CARGO_BIN_EXE_spider-agent")).exists());
+}
+
+// ---------------------------------------------------------------------------
+// signatures
+// ---------------------------------------------------------------------------
+
+/// A release whose signature is refused. `update` exits 1, says why, and never
+/// asks for the archive, because nothing in the sums file is trusted yet.
+fn refused_before_the_archive(name: &str, stub: &Stub, expected: &str) {
+    let install = Install::new(name);
+    let output = install.run(&stub.base, &["update"]);
+    assert_eq!(code(&output), 1, "{name}: {}", text(&output.stderr));
+    assert!(
+        text(&output.stderr).contains(expected),
+        "{name}: {}",
+        text(&output.stderr)
+    );
+    assert!(
+        text(&output.stderr).contains("Nothing was installed"),
+        "{name}"
+    );
+    let paths = stub.paths();
+    assert!(
+        !paths
+            .iter()
+            .any(|path| path.ends_with(".tar.gz") || path == "/storage/archive"),
+        "{name}: fetched the archive: {paths:?}"
+    );
+    assert!(install.untouched(), "{name}");
+    install.only_files(&["spider-agent"]);
+}
+
+fn good_parts() -> (Vec<u8>, String) {
+    let archive = tarball(&[("spider-agent", &new_binary(NEW))]);
+    let sums = sums_for(&asset(NEW), &archive);
+    (archive, sums)
+}
+
+#[test]
+fn a_valid_signature_is_fetched_and_the_release_installs() {
+    let install = Install::new("signed");
+    let stub = good_release(&new_binary(NEW));
+    let output = install.run(&stub.base, &["update"]);
+    assert_eq!(code(&output), 0, "{}", text(&output.stderr));
+    assert!(stub
+        .paths()
+        .iter()
+        .any(|path| path == &format!("/download/v{NEW}/SHA256SUMS.txt.minisig")));
+    assert_eq!(install.installed(), new_binary(NEW));
+}
+
+#[test]
+fn a_release_without_a_signature_is_refused_and_reported_once_in_the_background() {
+    let (archive, sums) = good_parts();
+    let stub = release_with(NEW, &archive, &sums, None);
+    refused_before_the_archive("unsigned", &stub, "has no SHA256SUMS.txt.minisig");
+
+    let background = Install::new("unsigned-background");
+    assert_eq!(code(&background.run(&stub.base, LOCAL)), 0);
+    assert!(background.wait_for_outcome().starts_with("refused"));
+    let next = background.run(&stub.base, LOCAL);
+    assert!(
+        text(&next.stderr).contains("has no SHA256SUMS.txt.minisig"),
+        "{}",
+        text(&next.stderr)
+    );
+    let after = background.run(&stub.base, LOCAL);
+    assert!(!text(&after.stderr).contains("minisig"), "said twice");
+    assert!(background.untouched());
+    assert!(!background.staged().exists());
+}
+
+#[test]
+fn a_signature_by_a_key_nobody_trusts_is_refused() {
+    let (archive, sums) = good_parts();
+    let signature = OTHER_TEST_KEY.sign(sums.as_bytes(), &comment(NEW));
+    let stub = release_with(NEW, &archive, &sums, Some(&signature));
+    refused_before_the_archive("other-key", &stub, "not signed by a trusted release key");
+}
+
+#[test]
+fn a_sums_file_changed_after_signing_is_refused() {
+    let (archive, sums) = good_parts();
+    let signature = TEST_KEY.sign(sums.as_bytes(), &comment(NEW));
+    let changed = format!("{sums}{}  spider-agent-extra.tar.gz\n", "1".repeat(64));
+    let stub = release_with(NEW, &archive, &changed, Some(&signature));
+    refused_before_the_archive("changed-sums", &stub, "not signed by a trusted release key");
+}
+
+#[test]
+fn a_signature_made_for_another_version_is_refused() {
+    let (archive, sums) = good_parts();
+    let signature = TEST_KEY.sign(sums.as_bytes(), &comment("9.9.8"));
+    let stub = release_with(NEW, &archive, &sums, Some(&signature));
+    refused_before_the_archive("other-version", &stub, "spider-agent v9.9.8 SHA256SUMS.txt");
+}
+
+#[test]
+fn a_malformed_signature_file_is_refused() {
+    let (archive, sums) = good_parts();
+    let stub = release_with(NEW, &archive, &sums, Some("untrusted comment: nothing\n"));
+    refused_before_the_archive("malformed-signature", &stub, "malformed");
+}
+
+// ---------------------------------------------------------------------------
+// CI
+// ---------------------------------------------------------------------------
+
+#[test]
+fn under_ci_nothing_checks_or_installs_but_the_update_command_still_works() {
+    let install = Install::new("ci");
+    let stub = good_release(&new_binary(NEW));
+
+    let fresh = install.run_with(&stub.base, LOCAL, "CI", "true");
+    assert_eq!(code(&fresh), 0);
+    std::thread::sleep(Duration::from_millis(1500));
+    assert!(stub.paths().is_empty(), "a CI run started a check");
+    assert!(!install.state_path().exists());
+
+    // Stage one outside CI, then check a CI run leaves it staged.
+    assert_eq!(code(&install.run(&stub.base, LOCAL)), 0);
+    assert_eq!(install.wait_for_outcome(), "staged");
+    let staged_run = install.run_with(&stub.base, LOCAL, "CI", "1");
+    assert_eq!(code(&staged_run), 0);
+    assert!(staged_run.stderr.is_empty(), "{}", text(&staged_run.stderr));
+    assert!(install.untouched(), "a CI run installed a staged update");
+    assert!(install.staged().exists());
+
+    let explicit = install.run_with(&stub.base, &["update"], "CI", "1");
+    assert_eq!(code(&explicit), 0, "{}", text(&explicit.stderr));
+    assert_eq!(install.installed(), new_binary(NEW));
+
+    // An empty CI is not CI.
+    let other = Install::new("ci-empty");
+    let stub = release(CURRENT, b"", "");
+    assert_eq!(code(&other.run_with(&stub.base, LOCAL, "CI", "")), 0);
+    assert_eq!(other.wait_for_outcome(), "up to date");
 }

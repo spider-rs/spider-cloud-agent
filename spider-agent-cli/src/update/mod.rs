@@ -7,9 +7,10 @@
 //!    with its own command. The command's output, timing and exit code do not
 //!    depend on that child in any way; nothing waits for it and its standard
 //!    streams are closed.
-//! 2. That child asks where the newest release is, downloads the archive for
-//!    this platform and `SHA256SUMS.txt` from the same release, refuses the
-//!    archive unless it matches, takes the binary out, checks it answers
+//! 2. That child asks where the newest release is, downloads `SHA256SUMS.txt`
+//!    and its minisign signature, refuses both unless a pinned release key
+//!    signed the sums for this version, downloads the archive for this
+//!    platform, refuses it unless it matches, takes the binary out, checks it answers
 //!    `--version` with the tagged version, and stages it beside the running
 //!    binary. It records the staged file's SHA-256 in `~/.spider/update.json`.
 //! 3. The next run finds the staged file, hashes it, and only if the digest
@@ -19,7 +20,8 @@
 //!
 //! `spider-agent update` does the same work in the foreground and installs at
 //! once. [`OPT_OUT_ENV`] or `--no-update` turns every part of this off,
-//! including step 3 for an update staged earlier.
+//! including step 3 for an update staged earlier. A non-empty `CI` skips
+//! steps 1 and 3 and leaves `update` working.
 //!
 //! Every problem here becomes a line on stderr or nothing at all. None of them
 //! changes what the caller's command does.
@@ -27,7 +29,10 @@
 mod archive;
 mod install;
 mod release;
+mod signature;
 mod state;
+
+use minisign_verify::PublicKey;
 
 use std::fmt;
 use std::time::Duration;
@@ -54,10 +59,12 @@ pub const CHECK_INTERVAL: Duration = Duration::from_secs(24 * 60 * 60);
 /// Where releases are published.
 pub const RELEASES: &str = "https://github.com/spider-rs/spider-cloud-agent/releases";
 
-/// Where to look for releases, and whether plain http to loopback is allowed.
+/// Where to look for releases, whether plain http to loopback is allowed, and
+/// which keys may sign a release.
 pub struct Settings {
     base: Url,
     allow_loopback_http: bool,
+    keys: Vec<PublicKey>,
 }
 
 /// The settings this build runs under, or `None` when it does not update
@@ -68,24 +75,35 @@ pub struct Settings {
 /// off under the release profile this workspace ships, so neither the
 /// environment read below nor the loopback exception exists there.
 ///
+/// A release build also trusts only the keys pinned in `release-keys.pub`.
+///
 /// A debug build updates itself only when `SPIDER_AGENT_UPDATE_BASE` names a
 /// release base, which is how the tests point it at a loopback stub. Without
 /// it a debug build does nothing, so `cargo run` and `cargo test` never touch
-/// the network or replace a binary under `target/`.
+/// the network or replace a binary under `target/`. A debug build given
+/// `SPIDER_AGENT_UPDATE_KEY` trusts that one key in place of the pinned ones,
+/// so the tests can sign releases with a throwaway key.
 fn settings() -> Option<Settings> {
     #[cfg(debug_assertions)]
     {
         let base = std::env::var("SPIDER_AGENT_UPDATE_BASE").ok()?;
+        let keys = match std::env::var("SPIDER_AGENT_UPDATE_KEY") {
+            Ok(key) => signature::parse_keys(&key).ok()?,
+            Err(_) => signature::pinned().ok()?,
+        };
         Url::parse(&base).ok().map(|base| Settings {
             base,
             allow_loopback_http: true,
+            keys,
         })
     }
     #[cfg(not(debug_assertions))]
     {
+        let keys = signature::pinned().ok()?;
         Url::parse(RELEASES).ok().map(|base| Settings {
             base,
             allow_loopback_http: false,
+            keys,
         })
     }
 }
@@ -152,7 +170,8 @@ pub enum Problem {
     Unreachable(String),
     /// The host's limit for callers without an account was hit.
     RateLimited,
-    /// Downloaded bytes did not match `SHA256SUMS.txt`.
+    /// Downloaded bytes did not match `SHA256SUMS.txt`, or the sums file has
+    /// no valid signature from a release key.
     Mismatch(String),
     /// The release is not usable: no checksum line, an archive that does not
     /// open, or a binary that does not run here.
@@ -187,6 +206,12 @@ fn opted_out(global: &Global) -> bool {
     global.no_update || std::env::var_os("SPIDER_AGENT_NO_UPDATE").is_some_and(|v| !v.is_empty())
 }
 
+/// A CI job neither starts a check nor installs a staged update, so a
+/// pipeline never swaps its own binary partway through. `update` still works.
+fn in_ci() -> bool {
+    std::env::var_os("CI").is_some_and(|v| !v.is_empty())
+}
+
 fn in_background() -> bool {
     std::env::var_os("SPIDER_AGENT_UPDATE_BACKGROUND").is_some_and(|v| !v.is_empty())
 }
@@ -208,7 +233,7 @@ fn manual(releases_page: &str) -> String {
 /// Returns normally in every case but one: when a staged update was installed
 /// and the new binary started in this process's place, this never returns.
 pub fn before_command(global: &Global, command: Option<&Command>, log: Log) {
-    if opted_out(global) || matches!(command, Some(Command::Update)) || in_background() {
+    if opted_out(global) || matches!(command, Some(Command::Update)) || in_background() || in_ci() {
         return;
     }
     if settings().is_none() || triple().is_none() {
@@ -394,7 +419,7 @@ pub async fn command(global: &Global, log: Log) -> Run<Code> {
             format!("update: spider-agent {} is out. {reason}", latest.version),
         ));
     }
-    let bytes = release::fetch_verified(&releases, &latest, triple)
+    let bytes = release::fetch_verified(&releases, &settings.keys, &latest, triple)
         .await
         .map_err(failure)?;
     let version = latest.version.to_string();
@@ -471,7 +496,7 @@ async fn check_and_stage(state: &mut State) -> String {
         }
         return "skipped: not ours to replace".to_string();
     }
-    let bytes = match release::fetch_verified(&releases, &latest, triple).await {
+    let bytes = match release::fetch_verified(&releases, &settings.keys, &latest, triple).await {
         Ok(bytes) => bytes,
         Err(problem @ (Problem::Mismatch(_) | Problem::Broken(_))) => {
             state.notice = Some(Notice {

@@ -44,6 +44,21 @@ The browser login flow uses OAuth 2.1 with PKCE against a loopback redirect. It 
 127.0.0.1 on a port the operating system assigns, checks the `state` parameter, and times
 out rather than listening forever.
 
+## Release signing and self update
+
+`spider-agent` updates itself from the GitHub release marked latest. Each release
+signs its `SHA256SUMS.txt` with minisign, key id `43EBB605B452BC13`. The public key
+is pinned in `spider-agent-cli/src/update/release-keys.pub` and compiled into the
+binary. A release build trusts only the keys in that file, and no environment
+variable or flag adds one.
+
+Before reading the sums file, the updater verifies the signature and requires the
+signed trusted comment to be `spider-agent v<version> SHA256SUMS.txt` for the tag it
+is installing. It then checks the archive against the sums file, and it installs
+nothing that fails either step. The secret key stays on the release machine, outside
+every repository. A way to install an update without a valid signature, or to make a
+release build trust another key, is a vulnerability under this policy.
+
 ## Supported versions
 
 Security fixes go to the latest release only. Use the most recent version.

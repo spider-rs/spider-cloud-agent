@@ -72,6 +72,31 @@ Keep `target/live-verification/*.json` with the release evidence. Each record co
 the service revision, client revision, test inventory and per-test outcomes. A local
 release gate and a live gate against the intended service revision are both required.
 
+## Signing a release
+
+Installed `spider-agent` binaries update themselves from the GitHub release marked
+latest. The files a release needs are listed under "What a release must contain" in
+[spider-agent-cli/README.md](spider-agent-cli/README.md). After writing
+`SHA256SUMS.txt`, sign it:
+
+```bash
+minisign -S -s <secret key> -m SHA256SUMS.txt -t "spider-agent v<version> SHA256SUMS.txt"
+```
+
+Upload `SHA256SUMS.txt.minisig` with the archives. The trusted comment must match
+that text exactly, with the version the tag names.
+
+The secret key lives on the release machine, outside every repository. It never goes
+into this one, a CI secret, or a chat. The public key is pinned in
+`spider-agent-cli/src/update/release-keys.pub`. Every self-updating install refuses a
+release without a valid signature from a pinned key, says so on stderr, and stays on
+its current version until a correctly signed release is marked latest.
+
+To rotate the key, add the new public key to `release-keys.pub` and sign that release
+with the old key. Installs that take it trust both keys, so the release after it can
+be signed with the new key. An install that skips the release carrying both keys can
+no longer update itself and needs one manual install.
+
 ## Rules the build enforces
 
 This crate runs inside someone else's process and someone else's async runtime,

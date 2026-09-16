@@ -15,7 +15,9 @@ use std::time::Duration;
 
 use url::Url;
 
-use super::archive;
+use minisign_verify::PublicKey;
+
+use super::{archive, signature};
 use super::{Problem, Settings, Version};
 
 /// How long a connection may take to open.
@@ -158,6 +160,18 @@ impl Releases {
 
     /// One file attached to a release, up to `cap` bytes.
     pub async fn download(&self, tag: &str, file: &str, cap: usize) -> Result<Vec<u8>, Problem> {
+        self.download_if_present(tag, file, cap)
+            .await?
+            .ok_or_else(|| Problem::Unreachable(format!("{file} is not attached to release {tag}")))
+    }
+
+    /// The same, with `None` for a file the release does not have.
+    pub async fn download_if_present(
+        &self,
+        tag: &str,
+        file: &str,
+        cap: usize,
+    ) -> Result<Option<Vec<u8>>, Problem> {
         let url = self.under_base(&format!("download/{tag}/{file}"))?;
         let mut response = self
             .fetcher
@@ -168,6 +182,9 @@ impl Releases {
         let status = response.status();
         if is_rate_limit(status) {
             return Err(Problem::RateLimited);
+        }
+        if status == reqwest::StatusCode::NOT_FOUND {
+            return Ok(None);
         }
         if !status.is_success() {
             return Err(Problem::Unreachable(format!(
@@ -198,7 +215,7 @@ impl Releases {
                 }
             }
         }
-        Ok(body)
+        Ok(Some(body))
     }
 }
 
@@ -219,10 +236,12 @@ pub fn asset_name(version: &Version, triple: &str) -> String {
     format!("spider-agent-{version}-{triple}.tar.gz")
 }
 
-/// Download the asset and its checksum file, and hand back the binary inside
-/// only if the archive matched the checksum.
+/// Download the checksum file, its signature and the asset, and hand back the
+/// binary inside only if a release key signed the checksum file for this
+/// version and the archive matched it.
 pub async fn fetch_verified(
     releases: &Releases,
+    keys: &[PublicKey],
     release: &Release,
     triple: &str,
 ) -> Result<Vec<u8>, Problem> {
@@ -230,6 +249,24 @@ pub async fn fetch_verified(
     let sums = releases
         .download(&release.tag, "SHA256SUMS.txt", archive::MAX_SUMS_BYTES)
         .await?;
+    // A release with no signature is refused, not skipped: an attacker who
+    // can publish unsigned files must not get a quiet retry every day.
+    let minisig = releases
+        .download_if_present(
+            &release.tag,
+            signature::SIGNATURE_FILE,
+            signature::MAX_SIGNATURE_BYTES,
+        )
+        .await?
+        .ok_or_else(|| {
+            Problem::Mismatch(format!(
+                "release {} has no {}",
+                release.tag,
+                signature::SIGNATURE_FILE
+            ))
+        })?;
+    // Nothing in the sums file is read until the signature over it holds.
+    signature::verify_sums(&sums, &minisig, keys, &release.version).map_err(Problem::Mismatch)?;
     let expected = archive::expected_digest(&sums, &asset).map_err(Problem::Broken)?;
     let bytes = releases
         .download(&release.tag, &asset, archive::MAX_ARCHIVE_BYTES)

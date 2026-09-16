@@ -218,9 +218,12 @@ The child reads the newest release tag from the redirect that
 `github.com/spider-rs/spider-cloud-agent/releases/latest` answers with. That
 is the web page, not `api.github.com`, so it does not count against the API's
 limit of 60 unauthenticated calls an hour. When the tag is newer than the
-running binary, the child downloads `SHA256SUMS.txt` and the archive for this
-platform from that release. It refuses the archive unless its SHA-256 matches
-the line for it. Only then does it open the archive, take out `spider-agent`,
+running binary, the child downloads `SHA256SUMS.txt` and
+`SHA256SUMS.txt.minisig` from that release. It reads nothing in the sums file
+until the minisign signature verifies against a release key built into the
+binary, and the signed trusted comment names that exact version. Then it
+downloads the archive for this platform and refuses it unless its SHA-256
+matches the line for it. Only then does it open the archive, take out `spider-agent`,
 run it with `--version`, and require the tagged version back. It stages the
 binary as `.spider-agent.update` beside the installed one and records its
 digest in `~/.spider/update.json`, which is mode 0600 like the credentials file.
@@ -232,9 +235,10 @@ file that no check recorded, or whose bytes changed since, gets deleted and
 never runs. The one line this prints goes to stderr, and `--quiet` silences it.
 
 Nothing here can fail your command. An outage, a rate limit or a missing
-release is a silent skip until the next day's check. An archive that failed
-its checksum, or would not open, gets one line on stderr on the next run, even
-under `--quiet`, and nothing is installed.
+release is a silent skip until the next day's check. A release with a missing
+or bad signature, or an archive that failed its checksum or would not open,
+gets one line on stderr on the next run, even under `--quiet`, and nothing is
+installed.
 
 Some installs are left alone, with one note on stderr per release saying how
 to update:
@@ -258,6 +262,11 @@ to turn all of it off. Then no check runs, nothing downloads, a file staged
 earlier stays uninstalled, and `update` exits 2. Put `--no-update` after the
 command name, like every other flag. Debug builds never update themselves.
 
+When `CI` is set to a non-empty value, as most CI services set it, runs start
+no check and leave a staged update uninstalled, so a pipeline never swaps its
+own binary partway through a job. `spider-agent update` still works there, for
+a step that updates on purpose.
+
 ### What a release must contain
 
 The updater builds every URL from the tag, so a release has to use these
@@ -275,9 +284,31 @@ names exactly:
   `._spider-agent` entry out.
 - `SHA256SUMS.txt` in the same release, as `shasum -a 256` writes it, with one
   line for every archive.
+- `SHA256SUMS.txt.minisig`, the minisign signature over that file, whose
+  trusted comment is exactly `spider-agent v<version> SHA256SUMS.txt`, as in
+  `spider-agent v0.4.1 SHA256SUMS.txt`.
 
-Every machine that checks refuses a release with no checksum line for its
-archive, or whose binary answers `--version` with another version.
+Every machine that checks refuses a release with no signature, a signature by
+any other key, a comment naming another version, no checksum line for its
+archive, or a binary that answers `--version` with another version.
+
+Releases are signed with the minisign key `43EBB605B452BC13`:
+
+```
+untrusted comment: minisign public key 43EBB605B452BC13
+RWQTvFK0BbbrQ5Fi5QICN6wkM5EsCGlfeLsTSiY9hTMdZpUjGaAg5t13
+```
+
+The binary pins it in `src/update/release-keys.pub`, and nothing at run time
+can change that list. To check a download by hand:
+
+```bash
+minisign -Vm SHA256SUMS.txt -P RWQTvFK0BbbrQ5Fi5QICN6wkM5EsCGlfeLsTSiY9hTMdZpUjGaAg5t13
+shasum -a 256 -c --ignore-missing SHA256SUMS.txt
+```
+
+The first command prints the trusted comment. Check that it names the version
+you downloaded.
 
 ## Environment
 
