@@ -22,9 +22,14 @@ impl PageStatus {
         Self(code)
     }
 
-    /// The numeric status code.
+    /// The numeric status code, or zero when no target status was supplied.
     pub fn code(self) -> u16 {
         self.0
+    }
+
+    /// Whether the response omitted the target status.
+    pub fn is_unknown(self) -> bool {
+        self.0 == 0
     }
 
     /// What the code means for the fetch.

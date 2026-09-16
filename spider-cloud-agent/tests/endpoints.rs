@@ -20,6 +20,32 @@
 
 use spider_cloud_agent::client::{Method, ROUTES};
 
+#[test]
+fn f1_base_validation_requires_tls_or_literal_loopback() {
+    for base in ["http://example.com", "http://localhost", "ftp://127.0.0.1"] {
+        assert!(matches!(
+            spider_cloud_agent::Spider::builder()
+                .key("not-a-real-key")
+                .base_url(url::Url::parse(base).unwrap())
+                .build(),
+            Err(spider_cloud_agent::Error::Config(_))
+        ));
+    }
+    for base in ["https://example.com", "http://127.0.0.1", "http://[::1]"] {
+        assert!(spider_cloud_agent::Spider::builder()
+            .key("not-a-real-key")
+            .base_url(url::Url::parse(base).unwrap())
+            .build()
+            .is_ok());
+    }
+    assert!(spider_cloud_agent::Spider::builder()
+        .key("not-a-real-key")
+        .base_url(url::Url::parse("http://example.com").unwrap())
+        .allow_insecure_http(true)
+        .build()
+        .is_ok());
+}
+
 /// Every path the crate can emit, with its verb.
 const EXPECTED: &[(&str, &str)] = &[
     ("POST", "/scrape"),

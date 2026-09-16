@@ -20,7 +20,7 @@ pub(crate) struct PageParts {
     pub metadata: Option<Metadata>,
     pub links: Option<Vec<Url>>,
     pub headers: Option<BTreeMap<String, String>>,
-    pub cookies: Option<String>,
+    pub cookies: Option<BTreeMap<String, String>>,
     pub error: Option<String>,
 }
 
@@ -51,16 +51,18 @@ impl PageParts {
 
 /// A page the target site served.
 ///
-/// A `Page` exists only for a 2xx target status. That is a guarantee of the type, not a
+/// A fetched `Page` exists only for a 2xx target status. That is a guarantee of the type, not a
 /// convention: the constructor checks the status and hands back a [`FailedPage`] when it
 /// is anything else, and the fields cannot be filled in from outside the crate. So code
-/// holding a `Page` does not have to check whether the fetch worked.
+/// holding a `Page` does not have to check whether the fetch worked. Converted
+/// documents from `transform` are the explicit exception: nothing was fetched,
+/// so their target status can be unknown (zero).
 #[derive(Debug, Clone)]
 #[non_exhaustive]
 pub struct Page {
     /// The address the content was served from, after redirects.
     pub url: Url,
-    /// The status the site returned. Always 2xx here.
+    /// The status the site returned, or unknown for a converted document.
     pub status: PageStatus,
     /// The content.
     pub body: Body,
@@ -74,8 +76,9 @@ pub struct Page {
     pub links: Option<Vec<Url>>,
     /// Response headers, when the request asked for them.
     pub headers: Option<BTreeMap<String, String>>,
-    /// Cookies set on the response, when the request asked for them.
-    pub cookies: Option<String>,
+    /// Cookies set on the response, as names and values. Legacy wire strings
+    /// are split at semicolons and the first equals sign in each pair.
+    pub cookies: Option<BTreeMap<String, String>>,
 }
 
 impl Page {
@@ -90,7 +93,12 @@ impl Page {
         if !parts.status.is_ok() {
             return Err(FailedPage::from_parts(parts));
         }
-        Ok(Page {
+        Ok(Self::document_from_parts(parts))
+    }
+
+    /// Transform has no target HTTP response. Keep its unknown status explicit.
+    pub(crate) fn document_from_parts(parts: PageParts) -> Page {
+        Page {
             url: parts.url,
             status: parts.status,
             body: parts.body,
@@ -100,7 +108,7 @@ impl Page {
             links: parts.links,
             headers: parts.headers,
             cookies: parts.cookies,
-        })
+        }
     }
 
     /// What the fetch cost.
@@ -479,11 +487,17 @@ mod tests {
             "content-type".to_string(),
             "text/html".to_string(),
         )]));
-        parts.cookies = Some("a=1".to_string());
+        parts.cookies = Some(BTreeMap::from([("a".into(), "1".into())]));
         let page = PageResult::from_parts(parts).into_ok().expect("a page");
         assert_eq!(page.links.as_ref().expect("links").len(), 1);
         assert_eq!(page.headers.as_ref().expect("headers").len(), 1);
-        assert_eq!(page.cookies.as_deref(), Some("a=1"));
+        assert_eq!(
+            page.cookies
+                .as_ref()
+                .and_then(|cookies| cookies.get("a"))
+                .map(String::as_str),
+            Some("1")
+        );
         assert_eq!(page.text(), Some("hello"));
         assert!(!page.is_blank());
         assert_eq!(page.cost(), Credits(4.0));

@@ -22,6 +22,35 @@ use spider_cloud_agent::response::metadata::Metadata;
 use spider_cloud_agent::response::SearchResults;
 use spider_cloud_agent::{Credits, Usd};
 
+#[test]
+fn f1_cookie_map_fixture_decodes_as_a_page() {
+    use spider_cloud_agent::client::{RateLimit, Reply};
+    use spider_cloud_agent::policy::engine::Reached;
+    use spider_cloud_agent::policy::Observed;
+    let Reached::Api(status) = Observed::seen(200, None).api else {
+        panic!("api status")
+    };
+    let reply = Reply {
+        status,
+        rate_limit: RateLimit::default(),
+        retry_after: None,
+        elapsed: std::time::Duration::ZERO,
+        content_type: Some("application/json".into()),
+        body: bytes::Bytes::from(fixture("cookie_map.json")),
+    };
+    let pages = reply
+        .read(&url::Url::parse("https://example.com").unwrap(), None)
+        .unwrap();
+    let page = pages.first_ok().unwrap();
+    let cookies = page.cookies.as_ref().unwrap();
+    // The session value looked like a credential, so the redactor dropped it.
+    // The theme did not, so it survived. Both names came through as a map.
+    assert_eq!(cookies.get("session").map(String::as_str), Some("REDACTED"));
+    assert_eq!(cookies.get("theme").map(String::as_str), Some("dark"));
+    assert_eq!(page.cost(), Credits::from_usd(0.0001));
+    assert_eq!(page.text(), Some("<h1>Your account</h1>"));
+}
+
 /// One fixture, by file name.
 fn fixture(name: &str) -> String {
     let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))

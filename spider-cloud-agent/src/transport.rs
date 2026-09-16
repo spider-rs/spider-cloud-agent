@@ -65,6 +65,22 @@ const REDACTED: &str = "<redacted>";
 /// operating system's own retries, which run to minutes.
 pub const CONNECT_TIMEOUT: Duration = Duration::from_secs(30);
 
+/// Only literal loopback addresses bypass TLS without an explicit opt-in.
+pub(crate) fn validate_base(base: &Url, insecure: bool) -> Result<()> {
+    let loopback = match base.host() {
+        Some(url::Host::Ipv4(ip)) => ip.is_loopback(),
+        Some(url::Host::Ipv6(ip)) => ip.is_loopback(),
+        _ => false,
+    };
+    if base.scheme() == "https" || (base.scheme() == "http" && (insecure || loopback)) {
+        Ok(())
+    } else {
+        Err(Error::Config(
+            "the API base must use https; allow_insecure_http is only for test services".into(),
+        ))
+    }
+}
+
 // ---------------------------------------------------------------------------
 // routes
 // ---------------------------------------------------------------------------
@@ -451,6 +467,7 @@ pub struct Transport {
     base: Url,
     key: String,
     limits: Arc<RateLimitCell>,
+    insecure_http: bool,
 }
 
 impl fmt::Debug for Transport {
@@ -478,12 +495,21 @@ impl Transport {
     /// what bounds that, per operation, and [`Transport::with_client`] takes a
     /// client with whatever timeouts you want.
     pub fn with_base(key: impl Into<String>, base: Url) -> Result<Transport> {
+        Self::with_base_options(key, base, false)
+    }
+
+    pub(crate) fn with_base_options(
+        key: impl Into<String>,
+        base: Url,
+        insecure: bool,
+    ) -> Result<Transport> {
+        validate_base(&base, insecure)?;
         let client = reqwest::Client::builder()
             .user_agent(USER_AGENT)
             .connect_timeout(CONNECT_TIMEOUT)
             .build()
             .map_err(Error::Transport)?;
-        Ok(Transport::with_client(key, base, client))
+        Ok(Transport::with_client(key, base, client).allow_insecure_http(insecure))
     }
 
     /// A transport built on a client you already have, so connection pools and
@@ -504,17 +530,30 @@ impl Transport {
             base,
             key: key.into(),
             limits: Arc::new(RateLimitCell::new()),
+            insecure_http: false,
         }
     }
 
+    pub(crate) fn allow_insecure_http(mut self, allow: bool) -> Self {
+        self.insecure_http = allow;
+        self
+    }
+
     /// The address from `SPIDER_API_URL`, or [`DEFAULT_BASE_URL`].
+    /// Requires HTTPS, except literal loopback addresses used for tests.
     pub fn base_url_from_env() -> Result<Url> {
-        match std::env::var("SPIDER_API_URL") {
+        Self::base_url_from_env_options(false)
+    }
+
+    pub(crate) fn base_url_from_env_options(insecure: bool) -> Result<Url> {
+        let base = match std::env::var("SPIDER_API_URL") {
             Ok(value) if !value.trim().is_empty() => Url::parse(value.trim())
                 .map_err(|e| Error::Config(format!("{BASE_URL_ENV} is not a url: {e}"))),
             _ => Url::parse(DEFAULT_BASE_URL)
                 .map_err(|e| Error::Config(format!("the default address is not a url: {e}"))),
-        }
+        }?;
+        validate_base(&base, insecure)?;
+        Ok(base)
     }
 
     /// The address this transport calls.
@@ -531,24 +570,49 @@ impl Transport {
     ///
     /// One attempt. A failure here is the caller's to act on.
     pub async fn post<B: Serialize>(&self, route: Route, args: &[&str], body: &B) -> Result<Reply> {
+        self.post_with_limit(route, args, body, None).await
+    }
+
+    /// The same, reading at most `limit` bytes of the answer.
+    ///
+    /// `None` reads whatever arrives. A reply past the limit is cut off with
+    /// [`Error::ResponseTooLarge`] carrying the status it arrived with, so the
+    /// send loop can record the attempt before it gives up.
+    pub(crate) async fn post_with_limit<B: Serialize>(
+        &self,
+        route: Route,
+        args: &[&str],
+        body: &B,
+        limit: Option<usize>,
+    ) -> Result<Reply> {
         if route.method != Method::Post {
             return Err(Error::Config(format!("{route} is not a post route")));
         }
         let url = self.url_for(route, args, &[])?;
         let request = self.client.post(url).json(body);
-        self.execute(request).await
+        self.execute(request, limit).await
     }
 
     /// Read a route, with an optional query string.
     ///
     /// One attempt, same as [`Transport::post`].
     pub async fn get(&self, route: Route, args: &[&str], query: &[(&str, &str)]) -> Result<Reply> {
+        self.get_with_limit(route, args, query, None).await
+    }
+
+    pub(crate) async fn get_with_limit(
+        &self,
+        route: Route,
+        args: &[&str],
+        query: &[(&str, &str)],
+        limit: Option<usize>,
+    ) -> Result<Reply> {
         if route.method != Method::Get {
             return Err(Error::Config(format!("{route} is not a get route")));
         }
         let url = self.url_for(route, args, query)?;
         let request = self.client.get(url);
-        self.execute(request).await
+        self.execute(request, limit).await
     }
 
     /// The full address for a route, placeholders filled and query attached.
@@ -567,9 +631,14 @@ impl Transport {
         Ok(url)
     }
 
-    async fn execute(&self, request: reqwest::RequestBuilder) -> Result<Reply> {
+    async fn execute(
+        &self,
+        request: reqwest::RequestBuilder,
+        limit: Option<usize>,
+    ) -> Result<Reply> {
+        validate_base(&self.base, self.insecure_http)?;
         let started = Instant::now();
-        let response = request
+        let mut response = request
             .header(reqwest::header::AUTHORIZATION, self.bearer())
             .send()
             .await
@@ -582,7 +651,25 @@ impl Transport {
             .get(reqwest::header::CONTENT_TYPE)
             .and_then(|v| v.to_str().ok())
             .map(|v| v.to_ascii_lowercase());
-        let body = response.bytes().await.map_err(Error::Transport)?;
+        let body = match limit {
+            None => response.bytes().await.map_err(Error::Transport)?,
+            Some(limit) => {
+                if response
+                    .content_length()
+                    .is_some_and(|size| size > limit as u64)
+                {
+                    return Err(Error::ResponseTooLarge { limit, status });
+                }
+                let mut bytes = Vec::new();
+                while let Some(chunk) = response.chunk().await.map_err(Error::Transport)? {
+                    if chunk.len() > limit.saturating_sub(bytes.len()) {
+                        return Err(Error::ResponseTooLarge { limit, status });
+                    }
+                    bytes.extend_from_slice(&chunk);
+                }
+                Bytes::from(bytes)
+            }
+        };
 
         // The reply carries this response's headers and not the snapshot. The
         // snapshot outlives the response, and a reset one answer named was
@@ -642,6 +729,15 @@ pub struct Reply {
 }
 
 impl Reply {
+    /// The independent API status. A mirrored target status leaves it unknown.
+    pub(crate) fn operation_status(&self) -> ApiStatus {
+        if self.is_mirrored_page_status() {
+            ApiStatus::new(0)
+        } else {
+            self.status
+        }
+    }
+
     /// Whether the call itself succeeded. Says nothing about the target site.
     pub fn is_success(&self) -> bool {
         self.status.is_success()
@@ -662,7 +758,7 @@ impl Reply {
     /// Running out of credits gets its own variant rather than a status, because
     /// it is the one failure where trying again is strictly worse.
     pub fn as_error(&self) -> Option<Error> {
-        if self.is_success() {
+        if self.is_success() || self.is_mirrored_page_status() {
             return None;
         }
         let message = self.message();
@@ -714,11 +810,10 @@ impl Reply {
     ///
     /// The tell is the body: a page response carries a `url` and a `status` that
     /// match the HTTP status, while an account level failure carries only a
-    /// message. Two codes never mirror, whatever the body says: 401 and 402 are
-    /// about the key and the balance, and treating either as a page would turn a
-    /// stop into a retry.
+    /// message. This includes 401 and 402: a site can require login or payment
+    /// without saying anything about the Spider account.
     pub fn is_mirrored_page_status(&self) -> bool {
-        if self.status.is_success() || matches!(self.status.code(), 401 | 402) {
+        if self.status.code() < 400 {
             return false;
         }
         let value: serde_json::Value = match serde_json::from_slice(&self.body) {
@@ -746,15 +841,28 @@ impl Reply {
     /// name one. `format` is the format the request asked for, which is the only
     /// way to tell a raw field holding markdown from one holding markup.
     pub fn read(&self, requested: &Url, format: Option<ReturnFormat>) -> Result<Pages> {
+        self.read_pages(requested, format, false)
+    }
+
+    pub(crate) fn read_pages(
+        &self,
+        requested: &Url,
+        format: Option<ReturnFormat>,
+        transform: bool,
+    ) -> Result<Pages> {
+        if self.status.code() == 204 && self.body.is_empty() {
+            return Ok(Pages::default());
+        }
         let value: serde_json::Value = self.json()?;
         let items = match value {
             serde_json::Value::Array(items) => items,
             serde_json::Value::Null => Vec::new(),
-            other => converted_documents(other),
+            other if transform => converted_documents(other),
+            other => vec![other],
         };
         let mut out = Vec::with_capacity(items.len());
         for item in items {
-            out.push(self.read_one(item, requested, format)?);
+            out.push(self.read_one(item, requested, format, transform)?);
         }
         Ok(Pages(out))
     }
@@ -764,6 +872,7 @@ impl Reply {
         value: serde_json::Value,
         requested: &Url,
         format: Option<ReturnFormat>,
+        transform: bool,
     ) -> Result<PageResult> {
         let wire: WirePage = serde_json::from_value(value).map_err(Error::Decode)?;
         let url = wire
@@ -771,16 +880,15 @@ impl Reply {
             .as_deref()
             .and_then(|u| Url::parse(u).ok())
             .unwrap_or_else(|| requested.clone());
-        // An absent status means the call reached the site and the service saw no
-        // reason to say otherwise, so the call's own status stands in.
-        let status = PageStatus::new(wire.status.unwrap_or(self.status.code()));
+        // No target status was supplied. The envelope cannot fill that gap.
+        let status = PageStatus::new(wire.status.unwrap_or(0));
         let links = wire.links.map(|links| {
             links
                 .iter()
                 .filter_map(|link| Url::parse(link).ok().or_else(|| url.join(link).ok()))
                 .collect()
         });
-        Ok(PageResult::from_parts(PageParts {
+        let parts = PageParts {
             url,
             status,
             body: match wire.css_extracted {
@@ -795,9 +903,17 @@ impl Reply {
             metadata: wire.metadata,
             links,
             headers: wire.headers.or(wire.response_headers),
-            cookies: wire.cookies.or(wire.response_cookies),
+            cookies: wire
+                .cookies
+                .or(wire.response_cookies)
+                .map(WireCookies::into_map),
             error: wire.error,
-        }))
+        };
+        Ok(if transform && status.is_unknown() {
+            PageResult::Ok(crate::response::Page::document_from_parts(parts))
+        } else {
+            PageResult::from_parts(parts)
+        })
     }
 }
 
@@ -876,9 +992,31 @@ struct WirePage {
     #[serde(default)]
     response_headers: Option<std::collections::BTreeMap<String, String>>,
     #[serde(default)]
-    cookies: Option<String>,
+    cookies: Option<WireCookies>,
     #[serde(default)]
-    response_cookies: Option<String>,
+    response_cookies: Option<WireCookies>,
+}
+
+#[derive(Debug, serde::Deserialize)]
+#[serde(untagged)]
+enum WireCookies {
+    Text(String),
+    Map(std::collections::BTreeMap<String, String>),
+}
+
+impl WireCookies {
+    fn into_map(self) -> std::collections::BTreeMap<String, String> {
+        match self {
+            Self::Map(map) => map,
+            Self::Text(text) => text
+                .split(';')
+                .filter_map(|pair| {
+                    let (name, value) = pair.trim().split_once('=')?;
+                    Some((name.trim().to_string(), value.trim().to_string()))
+                })
+                .collect(),
+        }
+    }
 }
 
 /// Turn the `content` field into a typed body.
@@ -1044,9 +1182,9 @@ mod tests {
         );
         assert!(page
             .cookies
-            .as_deref()
+            .as_ref()
             .expect("cookies")
-            .contains("session"));
+            .contains_key("session"));
     }
 
     #[test]
@@ -1106,7 +1244,7 @@ mod tests {
     }
 
     #[test]
-    fn the_balance_and_the_key_never_mirror() {
+    fn a_mismatched_body_status_does_not_explain_the_envelope() {
         for code in [401u16, 402] {
             let r = reply(code, r#"{"url":"https://example.com/a","status":403}"#);
             assert!(
@@ -1114,6 +1252,42 @@ mod tests {
                 "code {code} must stay on the call plane"
             );
         }
+    }
+
+    #[test]
+    fn f1_mirrored_account_codes_are_target_statuses() {
+        for code in [401u16, 402] {
+            let r = reply(
+                code,
+                &format!(r#"{{"url":"https://example.com","status":{code}}}"#),
+            );
+            assert!(r.is_mirrored_page_status());
+            assert!(r.as_error().is_none());
+            assert_eq!(r.operation_status().code(), 0);
+            assert_eq!(r.status.code(), code);
+            let pages = r
+                .read(&Url::parse("https://example.com").unwrap(), None)
+                .unwrap();
+            assert_eq!(pages.failed().next().unwrap().status.code(), code);
+        }
+    }
+
+    #[test]
+    fn f1_empty_204_decodes_without_json() {
+        let pages = reply(204, "")
+            .read(&Url::parse("https://example.com").unwrap(), None)
+            .unwrap();
+        assert!(pages.is_empty());
+    }
+
+    #[test]
+    fn f1_missing_status_never_borrows_the_envelope() {
+        let r = reply(200, r#"{"content":"hello"}"#);
+        let url = Url::parse("https://example.com").unwrap();
+        let pages = r.read(&url, None).unwrap();
+        assert!(pages.failed().next().unwrap().status.is_unknown());
+        let docs = r.read_pages(&url, None, true).unwrap();
+        assert!(docs.first_ok().unwrap().status.is_unknown());
     }
 
     #[test]

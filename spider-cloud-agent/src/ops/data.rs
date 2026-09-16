@@ -5,28 +5,45 @@
 //! page, so none of them escalates and none of them costs credits.
 
 use std::future::Future;
+use std::time::Duration;
 
 use crate::client::Spider;
 use crate::credits::Credits;
 use crate::error::Error;
-use crate::ops::{out_of_time, read_wall, within};
+use crate::ops::{out_of_time, within, Deadline};
 use crate::transport::{route, Reply};
 use crate::Result;
+
+/// How long an account read may take unless the client's wall is shorter.
+///
+/// A balance or a page of the crawl record is a database read, and one that
+/// has not answered in a minute is not going to. The page operations have a
+/// longer default of their own, because a crawl runs for as long as the site
+/// is large.
+pub(crate) const DEFAULT_READ_WALL: Duration = Duration::from_secs(60);
 
 /// One account read, held to the client's wall and judged on the call plane.
 ///
 /// These reads take no builder budget, so the wall on the client is what
-/// bounds them, and [`crate::ops::DEFAULT_READ_WALL`] when it names none. A
-/// read against a service that accepted the request and went quiet used to
-/// wait for as long as the socket stayed open.
-pub(crate) async fn read_under_wall<F>(spider: &Spider, call: F) -> Result<Reply>
+/// bounds them: [`DEFAULT_READ_WALL`], or the client's own wall when that is
+/// shorter, and nothing at all only when the client was built with
+/// `without_wall`. A read against a service that accepted the request and
+/// went quiet used to wait for as long as the socket stayed open.
+pub(crate) async fn read_under_wall<T, F, D>(spider: &Spider, call: F, decode: D) -> Result<T>
 where
     F: Future<Output = Result<Reply>>,
+    D: FnOnce(&Reply) -> Result<T>,
 {
-    within(Some(read_wall(spider)), call)
+    let deadline = Deadline::new(spider.read_wall)?;
+    let reply = within(deadline, call)
         .await
         .ok_or_else(|| out_of_time(Vec::new()))??
-        .into_result()
+        .into_result()?;
+    let value = decode(&reply)?;
+    if deadline.expired() {
+        return Err(out_of_time(Vec::new()));
+    }
+    Ok(value)
 }
 
 /// The balance, read out of whichever shape the reply used.
@@ -111,12 +128,17 @@ impl<'a> CrawlLogs<'a> {
     pub async fn send(self) -> Result<Vec<serde_json::Value>> {
         let query = paging(self.limit, self.page);
         let pairs: Vec<(&str, &str)> = query.iter().map(|(k, v)| (*k, v.as_str())).collect();
-        let reply = read_under_wall(
+        read_under_wall(
             self.spider,
-            self.spider.raw().get(route::DATA_CRAWL_LOGS, &[], &pairs),
+            self.spider.raw().get_with_limit(
+                route::DATA_CRAWL_LOGS,
+                &[],
+                &pairs,
+                self.spider.response_limit,
+            ),
+            rows,
         )
-        .await?;
-        rows(&reply)
+        .await
     }
 }
 
@@ -157,14 +179,17 @@ impl<'a> Table<'a> {
     pub async fn send(self) -> Result<Vec<serde_json::Value>> {
         let query = paging(self.limit, self.page);
         let pairs: Vec<(&str, &str)> = query.iter().map(|(k, v)| (*k, v.as_str())).collect();
-        let reply = read_under_wall(
+        read_under_wall(
             self.spider,
-            self.spider
-                .raw()
-                .get(route::DATA_TABLE, &[&self.name], &pairs),
+            self.spider.raw().get_with_limit(
+                route::DATA_TABLE,
+                &[&self.name],
+                &pairs,
+                self.spider.response_limit,
+            ),
+            rows,
         )
-        .await?;
-        rows(&reply)
+        .await
     }
 }
 

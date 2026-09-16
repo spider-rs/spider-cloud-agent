@@ -51,7 +51,7 @@ full = ["oauth", "keyring"]
 
 [dev-dependencies]
 criterion = { version = "0.7", features = ["html_reports"] }
-tokio = { version = "1", features = ["rt-multi-thread", "macros"] }
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "test-util"] }
 
 [[bench]]
 name = "decide"
