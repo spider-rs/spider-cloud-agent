@@ -4,6 +4,11 @@
 //! need to, then `send`. `send` hands back the one page that worked. `send_all`
 //! hands back everything, failures included, which is what a crawl and a batch
 //! are actually for.
+//! An empty HTTP 204 returns empty `Pages` from `send_all`. A single-page
+//! `send` returns `Error::Exhausted` with no last page, because no page exists.
+//! High-level operations default to fifteen minutes, including backoff, and
+//! accept at most 8 MiB per response to bound decoding and trimming work.
+//! Synchronous caller hooks must return promptly; they cannot be preempted.
 //!
 //! The adjustable surface is short on purpose. Mode, proxy pool, country, wait
 //! condition, profile, timeout, session and budget are the settings worth
@@ -40,26 +45,34 @@ use crate::thrift::plan::Endpoint;
 use crate::thrift::tokens::{approx_tokens, TokenBudget};
 use crate::thrift::trim::Trimmer;
 use crate::thrift::{Need, Plan, ThriftReport};
-use crate::transport::{route, Route};
+use crate::transport::{route, Route, MAX_RESPONSE_BYTES};
 use crate::Result;
 use spider_route::featurize;
-use tokio::time::{sleep, timeout};
+use tokio::time::{sleep, timeout_at, Instant as DeadlineInstant};
 
 /// The service's own address, used as the subject of a result that did not come
 /// from fetching a page.
 const SERVICE_URL: &str = "https://spider.cloud";
 
-/// How long an account read may take when the client's budget names no wall.
-///
-/// A balance or a page of the crawl record is a database read, and one that has
-/// not answered in a minute is not going to. The page operations have no such
-/// figure: a crawl can run for as long as the site is large, so only a wall the
-/// caller set bounds those.
-pub(crate) const DEFAULT_READ_WALL: Duration = Duration::from_secs(60);
+/// One absolute clock shared by sends, sleeps and synchronous checkpoints.
+#[derive(Clone, Copy)]
+pub(crate) struct Deadline(Option<DeadlineInstant>);
 
-/// The wall an account read runs under: the client's, or the default above.
-pub(crate) fn read_wall(spider: &Spider) -> Duration {
-    spider.budget().wall.unwrap_or(DEFAULT_READ_WALL)
+impl Deadline {
+    pub(crate) fn new(wall: Option<Duration>) -> Result<Self> {
+        let end = wall
+            .map(|wall| {
+                DeadlineInstant::now()
+                    .checked_add(wall)
+                    .ok_or_else(|| Error::Config("wall is too large for the clock".into()))
+            })
+            .transpose()?;
+        Ok(Self(end))
+    }
+
+    pub(crate) fn expired(self) -> bool {
+        self.0.is_some_and(|end| DeadlineInstant::now() >= end)
+    }
 }
 
 /// Run one call under a wall, or under none.
@@ -67,12 +80,15 @@ pub(crate) fn read_wall(spider: &Spider) -> Duration {
 /// `None` comes back when the wall ran out before the call finished. Dropping
 /// the call is what ends it: nothing in the transport holds a resource past
 /// its future, so a request cut off here leaves nothing behind.
-pub(crate) async fn within<T, F>(wall: Option<Duration>, call: F) -> Option<Result<T>>
+pub(crate) async fn within<T, F>(deadline: Deadline, call: F) -> Option<Result<T>>
 where
     F: Future<Output = Result<T>>,
 {
-    match wall {
-        Some(wall) => timeout(wall, call).await.ok(),
+    if deadline.expired() {
+        return None;
+    }
+    match deadline.0 {
+        Some(end) => timeout_at(end, call).await.ok(),
         None => Some(call.await),
     }
 }
@@ -201,6 +217,8 @@ impl<'a> Call<'a> {
         B: Serialize,
         F: Fn(&crate::params::RequestParams) -> B,
     {
+        // The clock starts before routing and is never reset by an attempt.
+        let deadline = Deadline::new(self.budget.wall)?;
         let target = self.target()?;
         let policy = match self.spider.policy() {
             Some(policy) => policy.clone(),
@@ -259,10 +277,6 @@ impl<'a> Call<'a> {
         let mut call_error: Option<Error>;
         let current = endpoint_for(&plan, route);
         let mut wire_bytes = 0usize;
-        // The wall is measured on the clock rather than summed from the attempts,
-        // because a call that never answers reports no duration to sum.
-        let started = Instant::now();
-
         loop {
             let mut attempt_bytes = 0u32;
             self.budget.apply(&mut self.params);
@@ -272,12 +286,17 @@ impl<'a> Call<'a> {
             // service that accepted the request and never answered held the
             // caller for as long as the socket stayed open, and the budget only
             // ever looked at the clock between calls.
-            let remaining = self.budget.remaining_wall(started.elapsed());
-            if remaining == Some(Duration::ZERO) {
+            if deadline.expired() {
                 return Err(out_of_time(attempts));
             }
             let before = Instant::now();
-            let sent = within(remaining, self.spider.raw().post(current, args, &body)).await;
+            let sent = within(
+                deadline,
+                self.spider
+                    .raw()
+                    .post_with_limit(current, args, &body, Some(MAX_RESPONSE_BYTES)),
+            )
+            .await;
             let mut wall_ran_out = false;
 
             let observed = match sent {
@@ -301,17 +320,25 @@ impl<'a> Call<'a> {
                     // to give up on.
                     if reply.is_success() || reply.is_mirrored_page_status() {
                         call_error = None;
-                        pages = reply.read(&target, format)?;
+                        pages = reply.read_pages(&target, format, current == route::TRANSFORM)?;
                         if !pages.is_empty() {
                             pages_came_back = true;
                         }
                         if let Some(failed) = pages.failed().next() {
                             last_failed = Some(failed.clone());
                         }
-                        let mut observed =
-                            Observed::seen(status.code(), representative(&pages).map(|s| s.code()))
-                                .costing(pages.total_cost())
-                                .taking(elapsed);
+                        // A mirrored envelope supplies no independent API code.
+                        // Zero means unknown, never a success minted from page data.
+                        let api = reply.operation_status();
+                        let page = representative(&pages);
+                        let mut observed = Observed::seen(0, None);
+                        observed.api = Reached::Api(api);
+                        observed.page = if current == route::TRANSFORM {
+                            page.filter(|s| !s.is_unknown())
+                        } else {
+                            page
+                        };
+                        let mut observed = observed.costing(pages.total_cost()).taking(elapsed);
                         // An empty body is only a failure when the caller wanted
                         // a body. Need::Metadata and Need::Fields deliberately ask
                         // for return_format=empty, so the page arrives with nothing
@@ -364,7 +391,7 @@ impl<'a> Call<'a> {
             // The wall ended the call, so the budget has already decided. The
             // policy is not asked, because whatever it answered would be a call
             // there is no time left for.
-            let next = if wall_ran_out {
+            let next = if wall_ran_out || deadline.expired() {
                 Next::Stop(StopReason::Budget(BudgetKind::Time))
             } else {
                 policy.decide(&observed, &state)
@@ -392,16 +419,41 @@ impl<'a> Call<'a> {
 
             state.follow(&next);
 
+            if deadline.expired() {
+                return Err(out_of_time(attempts));
+            }
+
             match next {
                 Next::Accept => {
                     let report = self.settle(&mut pages, wire_bytes);
+                    if deadline.expired() {
+                        return Err(out_of_time(attempts));
+                    }
                     return Ok(Outcome::new(pages, attempts)
                         .reporting(report)
                         .routed(decision));
                 }
-                Next::Retry { after } => sleep(after).await,
+                Next::Retry { after } => {
+                    if within(deadline, async {
+                        sleep(after).await;
+                        Ok(())
+                    })
+                    .await
+                    .is_none()
+                    {
+                        return Err(out_of_time(attempts));
+                    }
+                }
                 Next::Escalate { step, after, .. } => {
-                    sleep(after).await;
+                    if within(deadline, async {
+                        sleep(after).await;
+                        Ok(())
+                    })
+                    .await
+                    .is_none()
+                    {
+                        return Err(out_of_time(attempts));
+                    }
                     escalate(&step, &mut self.params, &plan, &caller);
                 }
                 Next::Stop(reason) => {
@@ -508,18 +560,27 @@ impl<'a> Call<'a> {
         T: serde::de::DeserializeOwned,
         F: Fn(&crate::params::RequestParams) -> B,
     {
+        let deadline = Deadline::new(self.budget.wall)?;
         self.budget.apply(&mut self.params);
         let body = make_body(&self.params);
         // One call, held to the wall the same way the send loop holds its
         // calls. A search against a service that went quiet hung here too.
-        let reply = within(self.budget.wall, self.spider.raw().post(route, &[], &body))
-            .await
-            .ok_or_else(|| out_of_time(Vec::new()))??
-            .into_result()?;
+        let reply = within(
+            deadline,
+            self.spider
+                .raw()
+                .post_with_limit(route, &[], &body, Some(MAX_RESPONSE_BYTES)),
+        )
+        .await
+        .ok_or_else(|| out_of_time(Vec::new()))??
+        .into_result()?;
         let body: serde_json::Value = reply.json()?;
         let cost = charged(&body);
         let value: T = serde_json::from_value(body).map_err(Error::Decode)?;
         let attempt = Attempt::new(reply.elapsed, reply.status, None, cost);
+        if deadline.expired() {
+            return Err(out_of_time(vec![attempt]));
+        }
         Ok(Outcome::new(value, vec![attempt]))
     }
 }
@@ -715,7 +776,9 @@ fn stopped(
 /// reason when the site refused every attempt, so the only way to get here
 /// with no served page is a policy that accepted a failed page as the answer.
 /// That is the site's answer settling, and the reason says so, with the hint
-/// off the page it settled on.
+/// off the page it settled on. An empty 204 is the other way in: the service
+/// accepted the call and had no page to send, so there is no single page and
+/// no last failure, and the error carries neither.
 pub(crate) fn first_page(outcome: Outcome<Pages>) -> Result<Outcome<Page>> {
     let Outcome {
         value,
@@ -927,6 +990,25 @@ mod tests {
     use crate::params::ReturnFormat;
     use crate::policy::Ladder;
     use crate::thrift::Need;
+
+    #[test]
+    fn f1_default_wall_reaches_page_and_search_calls() {
+        let spider = Spider::builder()
+            .key("not-a-real-key")
+            .base_url(Url::parse("https://example.com").unwrap())
+            .build()
+            .unwrap();
+        // All page builders use new or bare; search uses bare and run_json.
+        // Check the default here, and exercise every send path with a short
+        // wall in wire::f1_wall_ends_every_operation.
+        for call in [
+            Call::new(&spider, "https://example.com"),
+            Call::bare(&spider),
+        ] {
+            assert_eq!(call.budget.wall, Some(Duration::from_secs(900)));
+            assert!(Deadline::new(call.budget.wall).unwrap().0.is_some());
+        }
+    }
 
     #[test]
     fn curated_surface_membership_is_explicit() {

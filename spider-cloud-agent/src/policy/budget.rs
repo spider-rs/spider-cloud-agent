@@ -18,7 +18,8 @@ pub struct Budget {
     pub credits: Option<Credits>,
     /// The most any one page may spend.
     pub per_page_credits: Option<Credits>,
-    /// The longest the whole operation may take, sleeps included.
+    /// The longest the whole operation may take, sleeps included. Defaults to
+    /// fifteen minutes; `None` explicitly disables the wall.
     pub wall: Option<Duration>,
     /// The most calls the operation may make.
     pub attempts: u8,
@@ -27,6 +28,10 @@ pub struct Budget {
 /// How many calls an operation makes when nobody said otherwise: the first one plus a
 /// walk of the standard ladder.
 pub const DEFAULT_ATTEMPTS: u8 = 5;
+
+/// Fifteen minutes leaves room for five browser attempts and their backoff.
+/// Long crawls can name a larger wall or explicitly turn it off.
+pub const DEFAULT_WALL: Duration = Duration::from_secs(15 * 60);
 
 /// The spend to assume for one page when the last attempt reported none.
 ///
@@ -50,12 +55,12 @@ pub const DEFAULT_ATTEMPTS: u8 = 5;
 pub const ASSUMED_MINIMUM_COST: Credits = Credits::new(0.1);
 
 impl Default for Budget {
-    /// No credit or time cap, and five calls.
+    /// No credit cap, fifteen minutes, and five calls.
     fn default() -> Budget {
         Budget {
             credits: None,
             per_page_credits: None,
-            wall: None,
+            wall: Some(DEFAULT_WALL),
             attempts: DEFAULT_ATTEMPTS,
         }
     }
@@ -66,6 +71,7 @@ impl Budget {
     pub fn unlimited() -> Budget {
         Budget {
             attempts: u8::MAX,
+            wall: None,
             ..Budget::default()
         }
     }
@@ -85,6 +91,12 @@ impl Budget {
     /// Cap how long the operation may take, sleeps included.
     pub fn with_wall(mut self, wall: Duration) -> Budget {
         self.wall = Some(wall);
+        self
+    }
+
+    /// Turn off the operation deadline. A stalled service can then wait forever.
+    pub fn without_wall(mut self) -> Budget {
+        self.wall = None;
         self
     }
 

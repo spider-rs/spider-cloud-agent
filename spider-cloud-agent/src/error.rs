@@ -85,6 +85,13 @@ pub enum Error {
     #[error("could not read the response: {0}")]
     Decode(#[source] serde_json::Error),
 
+    /// A high-level response exceeded the bound on decoding and trimming work.
+    #[error("response exceeds the {limit} byte limit")]
+    ResponseTooLarge {
+        /// The maximum response size accepted by high-level operations.
+        limit: usize,
+    },
+
     /// The client was built with settings that cannot work.
     #[error("configuration: {0}")]
     Config(String),
@@ -203,7 +210,9 @@ impl Error {
                 _ if matches!(reason, StopReason::Rejected { .. }) => Recovery::Permanent,
                 _ => Recovery::Unknown,
             },
-            Error::Decode(_) | Error::Config(_) => Recovery::Permanent,
+            Error::Decode(_) | Error::ResponseTooLarge { .. } | Error::Config(_) => {
+                Recovery::Permanent
+            }
         }
     }
 

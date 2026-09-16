@@ -70,6 +70,29 @@ now maps numbers to bare labels such as `budget`, replacing descriptions such as
 - Walk router modules recursively for host access and assert the exact inventory.
 - Correct the fixture host allowlist promise and document that no model
   configuration exists yet. Principle 3 names F7a's private release gate.
+- Page operations and search now default to a 15-minute wall. This leaves room
+  for five browser attempts and backoff. Account reads keep their 60-second
+  cap even with an unlimited budget; a shorter client wall wins. Only the
+  client's `without_wall` removes the account read cap. `without_wall` on the
+  client or operation builder explicitly removes
+  the cap. Raw calls still have no wall or response size cap.
+- One deadline covers sends and sleeps. Decode and settlement work take at most
+  8 MiB of response input, including replies without Content-Length, and check
+  the deadline before returning success. Larger replies return
+  `Error::ResponseTooLarge`. Caller-supplied synchronous hooks must return promptly.
+- API bases require HTTPS. Literal loopback HTTP addresses remain allowed, so
+  the CLI test stub needs no change. Other HTTP bases need
+  `allow_insecure_http(true)`. The built-in HTTP client no longer follows redirects.
+- An empty HTTP 204 returns empty `Pages` from `send_all`. Single-page `send`
+  returns `Error::Exhausted` with no last page and one recorded attempt.
+- Missing target statuses are unknown (code zero), never copied from the API
+  envelope. Page-fetch routes keep these as failures. Transform explicitly
+  accepts status-less documents with unknown target status.
+- Page-shaped 401 and 402 replies remain target refusals and keep their costs.
+  A mirrored envelope records unknown API status, never an API success invented
+  from the page. Account error envelopes still stop on the account plane.
+- Cookies accept a wire string or map. `Page::cookies` now exposes a map from
+  name to value. The cookie map fixture was made with `xtask redact`.
 
 ## 0.3.1 (2026-09-16)
 

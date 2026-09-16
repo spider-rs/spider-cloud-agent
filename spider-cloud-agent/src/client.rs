@@ -51,8 +51,8 @@ use crate::routing::Explorer;
 use crate::Result;
 
 pub use crate::transport::{
-    route, Method, RateLimit, Reply, Route, Transport, BASE_URL_ENV, DEFAULT_BASE_URL, ROUTES,
-    USER_AGENT,
+    route, Method, RateLimit, Reply, Route, Transport, BASE_URL_ENV, DEFAULT_BASE_URL,
+    MAX_RESPONSE_BYTES, ROUTES, USER_AGENT,
 };
 
 pub use crate::auth::{API_KEY_ENV, API_KEY_ENV_ALT, CREDENTIALS_PATH};
@@ -108,6 +108,7 @@ impl IntoUrl for &String {
 pub struct Spider {
     transport: Arc<Transport>,
     budget: Budget,
+    pub(crate) read_wall: Option<std::time::Duration>,
     policy: Option<Policy>,
     router: Arc<dyn Router>,
     recorder: Option<Arc<dyn Recorder>>,
@@ -173,6 +174,7 @@ impl Spider {
         Ok(Spider {
             transport: Arc::new(transport),
             budget: Budget::default(),
+            read_wall: Some(std::time::Duration::from_secs(60)),
             policy: None,
             router: Arc::new(HeuristicRouter::new()),
             recorder: None,
@@ -233,12 +235,17 @@ impl Spider {
 
     /// What is left on the account.
     pub async fn credits(&self) -> Result<Credits> {
-        let reply = crate::ops::data::read_under_wall(
+        crate::ops::data::read_under_wall(
             self,
-            self.transport.get(route::DATA_CREDITS, &[], &[]),
+            self.transport.get_with_limit(
+                route::DATA_CREDITS,
+                &[],
+                &[],
+                Some(crate::transport::MAX_RESPONSE_BYTES),
+            ),
+            crate::ops::data::credits_from,
         )
-        .await?;
-        crate::ops::data::credits_from(&reply)
+        .await
     }
 
     /// The record of past crawls.
@@ -279,6 +286,7 @@ impl Spider {
     /// Typed parameters, typed replies, and nothing between you and the service:
     /// no escalation, no budget, no trimming. Use it for an endpoint this
     /// version has no builder for, and accept that the outcome is then yours.
+    /// There is no default wall or response size cap on raw calls.
     pub fn raw(&self) -> &Transport {
         &self.transport
     }
@@ -339,6 +347,8 @@ pub struct SpiderBuilder {
     recorder: Option<Arc<dyn Recorder>>,
     explorer: Explorer,
     memory_capacity: Option<usize>,
+    allow_insecure_http: bool,
+    without_read_wall: bool,
 }
 
 impl fmt::Debug for SpiderBuilder {
@@ -370,14 +380,34 @@ impl SpiderBuilder {
     }
 
     /// The address to call. Overrides `SPIDER_API_URL`.
+    /// Requires HTTPS, except literal loopback HTTP addresses or an explicit
+    /// [`Self::allow_insecure_http`] opt-in.
     pub fn base_url(mut self, base_url: Url) -> SpiderBuilder {
         self.base_url = Some(base_url);
         self
     }
 
+    /// Allow plaintext HTTP for a test service. This sends the key without TLS.
+    /// Literal loopback addresses already work without this opt-in.
+    pub fn allow_insecure_http(mut self, allow: bool) -> SpiderBuilder {
+        self.allow_insecure_http = allow;
+        self
+    }
+
+    /// Turn off the default wall on high-level operations, including account reads.
+    /// Call after `budget` to override its wall.
+    pub fn without_wall(mut self) -> SpiderBuilder {
+        self.budget = Some(self.budget.unwrap_or_default().without_wall());
+        self.without_read_wall = true;
+        self
+    }
+
     /// The caps every operation starts with.
+    /// Account reads keep a 60-second cap, shortened by a smaller wall here.
+    /// Only [`Self::without_wall`] removes the account read cap.
     pub fn budget(mut self, budget: Budget) -> SpiderBuilder {
         self.budget = Some(budget);
+        self.without_read_wall = false;
         self
     }
 
@@ -388,6 +418,8 @@ impl SpiderBuilder {
     }
 
     /// An HTTP client of your own, so connection pools and timeouts stay yours.
+    /// Its redirect policy must refuse plaintext destinations for credentials.
+    /// The built-in client does not follow redirects.
     pub fn http_client(mut self, client: reqwest::Client) -> SpiderBuilder {
         self.http_client = Some(client);
         self
@@ -469,7 +501,7 @@ impl SpiderBuilder {
 
     /// Build the client.
     ///
-    /// Fails when no key can be found, and when the address is not a URL.
+    /// Fails when no key can be found or the base address does not meet the TLS policy.
     pub fn build(self) -> Result<Spider> {
         let key = match self.key {
             Some(key) => key,
@@ -483,12 +515,14 @@ impl SpiderBuilder {
         }
         let base = match self.base_url {
             Some(base) => base,
-            None => Transport::base_url_from_env()?,
+            None => Transport::base_url_from_env_options(self.allow_insecure_http)?,
         };
+        crate::transport::validate_base(&base, self.allow_insecure_http)?;
         let transport = match self.http_client {
             Some(client) => Transport::with_client(key, base, client),
-            None => Transport::with_base(key, base)?,
+            None => Transport::with_base_options(key, base, self.allow_insecure_http)?,
         };
+        let transport = transport.allow_insecure_http(self.allow_insecure_http);
         let memory = match self.memory_capacity {
             Some(capacity) => SiteMemoryStore::new(capacity),
             None => SiteMemoryStore::default(),
@@ -497,6 +531,17 @@ impl SpiderBuilder {
         Ok(Spider {
             transport: Arc::new(transport),
             budget: self.budget.unwrap_or_default(),
+            read_wall: if self.without_read_wall {
+                None
+            } else {
+                let cap = std::time::Duration::from_secs(60);
+                Some(
+                    self.budget
+                        .and_then(|budget| budget.wall)
+                        .unwrap_or(cap)
+                        .min(cap),
+                )
+            },
             policy: self.policy,
             router: self
                 .router
@@ -611,6 +656,35 @@ mod tests {
             .build()
             .expect("a client");
         assert_eq!(spider.budget().attempts, 2);
+    }
+
+    #[test]
+    fn f1_account_read_wall_requires_an_explicit_opt_out() {
+        let builder = || Spider::builder().key(SECRET);
+        let minute = Some(std::time::Duration::from_secs(60));
+        for budget in [Budget::unlimited(), Budget::default().with_attempts(1)] {
+            assert_eq!(builder().budget(budget).build().unwrap().read_wall, minute);
+        }
+        assert_eq!(builder().build().unwrap().read_wall, minute);
+        assert_eq!(builder().without_wall().build().unwrap().read_wall, None);
+        let short = std::time::Duration::from_millis(20);
+        assert_eq!(
+            builder()
+                .budget(Budget::default().with_wall(short))
+                .build()
+                .unwrap()
+                .read_wall,
+            Some(short)
+        );
+        assert_eq!(
+            builder()
+                .without_wall()
+                .budget(Budget::default())
+                .build()
+                .unwrap()
+                .read_wall,
+            minute
+        );
     }
 
     /// Every error the crate can hand back, built the way the crate builds them.
@@ -834,7 +908,7 @@ mod tests {
             .expect("a client");
         let spider = SpiderBuilder::new()
             .key(SECRET)
-            .base_url(Url::parse("http://192.0.2.1:9/").expect("a url"))
+            .base_url(Url::parse("https://192.0.2.1:9/").expect("a url"))
             .budget(Budget::default().with_attempts(1))
             .http_client(client)
             .build()

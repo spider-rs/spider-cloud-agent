@@ -26,7 +26,8 @@ impl ApiStatus {
         Self(code)
     }
 
-    /// The numeric status code.
+    /// The numeric status code, or zero when no independent API status is known.
+    /// The latter includes a target status mirrored onto the HTTP envelope.
     pub fn code(self) -> u16 {
         self.0
     }
