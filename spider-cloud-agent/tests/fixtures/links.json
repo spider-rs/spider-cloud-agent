@@ -2,7 +2,7 @@
   "body": [
     {
       "links": [
-        "https://example.org/docs"
+        "https://example.com/docs"
       ],
       "status": 200,
       "url": "https://example.com/"

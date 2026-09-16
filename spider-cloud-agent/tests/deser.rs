@@ -15,6 +15,17 @@
 //! The fixtures in `tests/fixtures` are what the API sends, with every host
 //! replaced by a documentation host. If a field moves or a shape changes, these
 //! fail here rather than at a call site.
+//!
+//! Every fixture is the output of
+//! `cargo run --locked -p xtask -- redact <recording> -o <fixture>`, run over a
+//! recording held outside the repo. A recording is one reply: the route it came
+//! from, its HTTP status, the response headers that carry meaning for the send
+//! loop, and the JSON body, with the service hosts and the gateway session
+//! cookie still in it. The redactor rewrites every host outside the
+//! documentation set to example.com, replaces the cookie with REDACTED, and
+//! pretty prints with sorted keys. Add a fixture by running that command,
+//! never by writing the file, and run
+//! `cargo run --locked -p xtask -- leakcheck --tree` before committing it.
 
 use spider_cloud_agent::response::content::MultiBody;
 use spider_cloud_agent::response::costs::Costs;
@@ -95,7 +106,9 @@ fn there_are_fixtures_to_read() {
     );
 }
 
-// Red with deliberately malformed JSON in thrift/product_page.json.
+// Red with the closing brace dropped from thrift/product_page.json: the failure
+// read "thrift/product_page.json is not json: EOF while parsing an object at
+// line 35 column 0".
 #[test]
 fn every_fixture_is_json() {
     for (name, text) in every_fixture() {
@@ -104,7 +117,9 @@ fn every_fixture_is_json() {
     }
 }
 
-// Red with a deliberately forbidden URL host in thrift/product_page.json.
+// Red with one example.com in thrift/product_page.json swapped for
+// shop.acme-retail-internal.net: the failure named the host and said it is not a
+// documentation host.
 #[test]
 fn every_fixture_names_only_documentation_hosts() {
     // The leak checker enforces this at publish time. Asserting it here means a
@@ -248,7 +263,9 @@ fn crawl_records_stay_json_because_their_columns_are_the_services_own() {
     assert_eq!(rows[0]["domain"].as_str(), Some("example.com"));
 }
 
-// Red on a deliberately broken build: skipped subdirectories in the walker.
+// Red with the walker put back to the starting commit's flat read_dir, which
+// skipped subdirectories: the nested list came back empty against the two names
+// below.
 #[test]
 fn the_nested_fixture_inventory_is_included() {
     let nested: Vec<_> = every_fixture()

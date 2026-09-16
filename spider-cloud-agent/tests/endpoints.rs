@@ -309,22 +309,28 @@ fn a_path_argument_cannot_walk_out_of_its_route() {
     );
 }
 
-/// Response coverage for the builder inventory above. Each entry must name a
-/// readable JSON fixture; naming a route without recording its answer cannot pass.
+/// Response coverage for the builder inventory above. Each entry names a
+/// readable JSON fixture: either one of the older bare bodies or one of the
+/// newer records that keep the HTTP envelope beside the body. Both shapes are
+/// checked against the route they are claimed for, so naming the wrong file
+/// cannot pass as coverage.
 const FIXTURE_COVERAGE: &[(&str, &str)] = &[
-    ("/scrape", "scrape_markdown_response.json"),
-    ("/crawl", "crawl_mixed_response.json"),
+    ("/scrape", "scrape_markdown.json"),
+    ("/crawl", "crawl_mixed.json"),
     ("/links", "links.json"),
-    ("/search", "search_results_response.json"),
-    ("/screenshot", "screenshot_response.json"),
+    ("/search", "search_results.json"),
+    ("/screenshot", "screenshot.json"),
     ("/transform", "transform.json"),
     ("/fetch/{domain}/{path}", "fetch.json"),
-    ("/data/credits", "credits_response.json"),
-    ("/data/crawl_logs", "crawl_logs_response.json"),
+    ("/data/credits", "credits.json"),
+    ("/data/crawl_logs", "crawl_logs.json"),
     ("/data/{table}", "data_table.json"),
 ];
 
-// Red on a deliberately broken build: mapped /scrape to credits_response.json.
+// Red with ("/scrape", "credits.json") in place of the scrape line: the test
+// failed with "credits.json does not hold a /scrape answer". The shape rules
+// are what make that swap visible. Reading an envelope route key alone left
+// every older bare-body fixture out of the manifest entirely.
 #[test]
 fn every_builder_route_has_a_fixture() {
     let mut covered: Vec<_> = FIXTURE_COVERAGE.iter().map(|(route, _)| *route).collect();
@@ -337,20 +343,80 @@ fn every_builder_route_has_a_fixture() {
         let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
             .join("tests/fixtures")
             .join(file);
-        let text = std::fs::read_to_string(path).unwrap();
+        let text = std::fs::read_to_string(&path)
+            .unwrap_or_else(|e| panic!("cannot read {}: {e}", path.display()));
         let value: serde_json::Value = serde_json::from_str(&text).unwrap();
-        assert_eq!(value["route"], *route, "{file}");
-        assert_eq!(value["http_status"], 200, "{file}");
-        assert_eq!(value["headers"]["content-type"], "application/json");
-        assert!(value.get("body").is_some(), "{file}");
-        // The envelope cannot silently substitute an unrelated older body.
-        if let Some(original) = file.strip_suffix("_response.json") {
-            let original = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-                .join("tests/fixtures")
-                .join(format!("{original}.json"));
-            let body: serde_json::Value =
-                serde_json::from_str(&std::fs::read_to_string(original).unwrap()).unwrap();
-            assert_eq!(value["body"], body, "{file}");
+        // A record with an envelope names its own route, status and content
+        // type. A bare body is the answer on its own.
+        let body = match value.get("route") {
+            Some(named) => {
+                assert_eq!(named, route, "{file}");
+                assert_eq!(value["http_status"], 200, "{file}");
+                assert_eq!(
+                    value["headers"]["content-type"], "application/json",
+                    "{file}"
+                );
+                value["body"].clone()
+            }
+            None => value,
+        };
+        assert!(
+            holds_the_answer_for(route, &body),
+            "{file} does not hold a {route} answer"
+        );
+    }
+}
+
+/// Whether a fixture body is the answer this route gives, told apart by the
+/// fields only that route's answer carries.
+///
+/// Without this a manifest entry could name any readable fixture and still
+/// count, which is how a route ends up recorded by somebody else's response.
+fn holds_the_answer_for(route: &str, body: &serde_json::Value) -> bool {
+    let pages = body.as_array();
+    let first = body.get(0).unwrap_or(&serde_json::Value::Null);
+    let rows = body.get("data").and_then(|d| d.as_array());
+    let row = rows
+        .and_then(|r| r.first())
+        .unwrap_or(&serde_json::Value::Null);
+    match route {
+        // One page, asked for as markdown.
+        "/scrape" => {
+            pages.is_some_and(|p| p.len() == 1) && first["content"]["markdown"].is_string()
         }
+        // Several pages from one call, and not all of them answered.
+        "/crawl" => {
+            pages.is_some_and(|p| p.len() > 1)
+                && pages.is_some_and(|p| p.iter().any(|page| page["status"] != 200))
+        }
+        // Addresses rather than content.
+        "/links" => pages.is_some() && first["links"].is_array(),
+        // Titled results under their own wrapper, not a page list.
+        "/search" => body
+            .get("content")
+            .and_then(|c| c.as_array())
+            .and_then(|c| c.first())
+            .is_some_and(|hit| hit["title"].is_string() && hit["url"].is_string()),
+        // Bytes, not text.
+        "/screenshot" => pages.is_some() && first["content"]["screenshot"].is_array(),
+        // Converted markup with no address, because nothing was fetched.
+        "/transform" => {
+            pages.is_some() && first["content"]["raw"].is_string() && first["url"].is_null()
+        }
+        // Cached markup, which does name the address it was stored under.
+        "/fetch/{domain}/{path}" => {
+            pages.is_some() && first["content"]["raw"].is_string() && first["url"].is_string()
+        }
+        // A balance is one number, not a row set.
+        "/data/credits" => body
+            .get("data")
+            .is_some_and(|data| data["credits"].is_number()),
+        // Crawl records are keyed by domain.
+        "/data/crawl_logs" => {
+            rows.is_some() && row["domain"].is_string() && row["pages"].is_number()
+        }
+        // An arbitrary table comes back as page rows.
+        "/data/{table}" => rows.is_some() && row["url"].is_string() && row["domain"].is_null(),
+        other => panic!("{other} has no fixture shape rule"),
     }
 }

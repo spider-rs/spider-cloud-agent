@@ -7,7 +7,8 @@
     "ratelimit-limit": "100",
     "ratelimit-remaining": "0",
     "ratelimit-reset": "2",
-    "retry-after": "1"
+    "retry-after": "1",
+    "set-cookie": "REDACTED"
   },
   "http_status": 503,
   "route": "/scrape"

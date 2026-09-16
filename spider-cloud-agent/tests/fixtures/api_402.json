@@ -1,9 +1,10 @@
 {
   "body": {
-    "error": "balance is zero"
+    "error": "not enough credits"
   },
   "headers": {
-    "content-type": "application/json"
+    "content-type": "application/json",
+    "set-cookie": "REDACTED"
   },
   "http_status": 402,
   "route": "/scrape"

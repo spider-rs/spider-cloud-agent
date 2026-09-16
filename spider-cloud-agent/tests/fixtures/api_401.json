@@ -4,6 +4,7 @@
   },
   "headers": {
     "content-type": "application/json",
+    "set-cookie": "REDACTED",
     "www-authenticate": "Bearer"
   },
   "http_status": 401,

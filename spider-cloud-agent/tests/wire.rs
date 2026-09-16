@@ -1647,7 +1647,9 @@ fn fast_client(stub: &Stub) -> Spider {
         .unwrap()
 }
 
-// Pending red check (sandbox denies socket bind). Deliberate mutation: as_error mapped 401 and 402 to Error::Api.
+// Red with the 401 and 402 arms taken out of Reply::as_error, so both fell
+// through to Error::Api: the 401 case came back
+// Err(Api { status: ApiStatus(401), message: Some("account refused") }).
 #[tokio::test]
 async fn api_401_and_402_stop_after_one_wire_attempt() {
     for code in [401, 402] {
@@ -1676,7 +1678,10 @@ async fn api_401_and_402_stop_after_one_wire_attempt() {
     }
 }
 
-// Pending red check (sandbox denies socket bind). Deliberate mutation: as_error returned None for API 403.
+// Red with Reply::as_error returning None for 403, which hands a failed call
+// back as a reply worth reading: the call ended
+// Err(Exhausted { .. reason: Unhandled }) with one ApiStatus(403) attempt
+// rather than Error::Api.
 #[tokio::test]
 async fn api_403_stops_after_one_wire_attempt() {
     let stub = serve_answers(&[Answer::with(403, "", r#"{"error":"forbidden"}"#)]);
@@ -1694,9 +1699,10 @@ async fn api_403_stops_after_one_wire_attempt() {
 /// API 500 retries once per ladder step, then climbs. The default attempt cap
 /// ends the walk after five calls, retaining each API status in the budget error.
 /// It does not share the retry-only rule used by API 429 and 503.
-// The previous two-call assertion was red in the supervisor's attempt 1 run
-// on cf7370b: the actual result was BudgetExceeded with five API 500 attempts.
-// Mutation check remains blocked locally by the sandbox's socket bind restriction.
+// Red with DEFAULT_ATTEMPTS in src/policy/budget.rs moved from 5 to 3: the
+// five-attempt assertion failed with left 3, right 5. Turning the API
+// ServerError rule in src/policy/rule.rs into Decision::Fail reds it further
+// up, at Error::Api on the first call.
 #[tokio::test]
 async fn api_500_retries_and_climbs_until_the_attempt_cap_on_the_wire() {
     let stub = serve_answers(&[Answer::with(500, "", r#"{"error":"server failed"}"#)]);
@@ -1724,7 +1730,10 @@ async fn api_500_retries_and_climbs_until_the_attempt_cap_on_the_wire() {
     assert_ne!(sent[3].body, sent[4].body, "then climb again");
 }
 
-// Pending red check (sandbox denies socket bind). Deliberate mutation: is_mirrored_page_status always returned false.
+// Red with the 401 and 402 exclusion put back into is_mirrored_page_status, the
+// one F1 removed: the page 401 case came back
+// Err(Auth { cause: Refused, message: "the key was missing or rejected" }),
+// treating a login wall on the target site as a rejected Spider key.
 #[tokio::test]
 async fn account_and_server_codes_in_page_bodies_take_the_page_path() {
     for code in [401, 402, 403, 500] {
@@ -1763,7 +1772,10 @@ async fn account_and_server_codes_in_page_bodies_take_the_page_path() {
     }
 }
 
-// Pending red check (sandbox denies socket bind). Deliberate mutation: the raw stub repaired the declared length.
+// Red with the body read error swallowed in Transport::execute
+// (response.bytes().await.unwrap_or_default()): the truncated message came back
+// Err(Decode(Error("EOF while parsing a value", line: 1, column: 0))), a broken
+// HTTP message reported as bad JSON.
 #[tokio::test]
 async fn a_body_shorter_than_content_length_is_a_transport_error() {
     // Complete JSON still fails when the HTTP message is incomplete.
@@ -1780,7 +1792,10 @@ async fn a_body_shorter_than_content_length_is_a_transport_error() {
     assert_eq!(stub.sent().len(), 1);
 }
 
-// Pending red check (sandbox denies socket bind). Deliberate mutation: the raw stub supplied a complete page reply.
+// Red with the same swallowed body read error in Transport::execute: the
+// half-written chunk came back
+// Err(Decode(Error("EOF while parsing a value", line: 1, column: 0))) instead of
+// Error::Transport.
 #[tokio::test]
 async fn a_connection_closed_mid_body_is_a_transport_error() {
     let raw = b"HTTP/1.1 200 OK\r\ntransfer-encoding: chunked\r\nconnection: close\r\n\r\n40\r\n{\"url\":";
@@ -1793,7 +1808,10 @@ async fn a_connection_closed_mid_body_is_a_transport_error() {
     assert_eq!(stub.sent().len(), 1);
 }
 
-// Pending red check (sandbox denies socket bind). Deliberate mutation: the raw stub dropped the final chunk marker.
+// Red with Transport::execute reading only the first body chunk
+// (response.chunk() in place of response.bytes()): the two-chunk page failed
+// with Decode(Error("EOF while parsing a string", line: 1, column: 20)), which
+// is the first chunk boundary.
 #[tokio::test]
 async fn chunked_transfer_decodes_a_page_once() {
     let (first, second) = PAGE_ANSWER.split_at(20);
@@ -1815,7 +1833,11 @@ async fn chunked_transfer_decodes_a_page_once() {
 
 /// The built-in client has no gzip decoder enabled. A valid gzip member reaches
 /// the JSON decoder as compressed bytes and ends in Error::Decode, without retry.
-// Pending red check (sandbox denies socket bind). Deliberate mutation: the raw stub sent plain JSON in place of gzip.
+// Red with reqwest's "gzip" feature added to the workspace Cargo.toml, which
+// turns its automatic decoder on (run without --locked, since that moves the
+// lockfile): the member decoded to [], and the call walked the whole ladder to
+// Err(Exhausted { .. reason: LadderExhausted }) over five HTTP 200s. Enabling
+// that feature is therefore a behaviour change, not a build detail.
 #[tokio::test]
 async fn gzip_is_not_decoded_by_the_builtin_transport() {
     // A gzip member containing [], made with gzip.compress(b"[]", mtime=0).
@@ -1838,8 +1860,11 @@ async fn gzip_is_not_decoded_by_the_builtin_transport() {
 }
 
 /// Redirects must not turn an API POST into a GET or escape attempt accounting.
-// Red check blocked here: the sandbox refuses socket bind. Removing the custom
-// redirect policy is the mutation to run in an environment that permits sockets.
+// Red with the custom redirect policy removed from
+// Transport::with_base_options: reqwest followed the 302, sent a second request
+// inside the same attempt, and the call returned Ok with the page from the
+// address in the Location header. One attempt, two requests, and a body the
+// service never saw.
 #[tokio::test]
 async fn a_302_redirect_is_a_transport_error_after_one_request() {
     let stub = serve_answers(&[
@@ -1856,9 +1881,14 @@ async fn a_302_redirect_is_a_transport_error_after_one_request() {
     assert_eq!(sent[0].line, "POST /scrape HTTP/1.1");
 }
 
-/// New response records keep the HTTP envelope beside the JSON body. These are
-/// synthetic examples of the endpoint contracts, passed through xtask redact;
-/// they are not evidence of a live service revision.
+/// Replay one recorded response record as a scripted answer.
+///
+/// These records keep the HTTP envelope beside the JSON body, because the status
+/// and the rate limit headers are half of what the send loop decides on. Each
+/// one is the output of `cargo run --locked -p xtask -- redact` over a recording
+/// held outside the repo, so the hosts and the gateway session cookie in it are
+/// what the redactor left behind. They stand for the endpoint contracts, not for
+/// any particular service revision.
 fn recorded_answer(name: &str) -> Answer {
     let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
         .join("tests/fixtures")
@@ -1878,8 +1908,9 @@ fn recorded_answer(name: &str) -> Answer {
     )
 }
 
-// Pending red check (sandbox denies socket bind). Deliberate mutation:
-// remove retry-after and ratelimit headers from recorded_answer.
+// Red with retry_after set to None on the Reply built by Transport::execute: the
+// recorded 429 surfaced retry_after: Some(2s), the ratelimit-reset fallback,
+// rather than the 1s the retry-after header asked for.
 #[tokio::test]
 async fn recorded_api_errors_keep_status_headers_and_retry_bounds() {
     for (file, code, count) in [
@@ -1922,8 +1953,10 @@ async fn recorded_api_errors_keep_status_headers_and_retry_bounds() {
     }
 }
 
-// Pending red check (sandbox denies socket bind). Deliberate mutation:
-// replace recorded bodies with null in recorded_answer.
+// Red twice. With route::DATA_TABLE changed from Route::get to Route::post the
+// table read failed with Config("POST /data/{table} is not a get route"). With
+// Body::Html dropped from Body::as_str the transform answer read back as None
+// instead of its converted markup.
 #[tokio::test]
 async fn recorded_endpoint_answers_reach_their_builders() {
     for (file, request) in [
@@ -1937,7 +1970,7 @@ async fn recorded_endpoint_answers_reach_their_builders() {
         match file {
             "links.json" => {
                 let page = spider.links("https://example.com").send().await.unwrap();
-                assert_eq!(page.value[0].as_str(), "https://example.org/docs");
+                assert_eq!(page.value[0].as_str(), "https://example.com/docs");
             }
             "transform.json" => {
                 let page = spider
@@ -1945,7 +1978,12 @@ async fn recorded_endpoint_answers_reach_their_builders() {
                     .send()
                     .await
                     .unwrap();
-                assert_eq!(page.text(), Some("<p>Converted</p>"));
+                assert_eq!(
+                    page.text(),
+                    Some(
+                        "<p>Converted from <a href=\"https://example.com/guide\">the guide</a></p>"
+                    )
+                );
             }
             "fetch.json" => {
                 let page = spider.fetch("example.com", "docs").send().await.unwrap();

@@ -2,7 +2,7 @@
   "body": [
     {
       "content": {
-        "raw": "<p>Converted</p>"
+        "raw": "<p>Converted from <a href=\"https://example.com/guide\">the guide</a></p>"
       }
     }
   ],
