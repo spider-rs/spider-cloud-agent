@@ -787,18 +787,18 @@ fn random_url(rng: &mut XorShift, out: &mut String) {
     ];
 
     if rng.below(4) != 0 {
-        out.push_str(rng.pick(&SCHEMES));
+        out.push_str(rng.pick::<&str>(&SCHEMES));
 
         for _ in 0..rng.below(8) {
-            out.push_str(rng.pick(&HOST_PARTS));
+            out.push_str(rng.pick::<&str>(&HOST_PARTS));
         }
 
         for _ in 0..rng.below(12) {
-            out.push_str(rng.pick(&PATH_PARTS));
+            out.push_str(rng.pick::<&str>(&PATH_PARTS));
         }
 
         for _ in 0..rng.below(12) {
-            out.push_str(rng.pick(&QUERY_PARTS));
+            out.push_str(rng.pick::<&str>(&QUERY_PARTS));
         }
 
         return;
