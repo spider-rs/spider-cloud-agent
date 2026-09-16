@@ -35,13 +35,16 @@ use std::sync::mpsc::{channel, Receiver, Sender};
 use std::time::Duration;
 use url::Url;
 
+/// A page the site refused arrives with its block page when markdown was
+/// asked for, and nothing the need switched off. The recording carried
+/// metadata, headers, cookies and links; the plan for `Need::Markdown` asked
+/// for none of them, and they stay on the wire.
 #[tokio::test]
-async fn a_refused_page_keeps_requested_markdown_and_filters_unasked_payloads() {
-    let fixture = include_str!("fixtures/response_fields.json");
-    let stub = serve(&[fixture]);
+async fn a_refused_page_keeps_the_markdown_the_need_asked_for_and_nothing_else() {
+    let stub = serve(&[include_str!("fixtures/refused_markdown.json")]);
     let spider = client(&stub);
     let error = spider
-        .scrape("https://example.com")
+        .scrape("https://example.com/account")
         .need(spider_cloud_agent::Need::Markdown)
         .budget(Budget::default().with_credits(Credits::ZERO))
         .send()
@@ -51,9 +54,10 @@ async fn a_refused_page_keeps_requested_markdown_and_filters_unasked_payloads() 
         last: Some(page), ..
     } = error
     else {
-        panic!("expected refused page: {error}")
+        panic!("expected the refused page to come back: {error}")
     };
-    assert!(page.body.as_str().unwrap().contains("Access refused"));
+    assert_eq!(page.status.code(), 403);
+    assert!(page.text().unwrap().starts_with("# Access denied"));
     assert!(page.body.fields().is_none());
     assert!(
         page.metadata.is_none()
@@ -67,25 +71,25 @@ async fn a_refused_page_keeps_requested_markdown_and_filters_unasked_payloads() 
             && page.response_map.is_none()
             && page.trace.is_none()
     );
-    assert_eq!(page.duration_elasped_ms, Some(12.5));
+    assert_eq!(page.duration, Some(Duration::from_millis(412)));
     let request: serde_json::Value = serde_json::from_str(&stub.requests()[0]).unwrap();
     assert_eq!(request["return_format"], "markdown");
     assert_eq!(request["metadata"], false);
+    assert_eq!(request["return_page_links"], false);
 }
 
+/// Everything a caller can ask for beside the page comes back when asked,
+/// the extraction fields do not push the content out, and a cache control
+/// object goes out on the wire as an object.
 #[tokio::test]
-async fn requested_json_traffic_fields_and_cache_object_cross_the_wire() {
+async fn requested_extras_come_back_and_a_cache_control_goes_out_as_an_object() {
     use spider_cloud_agent::params::{
         Cache, CacheControl, CssExtractionMap, EventTracker, SelectorGroup,
     };
-    let mut value: serde_json::Value =
-        serde_json::from_str(include_str!("fixtures/response_fields.json")).unwrap();
-    value["status"] = 200.into();
-    let answer = value.to_string();
-    let stub = serve(&[&answer]);
+    let stub = serve(&[include_str!("fixtures/page_diagnostics.json")]);
     let spider = client(&stub);
     let mut call = spider
-        .scrape("https://example.com")
+        .scrape("https://example.com/pricing")
         .need(spider_cloud_agent::Need::Markdown);
     let params = call.params_mut();
     params.return_json_data = Some(true);
@@ -101,28 +105,74 @@ async fn requested_json_traffic_fields_and_cache_object_cross_the_wire() {
     });
     params.css_extraction_map = Some(CssExtractionMap::from([(
         "/".into(),
-        vec![SelectorGroup::css("heading", ["h1"])],
+        vec![SelectorGroup::css("plans", ["h2"])],
     )]));
     params.cache = Some(Cache::Control(CacheControl {
-        max_age: Some(60),
-        stale_while_revalidate: Some(30),
+        max_age: Some(60_000),
+        allow_stale: Some(true),
         ..CacheControl::default()
     }));
     let outcome = call.send().await.unwrap();
     let page = &outcome.value;
-    assert_eq!(page.json_data.as_ref().unwrap()["name"], "Example");
+    assert_eq!(page.text(), Some("# Pricing\n\nStarter, Growth, Scale.\n"));
+    assert_eq!(page.body.fields().unwrap()["heading"][0], "Pricing");
+    assert_eq!(
+        page.json_data.as_ref().unwrap()["other_scripts"][0]["@type"],
+        "Product"
+    );
     assert!(page.request_map.is_some() && page.response_map.is_some() && page.trace.is_some());
-    assert!(page.body.fields().is_some() && page.body.as_str().is_some());
-    assert!(page.metadata.as_ref().unwrap().embedding.is_some());
-    assert!(page.headers.is_some() && page.cookies.is_some() && page.links.is_some());
-    assert_eq!(page.error.as_deref(), Some("Sign in required"));
+    let meta = page.metadata.as_ref().unwrap();
+    assert_eq!(meta.embedding.as_ref().map(Vec::len), Some(4));
+    assert_eq!(
+        meta.final_url.as_deref(),
+        Some("https://example.com/pricing")
+    );
+    assert!(page.headers.is_some() && page.cookies.is_some());
+    assert_eq!(page.links.as_ref().map(Vec::len), Some(2));
+    assert_eq!(
+        page.costs
+            .vendor
+            .as_ref()
+            .and_then(|v| v.provider.as_deref()),
+        Some("example-vendor")
+    );
+    assert_eq!(page.duration, Some(Duration::from_millis(1288)));
+
     let sent = stub.requests();
     assert_eq!(sent.len(), 1);
     let request: serde_json::Value = serde_json::from_str(&sent[0]).unwrap();
     assert_eq!(request["return_json_data"], true);
+    assert_eq!(request["return_embeddings"], true);
+    assert_eq!(request["event_tracker"]["automation"], true);
     assert_eq!(
         request["cache"],
-        serde_json::json!({"max_age": 60, "stale_while_revalidate": 30})
+        serde_json::json!({"max_age": 60000, "allow_stale": true})
+    );
+}
+
+/// The same reply read with the need's own plan: the extras the caller did
+/// not ask for are dropped before anything reads them, and so is the embedding
+/// inside the metadata, while the content and the fields it asked for stay.
+#[tokio::test]
+async fn extras_the_need_did_not_ask_for_are_dropped_before_the_caller_sees_them() {
+    let stub = serve(&[include_str!("fixtures/page_diagnostics.json")]);
+    let spider = client(&stub);
+    let mut call = spider
+        .scrape("https://example.com/pricing")
+        .need(spider_cloud_agent::Need::Markdown);
+    call.params_mut().metadata = Some(true);
+    let outcome = call.send().await.unwrap();
+    let page = &outcome.value;
+    assert_eq!(page.text(), Some("# Pricing\n\nStarter, Growth, Scale.\n"));
+    assert!(page.body.fields().is_none(), "no selector map was sent");
+    assert!(page.json_data.is_none() && page.request_map.is_none() && page.trace.is_none());
+    assert!(page.headers.is_none() && page.cookies.is_none() && page.links.is_none());
+    let meta = page.metadata.as_ref().expect("metadata was asked for");
+    assert_eq!(meta.title.as_deref(), Some("Pricing"));
+    assert!(meta.embedding.is_none(), "return_embeddings was off");
+    assert!(
+        page.costs.vendor.is_some(),
+        "the bill is never trimmed, whatever the need"
     );
 }
 

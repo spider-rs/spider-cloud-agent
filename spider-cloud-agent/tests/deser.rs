@@ -22,113 +22,172 @@ use spider_cloud_agent::response::metadata::Metadata;
 use spider_cloud_agent::response::SearchResults;
 use spider_cloud_agent::{Credits, Usd};
 
-#[test]
-fn requested_payloads_survive_both_status_planes() {
+/// One recorded reply, read the way the client reads it: the JSON body with
+/// an HTTP 200 around it, sorted into pages.
+fn read_reply(name: &str, elapsed_ms: u64) -> spider_cloud_agent::response::Pages {
     use spider_cloud_agent::client::{RateLimit, Reply};
     use spider_cloud_agent::policy::engine::Reached;
     use spider_cloud_agent::policy::Observed;
     let Reached::Api(status) = Observed::seen(200, None).api else {
         panic!("api status")
     };
-    for code in [200, 403] {
-        let mut value: serde_json::Value =
-            serde_json::from_str(&fixture("response_fields.json")).unwrap();
-        value["status"] = code.into();
-        let reply = Reply {
-            status,
-            rate_limit: RateLimit::default(),
-            retry_after: None,
-            elapsed: std::time::Duration::from_millis(900),
-            content_type: Some("application/json".into()),
-            body: bytes::Bytes::from(serde_json::to_vec(&value).unwrap()),
-        };
-        let pages = reply
-            .read(&url::Url::parse("https://example.com").unwrap(), None)
-            .unwrap();
-        let (
-            body,
-            meta,
-            costs,
-            duration,
-            elapsed,
-            error,
-            data,
-            requests,
-            responses,
-            trace,
-            headers,
-            cookies,
-            links,
-        ) = match &pages.0[0] {
-            spider_cloud_agent::response::PageResult::Ok(p) => (
-                &p.body,
-                &p.metadata,
-                &p.costs,
-                p.duration_elasped_ms,
-                p.call_elapsed,
-                &p.error,
-                &p.json_data,
-                &p.request_map,
-                &p.response_map,
-                &p.trace,
-                &p.headers,
-                &p.cookies,
-                &p.links,
-            ),
-            spider_cloud_agent::response::PageResult::Failed(p) => (
-                &p.body,
-                &p.metadata,
-                &p.costs,
-                p.duration_elasped_ms,
-                p.call_elapsed,
-                &p.error,
-                &p.json_data,
-                &p.request_map,
-                &p.response_map,
-                &p.trace,
-                &p.headers,
-                &p.cookies,
-                &p.links,
-            ),
-        };
-        assert!(body.as_str().unwrap().contains("Access refused"));
-        assert_eq!(body.fields().unwrap()["heading"][0], "Access refused");
-        let meta = meta.as_ref().unwrap();
-        assert_eq!(
-            meta.original_url.as_deref(),
-            Some("https://example.com/start")
-        );
-        assert_eq!(meta.final_url.as_deref(), Some("https://example.com/final"));
-        assert_eq!(meta.crawl_id.as_deref(), Some("example-crawl"));
-        assert_eq!(meta.embedding.as_deref(), Some(&[0.25, 0.5][..]));
-        assert_eq!(meta.extra["markdown"]["title"], "Markdown title");
-        assert_eq!(meta.extra["raw"]["title"], "HTML title");
-        assert!(meta.extra.contains_key("yt_transcript"));
-        assert!(meta.extra.contains_key("maps_place"));
-        let vendor = costs.vendor.as_ref().unwrap();
-        assert_eq!(vendor.provider.as_deref(), Some("example"));
-        assert_eq!(vendor.billed_cost, Some(Usd::new(0.002)));
-        assert!(costs.total() > costs.sum_of_parts());
-        assert_eq!(duration, Some(12.5));
-        assert_eq!(elapsed.as_millis(), 900);
-        assert!(
-            error.is_some()
-                && data.is_some()
-                && requests.is_some()
-                && responses.is_some()
-                && trace.is_some()
-        );
-        assert!(headers.is_some() && cookies.is_some() && links.is_some());
-    }
+    let reply = Reply {
+        status,
+        rate_limit: RateLimit::default(),
+        retry_after: None,
+        elapsed: std::time::Duration::from_millis(elapsed_ms),
+        content_type: Some("application/json".into()),
+        body: bytes::Bytes::from(fixture(name)),
+    };
+    reply
+        .read(&url::Url::parse("https://example.com").unwrap(), None)
+        .unwrap()
+}
+
+// The three fixtures below were not captured from a live account. They were
+// written to the key set and value types the service's page writer produces
+// (`url`, `error`, `status`, `costs` with the formatted strings, whole
+// millisecond `duration_elasped_ms`, `content` keyed by format, `links`,
+// `headers`, `cookies`, `metadata`, `css_extracted`, `trace` as phase rows,
+// `json_data` keyed by script kind, and the two event maps keyed by address),
+// as read from the service on 2026-09-16, and then passed through
+// `cargo run -p xtask -- redact`, which is why every host is example.com and
+// the session cookie reads REDACTED. When a live capture of one of these
+// shapes lands, it should replace the file and these tests should still pass.
+
+/// `refused_markdown.json`: what a scrape answers for a page the site refused
+/// with a 403, when markdown, links, headers, cookies and metadata were asked
+/// for. The site's block page comes with it.
+#[test]
+fn a_refused_page_arrives_with_the_body_the_site_sent() {
+    let pages = read_reply("refused_markdown.json", 900);
+    assert_eq!(pages.len(), 1);
+    let page = pages.failed().next().expect("a refusal");
+    assert_eq!(page.status.code(), 403);
+    assert_eq!(page.error.as_deref(), Some("the site refused the fetch"));
+    assert!(page.text().unwrap().starts_with("# Access denied"));
+    assert!(page.body.fields().is_none());
+    assert_eq!(page.duration, Some(std::time::Duration::from_millis(412)));
+    assert_eq!(page.call_elapsed.as_millis(), 900);
+    let meta = page.metadata.as_ref().expect("metadata");
+    assert_eq!(meta.title.as_deref(), Some("Access denied"));
+    assert_eq!(
+        meta.original_url.as_deref(),
+        Some("https://example.com/account")
+    );
+    assert!(meta.final_url.is_none());
+    assert!(meta.crawl_id.is_none());
+    assert_eq!(page.links.as_ref().map(Vec::len), Some(2));
+    assert_eq!(
+        page.headers
+            .as_ref()
+            .and_then(|h| h.get("server"))
+            .map(String::as_str),
+        Some("nginx")
+    );
+    assert_eq!(
+        page.cookies
+            .as_ref()
+            .and_then(|c| c.get("session"))
+            .map(String::as_str),
+        Some("REDACTED")
+    );
+    assert!(page.was_billed());
+    assert_eq!(page.cost(), Credits::from_usd(0.00021301));
+    assert!(page.costs.vendor.is_none());
+    assert!(page.json_data.is_none() && page.request_map.is_none() && page.trace.is_none());
+}
+
+/// `page_diagnostics.json`: a served page with everything a request can ask
+/// for beside the content: extraction fields next to markdown, the declared
+/// JSON data, the event tracker's two maps, the phase trace, a redirect in the
+/// metadata with an embedding and a crawl id, and a vendor line on the bill.
+#[test]
+fn a_page_with_every_extra_keeps_each_one_where_it_belongs() {
+    let pages = read_reply("page_diagnostics.json", 1500);
+    let page = pages.first_ok().expect("a page");
+    assert_eq!(page.text(), Some("# Pricing\n\nStarter, Growth, Scale.\n"));
+    let fields = page.body.fields().expect("fields beside the page");
+    assert_eq!(
+        fields["plans"],
+        serde_json::json!(["Starter", "Growth", "Scale"])
+    );
+    assert!(page.error.is_none());
+    assert_eq!(page.duration, Some(std::time::Duration::from_millis(1288)));
+    assert_eq!(page.call_elapsed.as_millis(), 1500);
+
+    let data = page.json_data.as_ref().expect("json data");
+    assert_eq!(data["other_scripts"][0]["@type"], "Product");
+    // The redactor rewrote the schema host in the recording too.
+    assert_eq!(data["other_scripts"][0]["@context"], "https://example.com");
+    let requests = page.request_map.as_ref().expect("request map");
+    assert_eq!(requests["https://example.com/app.js"], 41.5);
+    let responses = page.response_map.as_ref().expect("response map");
+    assert_eq!(responses["https://example.com/pricing"], 48213.0);
+    let trace = page.trace.as_ref().expect("trace");
+    assert_eq!(trace[1][0], "fetch");
+    assert_eq!(trace[1][2], 1201);
+
+    let meta = page.metadata.as_ref().expect("metadata");
+    assert_eq!(
+        meta.original_url.as_deref(),
+        Some("https://example.com/plans")
+    );
+    assert_eq!(
+        meta.final_url.as_deref(),
+        Some("https://example.com/pricing")
+    );
+    assert_eq!(
+        meta.crawl_id.as_deref(),
+        Some("3f1c2a9e-5b7d-4c8e-9f01-2a3b4c5d6e7f")
+    );
+    assert_eq!(meta.embedding.as_ref().map(Vec::len), Some(4));
+    assert!(meta.extra.is_empty(), "{:?}", meta.extra);
+
+    let vendor = page.costs.vendor.as_ref().expect("a vendor line");
+    assert_eq!(vendor.provider.as_deref(), Some("example-vendor"));
+    assert_eq!(vendor.route, "example-vendor.unlocker");
+    assert_eq!(vendor.billed(), Credits::from_usd(0.003));
+    assert_eq!(vendor.attempts, 2);
+    assert!(!vendor.byok);
+    assert_eq!(page.cost(), Credits::from_usd(0.00321));
+    assert!(page.costs.total() > page.costs.sum_of_parts());
+    assert_eq!(page.costs.sum_of_parts(), Credits::from_usd(0.00021));
+}
+
+/// `multi_format_metadata.json`: a page asked for as markdown and raw at
+/// once. The content is keyed by format and so is the metadata, with one
+/// whole block per format, and a transcript sits beside them.
+#[test]
+fn a_multi_format_reply_keeps_one_metadata_block_per_format() {
+    let pages = read_reply("multi_format_metadata.json", 100);
+    let page = pages.first_ok().expect("a page");
+    let spider_cloud_agent::response::Body::Multi(multi) = &page.body else {
+        panic!("expected both formats, got {:?}", page.body)
+    };
+    assert!(multi.markdown.is_some() && multi.raw.is_some());
+    let meta = page.metadata.as_ref().expect("metadata");
+    assert!(meta.title.is_none(), "a keyed block has no top level title");
+    let markdown = meta.for_format("markdown").expect("markdown block");
+    assert_eq!(markdown.title.as_deref(), Some("Unboxing the Growth plan"));
+    assert_eq!(markdown.embedding.as_deref(), Some(&[0.0402, -0.0117][..]));
+    let raw = meta.for_format("raw").expect("raw block");
+    assert_eq!(raw.file_size, Some(154));
+    assert_eq!(
+        meta.extra["yt_transcript"][1]["text"],
+        "First, the dashboard."
+    );
+    assert!(meta.for_format("text").is_none());
 }
 
 #[test]
-fn cache_controls_round_trip_both_shapes_and_unknown_controls() {
-    use spider_cloud_agent::params::{Cache, RequestParams};
+fn the_cache_parameter_reads_and_writes_both_shapes() {
+    use spider_cloud_agent::params::{Cache, CacheControl, RequestParams};
     for value in [
         serde_json::json!(true),
         serde_json::json!(false),
-        serde_json::json!({"max_age": 60, "stale_while_revalidate": 30, "future_control": true}),
+        serde_json::json!({"max_age": 60000, "allow_stale": true, "skip_browser": false,
+                           "period": "2026-09-16T00:00:00Z", "next_year": 1}),
     ] {
         let cache: Cache = serde_json::from_value(value.clone()).unwrap();
         let params = RequestParams {
@@ -137,18 +196,21 @@ fn cache_controls_round_trip_both_shapes_and_unknown_controls() {
         };
         assert_eq!(serde_json::to_value(params).unwrap()["cache"], value);
     }
-}
-
-#[test]
-fn boolean_cache_settings_convert_without_changing_the_wire() {
-    use spider_cloud_agent::params::RequestParams;
-    for enabled in [true, false] {
-        let params = RequestParams {
-            cache: Some(enabled.into()),
-            ..RequestParams::default()
-        };
-        assert_eq!(serde_json::to_value(params).unwrap()["cache"], enabled);
-    }
+    let Cache::Control(control) = serde_json::from_value::<Cache>(serde_json::json!({
+        "max_age": 0, "period": "2026-09-16T00:00:00Z", "next_year": 1
+    }))
+    .unwrap() else {
+        panic!("an object is a control")
+    };
+    assert_eq!(control.max_age, Some(0));
+    assert!(control.allow_stale.is_none());
+    assert_eq!(control.period.as_deref(), Some("2026-09-16T00:00:00Z"));
+    assert_eq!(control.extra["next_year"], 1);
+    assert_eq!(
+        serde_json::to_value(Cache::from(CacheControl::default())).unwrap(),
+        serde_json::json!({})
+    );
+    assert_eq!(serde_json::to_value(Cache::from(true)).unwrap(), true);
 }
 
 #[test]

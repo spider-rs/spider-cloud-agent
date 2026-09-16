@@ -15,8 +15,7 @@ pub(crate) struct PageParts {
     pub url: Url,
     pub status: PageStatus,
     pub body: Body,
-    pub duration: Duration,
-    pub duration_elasped_ms: Option<f64>,
+    pub duration: Option<Duration>,
     pub call_elapsed: Duration,
     pub json_data: Option<serde_json::Value>,
     pub request_map: Option<serde_json::Value>,
@@ -41,8 +40,7 @@ impl PageParts {
             url: Url::parse(url).expect("a test url"),
             status: PageStatus::new(code),
             body: Body::Text("hello".into()),
-            duration: Duration::from_millis(120),
-            duration_elasped_ms: None,
+            duration: Some(Duration::from_millis(80)),
             call_elapsed: Duration::from_millis(120),
             json_data: None,
             request_map: None,
@@ -78,21 +76,37 @@ pub struct Page {
     pub status: PageStatus,
     /// The content.
     pub body: Body,
-    /// Server page duration, or zero when absent.
-    pub duration: Duration,
-    /// Server milliseconds, retaining the backend's field spelling.
-    pub duration_elasped_ms: Option<f64>,
-    /// Wall time of the API call, shared by pages in one reply.
+    /// How long the service spent on this page, when the reply said.
+    ///
+    /// Read from the wire's `duration_elasped_ms`, which the service writes on
+    /// every page it fetches and leaves off a converted document. Before
+    /// 0.4 this held the whole call's wall time, which is now
+    /// [`Page::call_elapsed`].
+    pub duration: Option<Duration>,
+    /// Wall time of the API call this page arrived in. Every page in one
+    /// reply shares it, so on a crawl it is the time for the batch and not
+    /// for the page.
     pub call_elapsed: Duration,
-    /// Requested structured page data.
+    /// The structured data the page declared, such as its JSON-LD blocks.
+    /// Present when the request set `return_json_data`. Keyed by where the
+    /// data came from, and the values keep the shape the page gave them.
     pub json_data: Option<serde_json::Value>,
-    /// Requested page traffic.
+    /// The requests the page made while it rendered, keyed by address, with
+    /// the time each went out. Present when the request set the event
+    /// tracker's `requests`.
     pub request_map: Option<serde_json::Value>,
-    /// Requested page responses.
+    /// The responses the page received while it rendered, keyed by address,
+    /// with the byte count of each. Present when the request set the event
+    /// tracker's `responses`.
     pub response_map: Option<serde_json::Value>,
-    /// Requested automation trace.
+    /// The phase trace of the fetch, as the service records it: a list of
+    /// `[name, at_ms, duration_ms]` rows with an optional fourth detail
+    /// string. Present when the request set the event tracker's
+    /// `automation` and the account is switched on for tracing.
     pub trace: Option<serde_json::Value>,
-    /// Diagnostic text, including warnings accompanying a success.
+    /// What the service said went wrong, when it said anything. A served page
+    /// can still carry one: a fetch that fell back or a step that was
+    /// skipped is reported here without changing the status.
     pub error: Option<String>,
     /// What the fetch cost.
     pub costs: Costs,
@@ -129,7 +143,6 @@ impl Page {
             status: parts.status,
             body: parts.body,
             duration: parts.duration,
-            duration_elasped_ms: parts.duration_elasped_ms,
             call_elapsed: parts.call_elapsed,
             json_data: parts.json_data,
             request_map: parts.request_map,
@@ -167,33 +180,16 @@ impl Page {
 ///
 /// Most of these still cost credits, which is why the cost is carried here and not only
 /// on the success. See [`crate::status::PageStatus::consumes_credits`].
+///
+/// The site's answer travels with the failure. A 403 comes with the block
+/// page, a 401 with the sign-in form, and a 404 with whatever the site shows
+/// for a missing page, and the service sends that body, its metadata, headers,
+/// cookies and links exactly as it would for a 200. They are kept here, filtered
+/// by what the request asked for, because the body is how a caller tells a
+/// captcha from a login wall, and a hint alone cannot say which one it saw.
 #[derive(Debug, Clone)]
 #[non_exhaustive]
 pub struct FailedPage {
-    /// Requested content, even when the target refused the fetch.
-    pub body: Body,
-    /// Server page duration, or zero when absent.
-    pub duration: Duration,
-    /// Server milliseconds, retaining the backend's field spelling.
-    pub duration_elasped_ms: Option<f64>,
-    /// Wall time of the API call.
-    pub call_elapsed: Duration,
-    /// Requested structured page data.
-    pub json_data: Option<serde_json::Value>,
-    /// Requested page traffic.
-    pub request_map: Option<serde_json::Value>,
-    /// Requested page responses.
-    pub response_map: Option<serde_json::Value>,
-    /// Requested automation trace.
-    pub trace: Option<serde_json::Value>,
-    /// Requested metadata.
-    pub metadata: Option<Metadata>,
-    /// Requested links.
-    pub links: Option<Vec<Url>>,
-    /// Requested headers.
-    pub headers: Option<BTreeMap<String, String>>,
-    /// Requested cookies.
-    pub cookies: Option<BTreeMap<String, String>>,
     /// The address that was asked for.
     pub url: Url,
     /// The status the site returned.
@@ -204,14 +200,43 @@ pub struct FailedPage {
     pub costs: Costs,
     /// What to change before trying again.
     pub hint: Hint,
+    /// What the site answered with, in the format the request asked for.
+    /// [`Body::Empty`] when the request asked for no page bytes or the site
+    /// sent none.
+    pub body: Body,
+    /// How long the service spent on this page, when the reply said.
+    pub duration: Option<Duration>,
+    /// Wall time of the API call this page arrived in.
+    pub call_elapsed: Duration,
+    /// The structured data the page declared, when the request asked for it.
+    pub json_data: Option<serde_json::Value>,
+    /// The requests the page made while it rendered, when the request asked.
+    pub request_map: Option<serde_json::Value>,
+    /// The responses the page received while it rendered, when the request asked.
+    pub response_map: Option<serde_json::Value>,
+    /// The phase trace of the fetch, when the request asked and the account
+    /// is switched on for tracing.
+    pub trace: Option<serde_json::Value>,
+    /// Page metadata, when the request asked for it.
+    pub metadata: Option<Metadata>,
+    /// Links found on the page, when the request asked for them.
+    pub links: Option<Vec<Url>>,
+    /// Response headers, when the request asked for them.
+    pub headers: Option<BTreeMap<String, String>>,
+    /// Cookies set on the response, when the request asked for them.
+    pub cookies: Option<BTreeMap<String, String>>,
 }
 
 impl FailedPage {
     fn from_parts(parts: PageParts) -> FailedPage {
         FailedPage {
+            url: parts.url,
+            hint: Hint::for_class(parts.status.class()),
+            status: parts.status,
+            error: parts.error,
+            costs: parts.costs,
             body: parts.body,
             duration: parts.duration,
-            duration_elasped_ms: parts.duration_elasped_ms,
             call_elapsed: parts.call_elapsed,
             json_data: parts.json_data,
             request_map: parts.request_map,
@@ -221,12 +246,12 @@ impl FailedPage {
             links: parts.links,
             headers: parts.headers,
             cookies: parts.cookies,
-            url: parts.url,
-            hint: Hint::for_class(parts.status.class()),
-            status: parts.status,
-            error: parts.error,
-            costs: parts.costs,
         }
+    }
+
+    /// The content as text, when the body is text.
+    pub fn text(&self) -> Option<&str> {
+        self.body.as_str()
     }
 
     /// What the attempt cost.
@@ -384,8 +409,19 @@ impl PageResult {
 pub struct Pages(pub Vec<PageResult>);
 
 impl Pages {
-    /// Apply the effective request to both status planes before policy sees them.
-    /// Unset return switches preserve the service defaults for Raw requests.
+    /// Keep what the effective request asked for and drop the rest, on served
+    /// and refused pages alike, before the policy engine measures them.
+    ///
+    /// The plan for a [`crate::Need`] switches the optional returns off, and
+    /// the service honours that, so most of this is a second line for a
+    /// reply that carried more than it was asked for. Two rules differ by
+    /// design. A return switch left unset, which is what [`crate::Need::Raw`]
+    /// does, keeps whatever the service chose to send. The event tracker's
+    /// maps and the trace are kept only when their switch is set, because the
+    /// service sends them only on request and a caller who did not ask has no
+    /// use for a request log. Extractions and page content are sorted by the
+    /// same rule: fields stay when a selector map was sent, content stays
+    /// unless the return format was `empty`.
     pub(crate) fn retain_requested(&mut self, params: &crate::params::RequestParams) {
         macro_rules! retain {
             ($page:expr) => {{
@@ -569,8 +605,10 @@ mod tests {
             macro_rules! check {
                 ($p:expr) => {{
                     let p = $p;
-                    assert_eq!(p.body.as_str(), Some("# refused"));
+                    assert_eq!(p.text(), Some("# refused"));
                     assert!(p.body.fields().is_none());
+                    assert_eq!(p.duration, Some(Duration::from_millis(80)));
+                    assert_eq!(p.call_elapsed, Duration::from_millis(120));
                     assert!(
                         p.metadata.is_none()
                             && p.headers.is_none()

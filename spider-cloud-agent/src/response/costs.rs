@@ -16,12 +16,14 @@ use serde::{Deserialize, Serialize};
 /// unit the rest of the crate uses means calling [`Costs::total`]. The wire
 /// omits the block on some endpoints, so an absent breakdown reads as all zeros
 /// rather than as an error.
-/// The total may exceed the named parts because it includes vendor charges.
+///
+/// The total can be more than the five named parts add up to. When an outside
+/// vendor served the page, what it billed is counted in `total_cost` and
+/// reported under [`Costs::vendor`], not as one of the parts, so
+/// [`Costs::sum_of_parts`] is a subtotal of the service's own charges and
+/// [`Costs::total`] is the bill.
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 pub struct Costs {
-    /// External provider billing included in the total.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub vendor: Option<VendorCosts>,
     /// Model inference run for this request.
     #[serde(default)]
     pub ai_cost: Usd,
@@ -40,23 +42,57 @@ pub struct Costs {
     /// Converting the page into the requested format.
     #[serde(default)]
     pub transform_cost: Usd,
+    /// The outside vendor that served the page and what that cost, when one
+    /// did. The service writes the block only on a vendor-served page, so a
+    /// page it fetched itself reads as `None`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub vendor: Option<VendorCosts>,
 }
 
-/// Provider billing details. Monetary amounts are in US dollars.
+/// Who served a page when the service handed it to an outside vendor, and
+/// what that cost.
+///
+/// This is the half of a routing decision a caller cannot otherwise see.
+/// Without it a page can be served by a vendor and billed the markup for it
+/// while the reply says nothing about which vendor, what it charged, or whose
+/// key paid. Amounts are in US dollars like the rest of the block.
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[non_exhaustive]
 pub struct VendorCosts {
-    /// Provider name.
+    /// The vendor, by its canonical name.
+    #[serde(default)]
     pub provider: Option<String>,
-    /// Provider route.
-    pub route: Option<String>,
-    /// Provider charge.
-    pub vendor_cost: Option<Usd>,
-    /// Charge billed to the caller.
-    pub billed_cost: Option<Usd>,
-    /// Whether the caller supplied the provider key.
-    pub byok: Option<bool>,
-    /// Provider attempts.
-    pub attempts: Option<u64>,
+    /// The vendor route that served the page, such as `vendor.unlocker`.
+    #[serde(default)]
+    pub route: String,
+    /// What the vendor itself charged. The pass-through, not what the caller
+    /// pays.
+    #[serde(default)]
+    pub vendor_cost: Usd,
+    /// What the caller is charged for the dispatch: the vendor cost plus the
+    /// markup, or the markup alone on the caller's own key.
+    #[serde(default)]
+    pub billed_cost: Usd,
+    /// The dispatch ran on the caller's own vendor key, so the caller paid
+    /// the markup here and the vendor invoiced them directly.
+    #[serde(default)]
+    pub byok: bool,
+    /// How many vendor routes were tried before one served the page. One
+    /// means the first choice worked.
+    #[serde(default)]
+    pub attempts: u32,
+}
+
+impl VendorCosts {
+    /// What the caller was charged for the vendor dispatch, in credits.
+    pub fn billed(&self) -> Credits {
+        Credits::from(self.billed_cost)
+    }
+
+    /// What the vendor itself charged, in credits.
+    pub fn charged_by_vendor(&self) -> Credits {
+        Credits::from(self.vendor_cost)
+    }
 }
 
 impl Costs {
@@ -90,12 +126,15 @@ impl Costs {
         Credits::from(self.transform_cost)
     }
 
-    /// The named non-vendor parts added up, in credits.
+    /// The five named parts added up, in credits.
     ///
     /// The line items are in the same unit as the total. On the fetch measured
     /// on 2026-09-15 they summed to the reported `total_cost` to the last digit
-    /// the wire carried. Vendor billing is separate and can make the total
-    /// greater than this subtotal. Neither value changes the monetary unit.
+    /// the wire carried, so this is a cross-check on a bill rather than a
+    /// second opinion about the unit. A vendor-served page is the one case
+    /// where the two part company: the vendor's charge is in the total and in
+    /// [`Costs::vendor`], not in any of the five parts, so this subtotal reads
+    /// below [`Costs::total`] by that amount.
     pub fn sum_of_parts(&self) -> Credits {
         Credits::from(
             self.ai_cost
@@ -215,6 +254,41 @@ mod tests {
         assert!(costs.total().get() > 1e300);
         assert!(costs.total().get().is_infinite() || costs.total().get() > 0.0);
         assert!(serde_json::from_str::<Costs>(r#"{"total_cost":1e400}"#).is_err());
+    }
+
+    #[test]
+    fn a_vendor_served_page_names_the_vendor_and_the_total_includes_its_charge() {
+        // The block the service writes on a vendor-served page: the five parts
+        // plus a vendor entry, with the vendor's charge counted in the total
+        // and in no part. The formatted strings ride along and are ignored.
+        let costs: Costs = serde_json::from_str(
+            r#"{"file_cost":0.0,"transform_cost":0.00001,"compute_cost":0.0002,
+                "ai_cost":0.0,"bytes_transferred_cost":0.0,"total_cost":0.00321,
+                "vendor":{"provider":"vendor","route":"vendor.unlocker",
+                          "vendor_cost":0.002,"billed_cost":0.003,"byok":false,"attempts":2},
+                "total_cost_formatted":"$0.00321"}"#,
+        )
+        .expect("costs");
+        let vendor = costs.vendor.as_ref().expect("a vendor");
+        assert_eq!(vendor.provider.as_deref(), Some("vendor"));
+        assert_eq!(vendor.route, "vendor.unlocker");
+        assert_eq!(vendor.charged_by_vendor(), Credits(20.0));
+        assert_eq!(vendor.billed(), Credits(30.0));
+        assert!(!vendor.byok);
+        assert_eq!(vendor.attempts, 2);
+        assert!((costs.total().get() - 32.1).abs() < 1e-9);
+        assert!((costs.sum_of_parts().get() - 2.1).abs() < 1e-9);
+        assert!(costs.total() > costs.sum_of_parts());
+    }
+
+    #[test]
+    fn a_page_the_service_fetched_itself_names_no_vendor() {
+        let costs: Costs =
+            serde_json::from_str(r#"{"compute_cost":2.0,"total_cost":2.0}"#).expect("costs");
+        assert!(costs.vendor.is_none());
+        assert!(!serde_json::to_string(&costs)
+            .expect("json")
+            .contains("vendor"));
     }
 
     #[test]

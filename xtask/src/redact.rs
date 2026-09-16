@@ -1,8 +1,10 @@
 //! Turn a recorded API response into a fixture that can be published.
 //!
 //! This is the only sanctioned way to add a fixture. It rewrites every host to a
-//! documentation host, drops authorization headers and cookies, replaces anything
-//! shaped like an API key, and pretty prints the result so a diff is readable.
+//! documentation host, in values and in object keys, whether the host sits in a
+//! URL or stands bare in a `domain` field, drops authorization headers and
+//! cookies, replaces anything shaped like an API key, and pretty prints the
+//! result so a diff is readable.
 
 use serde_json::{Map, Value};
 
@@ -98,10 +100,13 @@ pub fn redact_value(value: &Value) -> Value {
         Value::Object(map) => {
             let mut out = Map::new();
             for (k, v) in map {
+                // A key can be an address too: the page's request and response
+                // maps are keyed by the URL each event was for.
+                let key = redact_string(k);
                 if SECRET_KEYS.contains(&k.to_ascii_lowercase().as_str()) {
-                    out.insert(k.clone(), Value::String(REDACTED.to_string()));
+                    out.insert(key, Value::String(REDACTED.to_string()));
                 } else {
-                    out.insert(k.clone(), redact_value(v));
+                    out.insert(key, redact_value(v));
                 }
             }
             Value::Object(out)
@@ -113,6 +118,7 @@ pub fn redact_value(value: &Value) -> Value {
 /// Redact one string: hosts first, then bearer tokens, then a bare key.
 pub fn redact_string(s: &str) -> String {
     let s = replace_hosts(s);
+    let s = replace_bare_hosts(&s);
     let s = strip_bearer(&s);
     if looks_like_api_key(&s) {
         return REDACTED.to_string();
@@ -138,6 +144,44 @@ pub fn replace_hosts(s: &str) -> String {
         let replaced = format!("{scheme}://{REPLACEMENT_HOST}{tail}");
         out = out.replace(&url, &replaced);
     }
+    out
+}
+
+/// Rewrite every host that stands on its own, outside a URL, the way a
+/// `domain` field or a cookie scope names one. Longer hosts go first so that
+/// `shop.acme.example` is rewritten whole rather than leaving `shop.` behind.
+pub fn replace_bare_hosts(s: &str) -> String {
+    let mut hosts: Vec<String> = fixtures::hosts_in_line(s)
+        .into_iter()
+        .filter(|host| !fixtures::host_allowed(host))
+        .collect();
+    hosts.sort_by(|a, b| b.len().cmp(&a.len()).then_with(|| a.cmp(b)));
+    let mut out = s.to_string();
+    for host in hosts {
+        out = replace_ignoring_case(&out, &host, REPLACEMENT_HOST);
+    }
+    out
+}
+
+/// Replace every occurrence of `needle` in `haystack`, matching ASCII case
+/// insensitively, since a host is case insensitive and a recording may carry
+/// it either way.
+fn replace_ignoring_case(haystack: &str, needle: &str, with: &str) -> String {
+    if needle.is_empty() {
+        return haystack.to_string();
+    }
+    let lower = haystack.to_ascii_lowercase();
+    let needle = needle.to_ascii_lowercase();
+    let mut out = String::with_capacity(haystack.len());
+    let mut last = 0usize;
+    for (at, _) in lower.match_indices(&needle) {
+        // Byte offsets in the lowercase copy are offsets in the original:
+        // ASCII lowercasing never changes a byte's width.
+        out.push_str(haystack.get(last..at).unwrap_or_default());
+        out.push_str(with);
+        last = at + needle.len();
+    }
+    out.push_str(haystack.get(last..).unwrap_or_default());
     out
 }
 
@@ -196,6 +240,34 @@ mod tests {
             replace_hosts("see https://example.org/a"),
             "see https://example.org/a"
         );
+    }
+
+    #[test]
+    fn a_bare_host_is_rewritten_and_a_documentation_host_is_left() {
+        assert_eq!(replace_bare_hosts("shop.acme-retail.com"), "example.com");
+        assert_eq!(
+            replace_bare_hosts("Domain=Shop.Acme-Retail.com; Path=/"),
+            "Domain=example.com; Path=/"
+        );
+        assert_eq!(replace_bare_hosts("httpbin.org"), "httpbin.org");
+        assert_eq!(
+            replace_bare_hosts("Cargo.toml and main.rs"),
+            "Cargo.toml and main.rs"
+        );
+    }
+
+    #[test]
+    fn a_key_that_is_an_address_is_rewritten_too() {
+        let raw = serde_json::json!({
+            "request_map": {"https://cdn.acme-retail.com/app.js": 41.5},
+            "metadata": {"domain": "shop.acme-retail.com"}
+        });
+        let out = redact_value(&raw);
+        assert_eq!(out["request_map"]["https://example.com/app.js"], 41.5);
+        assert_eq!(out["metadata"]["domain"], "example.com");
+        assert!(!serde_json::to_string(&out)
+            .expect("serializes")
+            .contains("acme-retail"));
     }
 
     #[test]

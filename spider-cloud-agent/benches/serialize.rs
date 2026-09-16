@@ -24,7 +24,8 @@
 
 use criterion::{criterion_group, criterion_main, Criterion, Throughput};
 use spider_cloud_agent::params::{
-    Country, ProxyPool, RequestMode, RequestParams, ReturnFormat, ReturnFormatHandling, WaitFor,
+    Cache, Country, ProxyPool, RequestMode, RequestParams, ReturnFormat, ReturnFormatHandling,
+    WaitFor,
 };
 use spider_cloud_agent::params::{Timeout, Viewport};
 use std::collections::BTreeMap;
@@ -92,7 +93,7 @@ fn populated() -> RequestParams {
     params.return_headers = Some(true);
     params.return_cookies = Some(true);
     params.return_page_links = Some(true);
-    params.cache = Some(spider_cloud_agent::params::Cache::Enabled(true));
+    params.cache = Some(Cache::Enabled(true));
 
     params
 }

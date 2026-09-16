@@ -610,9 +610,9 @@ fn run_against(base: &str, args: &[&str]) -> Output {
 }
 
 #[test]
-fn page_records_keep_server_timing_diagnostics_and_vendor_billing() {
+fn a_page_record_carries_the_service_timing_its_note_and_the_vendor_line() {
     let (base, _seen) = stub(
-        r##"{"url":"https://example.com","status":200,"content":{"markdown":"# Example"},"error":"partial result","duration_elasped_ms":12.5,"costs":{"total_cost":0.003,"vendor":{"provider":"example","billed_cost":0.002}}}"##,
+        r##"{"url":"https://example.com","status":200,"content":{"markdown":"# Example"},"error":"partial result","duration_elasped_ms":412,"costs":{"total_cost":0.003,"compute_cost":0.001,"vendor":{"provider":"example-vendor","route":"example-vendor.unlocker","vendor_cost":0.002,"billed_cost":0.002,"byok":false,"attempts":1}}}"##,
     );
     let output = run_against(
         &base,
@@ -639,10 +639,52 @@ fn page_records_keep_server_timing_diagnostics_and_vendor_billing() {
         .find(|record| record["type"] == "page")
         .expect("page record");
     assert_eq!(page["body"], "# Example");
-    assert_eq!(page["duration_elasped_ms"], 12.5);
+    assert_eq!(page["duration_ms"], 412);
     assert!(page["call_elapsed_ms"].is_number());
     assert_eq!(page["error"], "partial result");
-    assert_eq!(page["costs"]["vendor"]["provider"], "example");
+    assert_eq!(page["cost_credits"], 30.0);
+    assert_eq!(page["vendor"]["provider"], "example-vendor");
+    assert_eq!(page["vendor"]["billed_credits"], 20.0);
+    assert_eq!(page["vendor"]["attempts"], 1);
+    assert!(page.get("headers").is_none() && page.get("json_data").is_none());
+}
+
+/// A site that refuses the fetch still answers with a page, and the record
+/// for the refusal carries it, so a block page and a login wall can be told
+/// apart from the log.
+#[test]
+fn a_failed_record_carries_the_body_the_site_refused_with() {
+    let (base, _seen) = stub(
+        r##"{"url":"https://example.com/account","status":403,"error":"the site refused the fetch","content":{"markdown":"# Access denied\n\nSign in to continue.\n"},"duration_elasped_ms":97,"costs":{"total_cost":0.0002,"compute_cost":0.0002}}"##,
+    );
+    let output = run_against(
+        &base,
+        &[
+            "scrape",
+            "https://example.com/account",
+            "--goal",
+            "markdown",
+            "--ndjson",
+            "--budget",
+            "0",
+        ],
+    );
+    let records: Vec<serde_json::Value> = stdout(&output)
+        .lines()
+        .map(|line| serde_json::from_str(line).unwrap())
+        .collect();
+    let failed = records
+        .iter()
+        .find(|record| record["type"] == "failed")
+        .unwrap_or_else(|| panic!("failed record in {records:?}"));
+    assert_eq!(failed["status"], 403);
+    assert_eq!(failed["content"], "markdown");
+    assert_eq!(failed["body"], "# Access denied\n\nSign in to continue.\n");
+    assert_eq!(failed["bytes"], 38);
+    assert_eq!(failed["duration_ms"], 97);
+    assert_eq!(failed["hint"], "try_residential_proxy");
+    assert_eq!(failed["billed"], true);
+    assert!(failed.get("vendor").is_none());
 }
 
 /// One page and its links, the way the service answers a scrape that asked for

@@ -236,6 +236,8 @@ pub struct RequestParams {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub text: Option<String>,
     /// Serve a stored copy when there is one, rather than fetching again.
+    /// A bool switches it, and a [`CacheControl`] says how fresh the copy
+    /// has to be.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub cache: Option<Cache>,
     /// Where to send progress, and which events to send.
@@ -388,15 +390,21 @@ impl std::fmt::Debug for RedactedProxy<'_> {
     }
 }
 
-/// Cache selection in the backend's boolean or control object form.
+/// The `cache` parameter, in either of the two shapes the service accepts.
+///
+/// The service reads a bool or a control object from the same key. This is
+/// not a curated knob: it is reached through `params_mut()` on an operation
+/// like any other raw parameter, and a bool still goes out as a bool, so
+/// `Some(true.into())` sends exactly what `Some(true)` used to.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(untagged)]
 pub enum Cache {
-    /// Enable or disable cached responses.
+    /// Use a stored copy when there is one, or never.
     Enabled(bool),
-    /// Freshness and staleness controls.
+    /// Use a stored copy on these terms.
     Control(CacheControl),
-    /// Escape hatch for additional backend shapes.
+    /// A shape the service accepts that this crate has no name for yet. Sent
+    /// as given.
     Other(serde_json::Value),
 }
 
@@ -406,16 +414,35 @@ impl From<bool> for Cache {
     }
 }
 
-/// Cache ages in seconds. Additional controls round trip without loss.
+impl From<CacheControl> for Cache {
+    fn from(control: CacheControl) -> Self {
+        Self::Control(control)
+    }
+}
+
+/// How fresh a stored copy has to be to be served.
+///
+/// The field names and units are the service's. Every field is optional and
+/// an unset one leaves the service's default in place, which for the age is
+/// two days.
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 pub struct CacheControl {
-    /// Maximum fresh response age.
+    /// The most a stored copy may be, in milliseconds. Zero always fetches
+    /// fresh.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub max_age: Option<u64>,
-    /// How long stale content may be served while refreshing.
+    /// Serve a stored copy however old it is.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub stale_while_revalidate: Option<u64>,
-    /// Additional backend controls.
+    pub allow_stale: Option<bool>,
+    /// Answer from stored markup without starting a browser at all, when
+    /// there is any.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub skip_browser: Option<bool>,
+    /// A cutoff instant as an RFC 3339 timestamp. A copy stored before it is
+    /// not served. Set, it overrides `max_age`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub period: Option<String>,
+    /// Any control the service adds later, sent and read back as given.
     #[serde(default, flatten)]
     pub extra: serde_json::Map<String, serde_json::Value>,
 }

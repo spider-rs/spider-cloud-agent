@@ -6,25 +6,15 @@ use serde::{Deserialize, Serialize};
 ///
 /// The crate turns metadata off by default, so this is `None` on most responses. Every
 /// field is optional because which ones arrive depends on the endpoint and on the page.
+///
+/// A request for several formats at once gets a different shape: the block is
+/// keyed by format name, and each entry is a whole metadata block for that
+/// rendering. Reading that into one struct would leave every named field empty
+/// and merge nothing, so the per-format blocks land in [`Metadata::extra`]
+/// under their format names, and [`Metadata::for_format`] reads one out.
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 #[non_exhaustive]
 pub struct Metadata {
-    /// Address before redirects.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub original_url: Option<String>,
-    /// Address after redirects.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub final_url: Option<String>,
-    /// Crawl identifier.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub crawl_id: Option<String>,
-    /// Requested embedding vector.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub embedding: Option<Vec<f64>>,
-    /// Additional metadata, including transcripts, places and per-format blocks.
-    /// Format keys stay nested so independent format metadata is never merged.
-    #[serde(default, flatten)]
-    pub extra: serde_json::Map<String, serde_json::Value>,
     /// The page title.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub title: Option<String>,
@@ -55,12 +45,48 @@ pub struct Metadata {
     /// Whatever an automation step recorded, in its own shape.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub automation_data: Option<serde_json::Value>,
+    /// The address that was asked for, before any redirect.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub original_url: Option<String>,
+    /// The address the page was served from, when a redirect moved it. The
+    /// service writes null when nothing moved, so this is `None` unless the
+    /// two differ.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub final_url: Option<String>,
+    /// The crawl this page belongs to, when the service assigned one.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub crawl_id: Option<String>,
+    /// A vector for the title and description, when the request set
+    /// `return_embeddings`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub embedding: Option<Vec<f64>>,
+    /// Everything else the service sent, under the key it used.
+    ///
+    /// This is where a video transcript (`yt_transcript`), a maps place
+    /// (`maps_place`) and the per-format blocks of a multi-format reply
+    /// arrive, and where a field the service adds tomorrow lands rather than
+    /// being dropped. The shapes belong to the service.
+    #[serde(default, flatten)]
+    pub extra: serde_json::Map<String, serde_json::Value>,
 }
 
 impl Metadata {
     /// Whether the API sent nothing at all.
     pub fn is_empty(&self) -> bool {
         *self == Metadata::default()
+    }
+
+    /// The metadata block for one format of a multi-format reply, by the
+    /// format name the service keys it under, such as `markdown` or `raw`.
+    ///
+    /// `None` when the reply was not multi-format or did not carry that
+    /// format. A single-format reply has its fields on this struct directly.
+    pub fn for_format(&self, format: &str) -> Option<Metadata> {
+        let block = self.extra.get(format)?;
+        if !block.is_object() {
+            return None;
+        }
+        serde_json::from_value(block.clone()).ok()
     }
 }
 
@@ -91,6 +117,42 @@ mod tests {
     fn reads_an_empty_block() {
         let meta: Metadata = serde_json::from_str("{}").expect("metadata");
         assert!(meta.is_empty());
+    }
+
+    #[test]
+    fn what_the_service_adds_is_kept_under_its_own_key() {
+        let meta: Metadata = serde_json::from_str(
+            r#"{"title":"Example","original_url":"https://example.com/a",
+                "final_url":null,"crawl_id":"3f1c","embedding":[0.25,0.5],
+                "yt_transcript":[{"text":"hello"}],"next_year":true}"#,
+        )
+        .expect("metadata");
+        assert_eq!(meta.original_url.as_deref(), Some("https://example.com/a"));
+        assert!(meta.final_url.is_none());
+        assert_eq!(meta.crawl_id.as_deref(), Some("3f1c"));
+        assert_eq!(meta.embedding.as_deref(), Some(&[0.25, 0.5][..]));
+        assert_eq!(meta.extra["yt_transcript"][0]["text"], "hello");
+        assert_eq!(meta.extra["next_year"], true);
+        assert!(meta.for_format("markdown").is_none());
+    }
+
+    #[test]
+    fn a_multi_format_block_keeps_each_format_apart() {
+        let meta: Metadata = serde_json::from_str(
+            r#"{"markdown":{"title":"As markdown","embedding":[0.1]},
+                "raw":{"title":"As html"},"yt_transcript":[]}"#,
+        )
+        .expect("metadata");
+        assert!(meta.title.is_none());
+        let markdown = meta.for_format("markdown").expect("markdown block");
+        assert_eq!(markdown.title.as_deref(), Some("As markdown"));
+        assert_eq!(markdown.embedding.as_deref(), Some(&[0.1][..]));
+        assert_eq!(
+            meta.for_format("raw").and_then(|m| m.title).as_deref(),
+            Some("As html")
+        );
+        assert!(meta.for_format("yt_transcript").is_none());
+        assert!(meta.for_format("text").is_none());
     }
 
     #[test]

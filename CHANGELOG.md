@@ -7,29 +7,51 @@ error.
 
 ## Unreleased
 
-- Preserve requested content, metadata, headers, cookies and links on refused
-  pages, and diagnostic error text on successful pages. Effective request switches
-  filter both outcomes before policy observes them. The wire tests cover refused
-  markdown, requested JSON data, extraction alongside content and omitted extras.
-- Add optional JSON data, request and response maps and automation traces. Keep
-  server `duration_elasped_ms` separate from `call_elapsed`; `duration` now reads
-  the server value and is zero when absent. `Body::WithFields` keeps extraction
-  results alongside content. No return parameter or curated method was added.
-- Preserve typed redirect addresses, crawl identifiers and embedding vectors.
-  Metadata `extra` keeps transcripts, places, unknown keys and nested per-format
-  metadata without flattening formats together. The redacted response-fields
-  fixture and deserialization tests cover both success and refusal shapes.
-- Preserve typed vendor billing in `Costs`, which is now Clone rather than Copy.
-  The total includes vendor charges and may exceed `sum_of_parts`. Deserialization
-  tests hold the dollar amounts and the vendor difference; CLI records include
-  the breakdown, timing and requested diagnostics for served and refused pages.
-- Replace boolean-only `RequestParams::cache` with `Cache`, an untagged boolean,
-  typed control object or JSON escape hatch. Cache controls remain behind
-  `params_mut()`. Round-trip and wire tests hold object serialization. The thrift
-  plan and the budget test bands are unchanged.
-- Boolean cache assignments now use `Some(true.into())` or `Some(false.into())`.
-  `From<bool>` keeps that migration explicit, and the deserialization suite checks
-  that both settings still serialize as booleans.
+- A page the site refused now arrives with what the site sent. `FailedPage`
+  carries the body, metadata, links, headers and cookies the way `Page` does,
+  filtered by what the request asked for, so a caller can tell a block page
+  from a login wall by reading it. `Page` keeps the `error` text the service
+  attaches to a page it still served. Nothing new is requested. The thrift plan
+  is unchanged and the budget bands in `tests/thrift_budget.rs` still hold. The
+  refused shape is `tests/fixtures/refused_markdown.json` and the wire test
+  `a_refused_page_keeps_the_markdown_the_need_asked_for_and_nothing_else`.
+- The fields a request can ask for beside the page come back. `json_data`, the
+  event tracker's `request_map` and `response_map`, and the phase `trace` are
+  read off the wire as `serde_json::Value` and kept only when the request set
+  their switch. Asking for extraction fields and a page format together no
+  longer loses the page. `Body::WithFields` holds both, and `Body::fields()`
+  and `Body::as_str()` read either side. `Page::duration` is now the service's
+  own time on the page, an `Option<Duration>` read from `duration_elasped_ms`,
+  and `Page::call_elapsed` is the wall time of the call that used to sit there.
+  Every request parameter that asks for a field now has a field to land in, so
+  none was removed. Covered by `tests/fixtures/page_diagnostics.json`.
+- `Metadata` keeps what the service sends. `original_url`, `final_url`,
+  `crawl_id` and `embedding` are typed; everything else, including a video
+  transcript, a maps place and any field added later, lands in a flattened
+  `extra` map under its own key. A multi-format reply keys its metadata by
+  format, so `Metadata::for_format("markdown")` reads one block out instead of
+  the formats being merged into one struct and lost. `Costs` gains a typed
+  `vendor` block (provider, route, vendor cost, billed cost, byok, attempts),
+  is `Clone` rather than `Copy` for it, and its doc says why `total()` can
+  exceed `sum_of_parts()`, which is that the vendor's charge is in the total
+  and in no part.
+  Covered by `tests/fixtures/multi_format_metadata.json` and the cost tests.
+- `RequestParams::cache` is now `Option<Cache>`, an untagged enum that goes out
+  as a bool or as a `CacheControl` object with the service's own fields
+  (`max_age` in milliseconds, `allow_stale`, `skip_browser`, an RFC 3339
+  `period`, and a flattened map for anything added later), plus a `Value`
+  escape hatch. `Some(true)` becomes `Some(true.into())` and sends the same
+  bytes. It stays behind `params_mut()` and adds no curated knob.
+- `spider-agent` records carry the same. A `page` record adds `error`,
+  `headers`, `cookies`, `json_data`, `request_map`, `response_map`, `trace`,
+  `call_elapsed_ms` and a `vendor` line, each only when present; `duration_ms`
+  is now the service's time and null on a converted document. A `failed`
+  record carries the page fields under the same rules, and a refused body goes
+  to a file under `--output-dir` like a served one. `spider-agent schema`
+  lists every field.
+- `xtask redact` now rewrites hosts in object keys and hosts standing bare
+  outside a URL, such as a `domain` field or a request map keyed by address.
+  The first pass over the new fixtures left both untouched.
 
 - Release verification requires a readable private denylist with at least one term
   and cargo-deny. Ordinary verification keeps the private-list note and uses cached

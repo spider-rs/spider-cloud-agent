@@ -891,25 +891,25 @@ impl Reply {
         let parts = PageParts {
             url,
             status,
+            // A request that named selectors asked for those fields. When it
+            // asked for a page format as well, both come back, and neither
+            // is the more specific answer: the caller said what it wanted.
             body: match wire.css_extracted {
-                Some(fields) => {
-                    let content = body_from(wire.content, format);
-                    if matches!(content, Body::Empty) {
-                        Body::Fields(fields)
-                    } else {
-                        Body::WithFields {
-                            content: Box::new(content),
-                            fields,
-                        }
-                    }
-                }
+                Some(fields) => match body_from(wire.content, format) {
+                    Body::Empty => Body::Fields(fields),
+                    content => Body::WithFields {
+                        content: Box::new(content),
+                        fields,
+                    },
+                },
                 None => body_from(wire.content, format),
             },
+            // The service writes whole milliseconds. Reading a float as well
+            // costs nothing and means a future decimal does not lose the page.
             duration: wire
                 .duration_elasped_ms
-                .and_then(|ms| Duration::try_from_secs_f64(ms / 1000.0).ok())
-                .unwrap_or_default(),
-            duration_elasped_ms: wire.duration_elasped_ms,
+                .filter(|ms| ms.is_finite() && *ms >= 0.0)
+                .and_then(|ms| Duration::try_from_secs_f64(ms / 1000.0).ok()),
             call_elapsed: self.elapsed,
             json_data: wire.json_data,
             request_map: wire.request_map,
@@ -983,11 +983,6 @@ fn converted_documents(value: serde_json::Value) -> Vec<serde_json::Value> {
 /// without an account, so both spellings are accepted and whichever arrives wins.
 #[derive(Debug, Default, serde::Deserialize)]
 struct WirePage {
-    duration_elasped_ms: Option<f64>,
-    json_data: Option<serde_json::Value>,
-    request_map: Option<serde_json::Value>,
-    response_map: Option<serde_json::Value>,
-    trace: Option<serde_json::Value>,
     #[serde(default)]
     url: Option<String>,
     #[serde(default)]
@@ -1008,6 +1003,18 @@ struct WirePage {
     costs: Option<Costs>,
     #[serde(default)]
     error: Option<String>,
+    // The service's own spelling. It is written on every fetched page and
+    // left off a converted document.
+    #[serde(default)]
+    duration_elasped_ms: Option<f64>,
+    #[serde(default)]
+    json_data: Option<serde_json::Value>,
+    #[serde(default)]
+    request_map: Option<serde_json::Value>,
+    #[serde(default)]
+    response_map: Option<serde_json::Value>,
+    #[serde(default)]
+    trace: Option<serde_json::Value>,
     #[serde(default)]
     headers: Option<std::collections::BTreeMap<String, String>>,
     #[serde(default)]

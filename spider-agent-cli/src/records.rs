@@ -17,22 +17,42 @@ use spider_cloud_agent::{Credits, RouteDecision};
 
 use crate::emit::Item;
 
-// Shared by served and refused records so diagnostic payloads have one contract.
-macro_rules! response_details {
-    ($value:expr, $page:expr) => {{
-        let value = $value;
+// What a served page and a refused one both carry: the body in the shape
+// asked for, what came with it, how long it took and what it cost. One macro
+// rather than a trait because the two page types share field names and
+// nothing else, and the record is a hand-built contract, not a view of them.
+macro_rules! shared_fields {
+    ($value:expr, $page:expr, $shape:expr) => {{
+        let value: &mut Map<String, Value> = $value;
         let page = $page;
+        let shape: &BodyShape = $shape;
+        value.insert("content".into(), json!(shape.kind));
         value.insert(
-            "call_elapsed_ms".into(),
-            json!(page.call_elapsed.as_millis() as u64),
+            "body".into(),
+            match &shape.bytes {
+                // Bytes are never inlined. A picture belongs in a file, and a
+                // caller that has to decode one out of a log line is being
+                // charged a third more for the base64.
+                Some(_) => Value::Null,
+                // Fields alone go under `fields`. Fields beside a page keep
+                // the page here and the fields there.
+                None if matches!(page.body, Body::Fields(_)) => Value::Null,
+                None => shape.text.clone().map(Value::String).unwrap_or(Value::Null),
+            },
         );
-        value.insert(
-            "duration_elasped_ms".into(),
-            json!(page.duration_elasped_ms),
-        );
-        value.insert("costs".into(), json!(page.costs));
-        if let Some(error) = &page.error {
-            value.insert("error".into(), json!(error));
+        if let Some(fields) = &shape.fields {
+            value.insert("fields".into(), fields.clone());
+        }
+        if let Some(metadata) = &page.metadata {
+            if let Ok(encoded) = serde_json::to_value(metadata) {
+                value.insert("metadata".into(), encoded);
+            }
+        }
+        if let Some(links) = &page.links {
+            value.insert(
+                "links".into(),
+                Value::Array(links.iter().map(|l| json!(l.as_str())).collect()),
+            );
         }
         if let Some(headers) = &page.headers {
             value.insert("headers".into(), json!(headers));
@@ -52,7 +72,32 @@ macro_rules! response_details {
         if let Some(data) = &page.trace {
             value.insert("trace".into(), data.clone());
         }
+        value.insert("bytes".into(), json!(page.body.len()));
+        value.insert(
+            "duration_ms".into(),
+            json!(page.duration.map(|d| d.as_millis() as u64)),
+        );
+        value.insert(
+            "call_elapsed_ms".into(),
+            json!(page.call_elapsed.as_millis() as u64),
+        );
+        value.insert("cost_credits".into(), json!(page.costs.total().get()));
+        if let Some(vendor) = &page.costs.vendor {
+            value.insert("vendor".into(), vendor_record(vendor));
+        }
     }};
+}
+
+/// The vendor line of a bill, in the units the rest of the record uses.
+fn vendor_record(vendor: &spider_cloud_agent::response::costs::VendorCosts) -> Value {
+    json!({
+        "provider": vendor.provider,
+        "route": vendor.route,
+        "vendor_cost_credits": vendor.charged_by_vendor().get(),
+        "billed_credits": vendor.billed().get(),
+        "byok": vendor.byok,
+        "attempts": vendor.attempts,
+    })
 }
 
 /// What a body is, and what it is worth writing to a file as.
@@ -140,42 +185,10 @@ pub fn page(page: &Page) -> Item {
     value.insert("type".into(), json!("page"));
     value.insert("url".into(), json!(page.url.as_str()));
     value.insert("status".into(), json!(page.status.code()));
-    value.insert("content".into(), json!(shape.kind));
-    value.insert(
-        "body".into(),
-        match &shape.bytes {
-            // Bytes are never inlined. A picture belongs in a file, and a
-            // caller that has to decode one out of a log line is being charged
-            // a third more for the base64.
-            Some(_) => Value::Null,
-            None => match &shape.fields {
-                Some(_) if matches!(page.body, Body::Fields(_)) => Value::Null,
-                Some(_) => shape.text.clone().map(Value::String).unwrap_or(Value::Null),
-                None => shape.text.clone().map(Value::String).unwrap_or(Value::Null),
-            },
-        },
-    );
-    if let Some(fields) = &shape.fields {
-        value.insert("fields".into(), fields.clone());
+    if let Some(error) = &page.error {
+        value.insert("error".into(), json!(error));
     }
-    if let Some(metadata) = &page.metadata {
-        if let Ok(encoded) = serde_json::to_value(metadata) {
-            value.insert("metadata".into(), encoded);
-        }
-    }
-    if let Some(links) = &page.links {
-        value.insert(
-            "links".into(),
-            Value::Array(links.iter().map(|l| json!(l.as_str())).collect()),
-        );
-    }
-    value.insert("bytes".into(), json!(page.body.len()));
-    value.insert(
-        "duration_ms".into(),
-        json!(page.duration.as_millis() as u64),
-    );
-    value.insert("cost_credits".into(), json!(page.cost().get()));
-    response_details!(&mut value, page);
+    shared_fields!(&mut value, page, &shape);
 
     let mut item = Item {
         value: Value::Object(value),
@@ -191,46 +204,33 @@ pub fn page(page: &Page) -> Item {
 }
 
 /// A page the site did not serve.
+///
+/// The site's answer is in the record the same way it is on a served page,
+/// because a block page and a login wall are told apart by reading them. A
+/// refused body still goes to a file under `--output-dir`, named as the page
+/// would have been.
 pub fn failed(failed: &FailedPage) -> Item {
-    let mut value = json!({
-        "type": "failed",
-        "url": failed.url.as_str(),
-        "status": failed.status.code(),
-        "error": failed.error,
-        "hint": hint(failed.hint),
-        "billed": failed.was_billed(),
-        "cost_credits": failed.cost().get(),
-    });
-    let shaped = shape(&failed.body);
-    if let Some(object) = value.as_object_mut() {
-        object.insert("content".into(), json!(shaped.kind));
-        object.insert("body".into(), json!(failed.body.as_str()));
-        object.insert("bytes".into(), json!(failed.body.len()));
-        object.insert(
-            "duration_ms".into(),
-            json!(failed.duration.as_millis() as u64),
-        );
-        if let Some(fields) = &shaped.fields {
-            object.insert("fields".into(), fields.clone());
-        }
-        if let Some(metadata) = &failed.metadata {
-            object.insert("metadata".into(), json!(metadata));
-        }
-        if let Some(links) = &failed.links {
-            object.insert(
-                "links".into(),
-                json!(links.iter().map(Url::as_str).collect::<Vec<_>>()),
-            );
-        }
-        response_details!(object, failed);
-    }
-    Item {
-        value,
-        text: shaped.text,
-        bytes: shaped.bytes,
+    let shape = shape(&failed.body);
+    let mut value = Map::new();
+    value.insert("type".into(), json!("failed"));
+    value.insert("url".into(), json!(failed.url.as_str()));
+    value.insert("status".into(), json!(failed.status.code()));
+    value.insert("error".into(), json!(failed.error));
+    value.insert("hint".into(), json!(hint(failed.hint)));
+    value.insert("billed".into(), json!(failed.was_billed()));
+    shared_fields!(&mut value, failed, &shape);
+
+    let mut item = Item {
+        value: Value::Object(value),
+        text: shape.text,
+        bytes: shape.bytes,
         url: Some(failed.url.clone()),
-        extension: shaped.extension,
+        extension: shape.extension,
+    };
+    if item.bytes.is_some() {
+        item.text = None;
     }
+    item
 }
 
 /// What to change before asking for the same page again, as a stable name.
@@ -413,39 +413,106 @@ mod tests {
     )]
     use super::*;
 
-    #[test]
-    fn served_and_refused_records_keep_body_fields_and_billing() {
+    /// The record for one reply, read the way the transport reads it.
+    fn record_for(reply: serde_json::Value) -> Item {
         use spider_cloud_agent::client::{RateLimit, Reply};
         use spider_cloud_agent::policy::engine::Reached;
         use spider_cloud_agent::policy::Observed;
         let Reached::Api(status) = Observed::seen(200, None).api else {
             panic!("api status")
         };
-        for code in [200, 403] {
-            let reply = Reply {
-                status, rate_limit: RateLimit::default(), retry_after: None,
-                elapsed: std::time::Duration::from_millis(90), content_type: None,
-                body: serde_json::to_vec(&json!({"url":"https://example.com", "status":code,
-                    "content":{"markdown":"# Example"}, "css_extracted":{"title":["Example"]},
-                    "duration_elasped_ms":12.5, "json_data":{"name":"Example"},
-                    "error":"diagnostic", "costs":{"total_cost":0.003,"vendor":{"provider":"example","billed_cost":0.002}}
-                })).unwrap().into(),
-            };
-            let pages = reply
-                .read(&Url::parse("https://example.com").unwrap(), None)
-                .unwrap();
-            let item = match &pages.0[0] {
-                spider_cloud_agent::response::PageResult::Ok(p) => page(p),
-                spider_cloud_agent::response::PageResult::Failed(p) => failed(p),
-            };
-            assert_eq!(item.value["body"], "# Example");
-            assert_eq!(item.value["fields"]["title"][0], "Example");
-            assert_eq!(item.value["duration_elasped_ms"], 12.5);
-            assert_eq!(item.value["call_elapsed_ms"], 90);
-            assert_eq!(item.value["json_data"]["name"], "Example");
-            assert_eq!(item.value["costs"]["vendor"]["provider"], "example");
-            assert_eq!(item.value["error"], "diagnostic");
+        let reply = Reply {
+            status,
+            rate_limit: RateLimit::default(),
+            retry_after: None,
+            elapsed: std::time::Duration::from_millis(90),
+            content_type: None,
+            body: serde_json::to_vec(&reply).unwrap().into(),
+        };
+        let pages = reply
+            .read(&Url::parse("https://example.com").unwrap(), None)
+            .unwrap();
+        match &pages.0[0] {
+            spider_cloud_agent::response::PageResult::Ok(p) => page(p),
+            spider_cloud_agent::response::PageResult::Failed(p) => failed(p),
         }
+    }
+
+    #[test]
+    fn a_served_and_a_refused_page_write_the_same_fields() {
+        for code in [200, 403] {
+            let item = record_for(json!({
+                "url": "https://example.com", "status": code,
+                "content": {"markdown": "# Example"},
+                "css_extracted": {"title": ["Example"]},
+                "duration_elasped_ms": 412, "json_data": {"other_scripts": []},
+                "request_map": {"https://example.com/": 0.0},
+                "error": "partial",
+                "costs": {"total_cost": 0.003, "compute_cost": 0.001,
+                    "vendor": {"provider": "vendor", "route": "vendor.unlocker",
+                               "vendor_cost": 0.002, "billed_cost": 0.002,
+                               "byok": true, "attempts": 1}}
+            }));
+            let value = &item.value;
+            assert_eq!(value["type"], if code == 200 { "page" } else { "failed" });
+            assert_eq!(value["content"], "markdown");
+            assert_eq!(value["body"], "# Example");
+            assert_eq!(value["fields"]["title"][0], "Example");
+            assert_eq!(value["duration_ms"], 412);
+            assert_eq!(value["call_elapsed_ms"], 90);
+            assert_eq!(value["json_data"]["other_scripts"], json!([]));
+            assert_eq!(value["request_map"]["https://example.com/"], 0.0);
+            assert!(value.get("response_map").is_none());
+            assert_eq!(value["error"], "partial");
+            assert_eq!(value["cost_credits"], 30.0);
+            assert_eq!(value["vendor"]["provider"], "vendor");
+            assert_eq!(value["vendor"]["billed_credits"], 20.0);
+            assert_eq!(value["vendor"]["byok"], true);
+            assert_eq!(item.text.as_deref(), Some("# Example"));
+            assert_eq!(item.extension, "md");
+        }
+    }
+
+    #[test]
+    fn a_page_without_extras_writes_none_of_them() {
+        let item = record_for(json!({
+            "url": "https://example.com", "status": 200,
+            "content": {"markdown": "# Example"},
+            "costs": {"total_cost": 0.001}
+        }));
+        let value = &item.value;
+        for absent in [
+            "error",
+            "fields",
+            "metadata",
+            "links",
+            "headers",
+            "cookies",
+            "json_data",
+            "request_map",
+            "response_map",
+            "trace",
+            "vendor",
+        ] {
+            assert!(value.get(absent).is_none(), "{absent} was written: {value}");
+        }
+        assert_eq!(value["duration_ms"], Value::Null);
+    }
+
+    #[test]
+    fn a_refused_page_with_no_body_still_says_so() {
+        let item = record_for(json!({
+            "url": "https://example.com", "status": 403,
+            "content": null, "error": "the site refused the fetch",
+            "costs": {"total_cost": 0.001}
+        }));
+        let value = &item.value;
+        assert_eq!(value["type"], "failed");
+        assert_eq!(value["content"], "empty");
+        assert_eq!(value["body"], Value::Null);
+        assert_eq!(value["bytes"], 0);
+        assert_eq!(value["hint"], "try_residential_proxy");
+        assert!(item.text.is_none());
     }
 
     #[test]
