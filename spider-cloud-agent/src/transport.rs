@@ -10,7 +10,7 @@
 //!
 //! - the address, which is `https://api.spider.cloud` unless `SPIDER_API_URL` says otherwise
 //! - the bearer header, which is the only place the key is written
-//! - the rate limit headers, kept in an atomic snapshot the policy engine reads
+//! - the rate limit headers, kept in an atomic snapshot callers read through [`crate::Spider::rate_limit`]
 //! - the split between the two status planes, which is the part worth reading twice
 //!
 //! The two planes come apart here. The HTTP status of the call becomes an

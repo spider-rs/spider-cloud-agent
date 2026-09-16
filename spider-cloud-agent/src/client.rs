@@ -108,6 +108,8 @@ impl IntoUrl for &String {
 pub struct Spider {
     transport: Arc<Transport>,
     budget: Budget,
+    pub(crate) run_budget: Option<RunBudget>,
+    pub(crate) jitter_seed: u64,
     pub(crate) read_wall: Option<std::time::Duration>,
     pub(crate) response_limit: Option<usize>,
     policy: Option<Policy>,
@@ -175,6 +177,8 @@ impl Spider {
         Ok(Spider {
             transport: Arc::new(transport),
             budget: Budget::default(),
+            run_budget: None,
+            jitter_seed: client_seed(),
             read_wall: Some(crate::ops::data::DEFAULT_READ_WALL),
             response_limit: None,
             policy: None,
@@ -300,6 +304,11 @@ impl Spider {
         self.budget
     }
 
+    /// Shared accounting for this run, including reservations in flight.
+    pub fn run_budget(&self) -> Option<&RunBudget> {
+        self.run_budget.as_ref()
+    }
+
     /// The policy operations escalate under, when one was set.
     pub fn policy(&self) -> Option<&Policy> {
         self.policy.as_ref()
@@ -332,6 +341,199 @@ impl Spider {
     }
 }
 
+/// Shared credit admission for a run. Clones share reservations and settled spend.
+///
+/// Reservation uses compare-and-exchange on credits already committed. Settlement
+/// replaces the estimate with the reported bill in one atomic update. A dropped
+/// in-flight future keeps its reservation: cancellation does not prove a free call.
+/// The summary counts calls across operations without retaining an unbounded journal.
+#[derive(Debug, Clone)]
+pub struct RunBudget(Arc<RunAccount>);
+
+#[derive(Debug)]
+struct RunAccount {
+    cap: crate::Credits,
+    committed: std::sync::atomic::AtomicU64,
+    spent: std::sync::atomic::AtomicU64,
+    attempts: std::sync::atomic::AtomicU64,
+    unknown: std::sync::atomic::AtomicU64,
+}
+
+/// Run totals. Concurrent settlement can advance between the individual reads.
+#[derive(Debug, Clone, Copy)]
+pub struct RunSpend {
+    /// Calls admitted across the run.
+    pub attempts: u64,
+    /// Charges recovered from replies.
+    pub spent: crate::Credits,
+    /// Calls whose charge is not yet known, including calls in flight.
+    pub unknown: u64,
+}
+
+impl RunBudget {
+    /// Start a run with this credit cap. Invalid caps admit no calls.
+    pub fn new(cap: crate::Credits) -> Self {
+        use std::sync::atomic::AtomicU64;
+        Self(Arc::new(RunAccount {
+            cap: crate::Credits(if cap.get().is_finite() {
+                cap.get().max(0.0)
+            } else {
+                0.0
+            }),
+            committed: AtomicU64::new(0),
+            spent: AtomicU64::new(0),
+            attempts: AtomicU64::new(0),
+            unknown: AtomicU64::new(0),
+        }))
+    }
+
+    /// Credits available for admission, excluding reservations in flight.
+    pub fn remaining(&self) -> crate::Credits {
+        use std::sync::atomic::Ordering::SeqCst;
+        crate::Credits((self.0.cap.get() - f64::from_bits(self.0.committed.load(SeqCst))).max(0.0))
+    }
+
+    /// Known spend and call counts for the whole run.
+    pub fn snapshot(&self) -> RunSpend {
+        use std::sync::atomic::Ordering::SeqCst;
+        RunSpend {
+            attempts: self.0.attempts.load(SeqCst),
+            spent: crate::Credits(f64::from_bits(self.0.spent.load(SeqCst))),
+            unknown: self.0.unknown.load(SeqCst),
+        }
+    }
+
+    pub(crate) fn reserve(&self, estimate: crate::Credits) -> Option<Reservation> {
+        use std::sync::atomic::Ordering::SeqCst;
+        let amount = Budget::floor(estimate).get();
+        let previous = self
+            .0
+            .committed
+            .fetch_update(SeqCst, SeqCst, |bits| {
+                let next = f64::from_bits(bits) + amount;
+                (next <= self.0.cap.get()).then_some(next.to_bits())
+            })
+            .ok()?;
+        self.0.attempts.fetch_add(1, SeqCst);
+        self.0.unknown.fetch_add(1, SeqCst);
+        Some(Reservation {
+            run: self.clone(),
+            estimate: amount,
+            allowance: crate::Credits((self.0.cap.get() - f64::from_bits(previous)).max(0.0)),
+        })
+    }
+}
+
+#[cfg(test)]
+mod run_budget_tests {
+    #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
+    use super::*;
+    use crate::Credits;
+
+    #[test]
+    fn f2_reservations_exclude_other_calls_and_settle_the_bill() {
+        let run = RunBudget::new(Credits(1.0));
+        let held = run.reserve(Credits(0.75)).unwrap();
+        assert!(run.reserve(Credits(0.5)).is_none());
+        assert_eq!(run.snapshot().attempts, 1);
+        assert!(held.settle(Credits(0.25), false).is_none());
+        assert_eq!(run.remaining(), Credits(0.75));
+        let held = run.reserve(Credits(0.5)).unwrap();
+        let overrun = held.settle(Credits(1.0), false).unwrap();
+        assert_eq!(overrun.scope, crate::response::BudgetScope::Run);
+        assert_eq!(overrun.spent, Credits(1.25));
+        assert_eq!(run.remaining(), Credits::ZERO);
+    }
+
+    #[test]
+    fn f2_unknown_and_cancelled_calls_keep_their_reservations() {
+        let run = RunBudget::new(Credits(1.0));
+        let held = run.reserve(Credits(0.5)).unwrap();
+        let _ = held.settle(Credits(0.25), true);
+        {
+            let _cancelled = run.reserve(Credits(0.5)).unwrap();
+        }
+        assert_eq!(run.remaining(), Credits::ZERO);
+        assert_eq!(run.snapshot().spent, Credits(0.25));
+        assert_eq!(run.snapshot().unknown, 2);
+        assert!(run.reserve(Credits(0.1)).is_none());
+    }
+
+    #[test]
+    fn f2_concurrent_bills_report_a_run_overrun() {
+        let run = RunBudget::new(Credits(1.0));
+        let a = run.reserve(Credits(0.1)).unwrap();
+        let b = run.reserve(Credits(0.1)).unwrap();
+        assert!(a.settle(Credits(0.6), false).is_none());
+        let overrun = b.settle(Credits(0.6), false).unwrap();
+        assert_eq!(overrun.spent, Credits(1.2));
+    }
+
+    #[test]
+    fn f2_atomic_admission_has_one_winner_per_available_slot() {
+        let run = RunBudget::new(Credits(1.0));
+        let admitted = std::thread::scope(|scope| {
+            let workers: Vec<_> = (0..32)
+                .map(|_| scope.spawn(|| run.reserve(Credits(0.25))))
+                .collect();
+            workers
+                .into_iter()
+                .filter_map(|worker| worker.join().unwrap())
+                .count()
+        });
+        assert_eq!(admitted, 4);
+        assert_eq!(run.snapshot().attempts, 4);
+        assert_eq!(run.remaining(), Credits::ZERO);
+    }
+}
+
+pub(crate) struct Reservation {
+    pub(crate) allowance: crate::Credits,
+    run: RunBudget,
+    estimate: f64,
+}
+
+impl Reservation {
+    pub(crate) fn settle(
+        self,
+        cost: crate::Credits,
+        unknown: bool,
+    ) -> Option<crate::response::BudgetOverrun> {
+        use std::sync::atomic::Ordering::SeqCst;
+        let cost = cost.get().max(0.0);
+        let retained = if unknown {
+            self.estimate.max(cost)
+        } else {
+            cost
+        };
+        atomic_add(&self.run.0.committed, retained - self.estimate);
+        atomic_add(&self.run.0.spent, cost);
+        if !unknown {
+            self.run.0.unknown.fetch_sub(1, SeqCst);
+        }
+        let spent = self.run.snapshot().spent;
+        (spent > self.run.0.cap).then_some(crate::response::BudgetOverrun {
+            scope: crate::response::BudgetScope::Run,
+            cap: self.run.0.cap,
+            spent,
+        })
+    }
+}
+
+fn atomic_add(value: &std::sync::atomic::AtomicU64, amount: f64) {
+    use std::sync::atomic::Ordering::SeqCst;
+    let _ = value.fetch_update(SeqCst, SeqCst, |bits| {
+        Some((f64::from_bits(bits) + amount).max(0.0).to_bits())
+    });
+}
+
+fn client_seed() -> u64 {
+    use std::hash::{BuildHasher, Hasher};
+    std::collections::hash_map::RandomState::new()
+        .build_hasher()
+        .finish()
+}
+
 /// Settings for a client, applied at [`SpiderBuilder::build`].
 ///
 /// `Debug` redacts the key.
@@ -340,6 +542,8 @@ pub struct SpiderBuilder {
     key: Option<String>,
     base_url: Option<Url>,
     budget: Option<Budget>,
+    run_budget: Option<RunBudget>,
+    jitter_seed: Option<u64>,
     policy: Option<Policy>,
     http_client: Option<reqwest::Client>,
     router: Option<Arc<dyn Router>>,
@@ -415,7 +619,19 @@ impl SpiderBuilder {
         self
     }
 
-    /// The rules operations escalate under.
+    /// Share a credit cap across every operation and clone of this client.
+    pub fn run_budget(mut self, budget: RunBudget) -> SpiderBuilder {
+        self.run_budget = Some(budget);
+        self
+    }
+
+    /// Fix the default policy's jitter for reproducible runs.
+    pub fn jitter_seed(mut self, seed: u64) -> SpiderBuilder {
+        self.jitter_seed = Some(seed);
+        self
+    }
+
+    /// The rules operations escalate under, including their own jitter settings.
     pub fn policy(mut self, policy: Policy) -> SpiderBuilder {
         self.policy = Some(policy);
         self
@@ -546,6 +762,8 @@ impl SpiderBuilder {
         Ok(Spider {
             transport: Arc::new(transport),
             budget: self.budget.unwrap_or_default(),
+            run_budget: self.run_budget,
+            jitter_seed: self.jitter_seed.unwrap_or_else(client_seed),
             read_wall: if self.without_read_wall {
                 None
             } else {
