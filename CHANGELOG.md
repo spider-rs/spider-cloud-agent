@@ -7,6 +7,13 @@ error.
 
 ## Unreleased
 
+- Reject redirects in the built-in API transport with `Error::Transport` before
+  sending a second request. A 302 must not discard a POST body or hide another
+  call inside one attempt. `a_302_redirect_is_a_transport_error_after_one_request`
+  pins the result and request count. Custom clients retain their redirect policy.
+  Truncated bodies already fail as transport errors, chunked bodies decode, and
+  gzip remains unsupported and fails as `Error::Decode`.
+
 - Release verification requires a readable private denylist with at least one term
   and cargo-deny. Ordinary verification keeps the private-list note and uses cached
   advisories when cargo-deny is installed. Private-list regression tests run inside

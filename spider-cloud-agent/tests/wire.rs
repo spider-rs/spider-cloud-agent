@@ -101,27 +101,33 @@ fn serve(script: &[&str]) -> Stub {
 
 /// The same, with the status and the headers scripted too.
 fn serve_answers(script: &[Answer]) -> Stub {
-    let script: Vec<Vec<u8>> = script.iter().map(|reply| {
-        let chunked = reply.headers.contains("transfer-encoding: chunked\r\n");
-        let length = if chunked { String::new() } else {
-            format!("content-length: {}\r\n", reply.body.len())
-        };
-        let mut bytes = format!(
-            "HTTP/1.1 {} Scripted\r\ncontent-type: application/json\r\n{length}connection: close\r\n{}\r\n",
-            reply.status, reply.headers
-        ).into_bytes();
-        if chunked {
-            for chunk in reply.body.as_bytes().chunks(16 * 1024) {
-                bytes.extend_from_slice(format!("{:x}\r\n", chunk.len()).as_bytes());
-                bytes.extend_from_slice(chunk);
-                bytes.extend_from_slice(b"\r\n");
+    let script: Vec<Vec<u8>> = script
+        .iter()
+        .map(|reply| {
+            let chunked = reply.headers.contains("transfer-encoding: chunked\r\n");
+            let length = if chunked {
+                String::new()
+            } else {
+                format!("content-length: {}\r\n", reply.body.len())
+            };
+            let mut bytes = format!(
+                "HTTP/1.1 {} Scripted\r\ncontent-type: application/json\r\n{length}connection: close\r\n{}\r\n",
+                reply.status, reply.headers
+            )
+            .into_bytes();
+            if chunked {
+                for chunk in reply.body.as_bytes().chunks(16 * 1024) {
+                    bytes.extend_from_slice(format!("{:x}\r\n", chunk.len()).as_bytes());
+                    bytes.extend_from_slice(chunk);
+                    bytes.extend_from_slice(b"\r\n");
+                }
+                bytes.extend_from_slice(b"0\r\n\r\n");
+            } else {
+                bytes.extend_from_slice(reply.body.as_bytes());
             }
-            bytes.extend_from_slice(b"0\r\n\r\n");
-        } else {
-            bytes.extend_from_slice(reply.body.as_bytes());
-        }
-        bytes
-    }).collect();
+            bytes
+        })
+        .collect();
     serve_raw(&script)
 }
 
@@ -1777,7 +1783,8 @@ async fn a_body_shorter_than_content_length_is_a_transport_error() {
 // Pending red check (sandbox denies socket bind). Deliberate mutation: the raw stub supplied a complete page reply.
 #[tokio::test]
 async fn a_connection_closed_mid_body_is_a_transport_error() {
-    let stub = serve_raw(&[b"HTTP/1.1 200 OK\r\ntransfer-encoding: chunked\r\nconnection: close\r\n\r\n40\r\n{\"url\":".to_vec()]);
+    let raw = b"HTTP/1.1 200 OK\r\ntransfer-encoding: chunked\r\nconnection: close\r\n\r\n40\r\n{\"url\":";
+    let stub = serve_raw(&[raw.to_vec()]);
     let result = fast_client(&stub)
         .scrape("https://example.com")
         .send()
@@ -1790,7 +1797,11 @@ async fn a_connection_closed_mid_body_is_a_transport_error() {
 #[tokio::test]
 async fn chunked_transfer_decodes_a_page_once() {
     let (first, second) = PAGE_ANSWER.split_at(20);
-    let raw = format!("HTTP/1.1 200 OK\r\ntransfer-encoding: chunked\r\nconnection: close\r\n\r\n{:x}\r\n{first}\r\n{:x}\r\n{second}\r\n0\r\n\r\n", first.len(), second.len());
+    let raw = format!(
+        "HTTP/1.1 200 OK\r\ntransfer-encoding: chunked\r\nconnection: close\r\n\r\n{:x}\r\n{first}\r\n{:x}\r\n{second}\r\n0\r\n\r\n",
+        first.len(),
+        second.len()
+    );
     let stub = serve_raw(&[raw.into_bytes()]);
     let page = fast_client(&stub)
         .scrape("https://example.com")
@@ -1811,7 +1822,11 @@ async fn gzip_is_not_decoded_by_the_builtin_transport() {
     let body: &[u8] = &[
         31, 139, 8, 0, 0, 0, 0, 0, 2, 3, 139, 142, 5, 0, 41, 187, 76, 13, 2, 0, 0, 0,
     ];
-    let mut raw = format!("HTTP/1.1 200 OK\r\ncontent-encoding: gzip\r\ncontent-length: {}\r\nconnection: close\r\n\r\n", body.len()).into_bytes();
+    let mut raw = format!(
+        "HTTP/1.1 200 OK\r\ncontent-encoding: gzip\r\ncontent-length: {}\r\nconnection: close\r\n\r\n",
+        body.len()
+    )
+    .into_bytes();
     raw.extend_from_slice(body);
     let stub = serve_raw(&[raw]);
     let result = fast_client(&stub)
@@ -1822,26 +1837,23 @@ async fn gzip_is_not_decoded_by_the_builtin_transport() {
     assert_eq!(stub.sent().len(), 1);
 }
 
-/// Reqwest follows a same-origin 302 and changes POST to GET. The send loop sees
-/// one successful attempt, while the socket sees two requests.
-// Pending red check (sandbox denies socket bind). Deliberate mutation: the built-in client disabled redirects.
+/// Redirects must not turn an API POST into a GET or escape attempt accounting.
+// Red check blocked here: the sandbox refuses socket bind. Removing the custom
+// redirect policy is the mutation to run in an environment that permits sockets.
 #[tokio::test]
-async fn a_302_redirect_is_followed_on_the_wire() {
+async fn a_302_redirect_is_a_transport_error_after_one_request() {
     let stub = serve_answers(&[
         Answer::with(302, "location: /redirected\r\n", ""),
         Answer::ok(PAGE_ANSWER),
     ]);
-    let page = fast_client(&stub)
+    let result = fast_client(&stub)
         .scrape("https://example.com")
         .send()
-        .await
-        .unwrap();
-    assert_eq!(page.status.code(), 200);
-    assert_eq!(page.attempts.len(), 1);
+        .await;
+    assert!(matches!(result, Err(Error::Transport(_))), "{result:?}");
     let sent = stub.sent();
-    assert_eq!(sent.len(), 2);
+    assert_eq!(sent.len(), 1);
     assert_eq!(sent[0].line, "POST /scrape HTTP/1.1");
-    assert_eq!(sent[1].line, "GET /redirected HTTP/1.1");
 }
 
 /// New response records keep the HTTP envelope beside the JSON body. These are

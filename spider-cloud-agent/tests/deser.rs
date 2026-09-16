@@ -248,7 +248,7 @@ fn crawl_records_stay_json_because_their_columns_are_the_services_own() {
     assert_eq!(rows[0]["domain"].as_str(), Some("example.com"));
 }
 
-// Red on the starting directory walker: it omits both named thrift fixtures.
+// Red on a deliberately broken build: skipped subdirectories in the walker.
 #[test]
 fn the_nested_fixture_inventory_is_included() {
     let nested: Vec<_> = every_fixture()

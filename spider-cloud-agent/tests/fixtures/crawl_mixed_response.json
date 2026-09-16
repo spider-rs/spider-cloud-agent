@@ -1,0 +1,47 @@
+{
+  "body": [
+    {
+      "content": {
+        "raw": "<html><body><h1>Home</h1></body></html>"
+      },
+      "costs": {
+        "compute_cost": 0.4,
+        "total_cost": 0.4
+      },
+      "error": null,
+      "links": [
+        "https://example.org/about",
+        "/contact"
+      ],
+      "status": 200,
+      "url": "https://example.org/"
+    },
+    {
+      "content": null,
+      "costs": {
+        "compute_cost": 0.4,
+        "total_cost": 0.4
+      },
+      "error": "the site refused the fetch",
+      "status": 403,
+      "url": "https://example.org/about"
+    },
+    {
+      "content": {
+        "raw": ""
+      },
+      "costs": {
+        "compute_cost": 0.4,
+        "total_cost": 0.4
+      },
+      "error": null,
+      "status": 200,
+      "url": "https://example.org/contact"
+    }
+  ],
+  "headers": {
+    "content-type": "application/json"
+  },
+  "http_status": 200,
+  "route": "/crawl"
+}

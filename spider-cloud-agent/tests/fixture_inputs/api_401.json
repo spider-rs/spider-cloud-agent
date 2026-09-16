@@ -1,0 +1,11 @@
+{
+  "body": {
+    "error": "invalid api key"
+  },
+  "headers": {
+    "content-type": "application/json",
+    "www-authenticate": "Bearer"
+  },
+  "http_status": 401,
+  "route": "/scrape"
+}

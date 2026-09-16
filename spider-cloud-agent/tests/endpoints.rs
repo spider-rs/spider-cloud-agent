@@ -312,19 +312,19 @@ fn a_path_argument_cannot_walk_out_of_its_route() {
 /// Response coverage for the builder inventory above. Each entry must name a
 /// readable JSON fixture; naming a route without recording its answer cannot pass.
 const FIXTURE_COVERAGE: &[(&str, &str)] = &[
-    ("/scrape", "scrape_markdown.json"),
-    ("/crawl", "crawl_mixed.json"),
+    ("/scrape", "scrape_markdown_response.json"),
+    ("/crawl", "crawl_mixed_response.json"),
     ("/links", "links.json"),
-    ("/search", "search_results.json"),
-    ("/screenshot", "screenshot.json"),
+    ("/search", "search_results_response.json"),
+    ("/screenshot", "screenshot_response.json"),
     ("/transform", "transform.json"),
     ("/fetch/{domain}/{path}", "fetch.json"),
-    ("/data/credits", "credits.json"),
-    ("/data/crawl_logs", "crawl_logs.json"),
+    ("/data/credits", "credits_response.json"),
+    ("/data/crawl_logs", "crawl_logs_response.json"),
     ("/data/{table}", "data_table.json"),
 ];
 
-// Red on a deliberately broken build: removed /links from FIXTURE_COVERAGE.
+// Red on a deliberately broken build: mapped /scrape to credits_response.json.
 #[test]
 fn every_builder_route_has_a_fixture() {
     let mut covered: Vec<_> = FIXTURE_COVERAGE.iter().map(|(route, _)| *route).collect();
@@ -339,10 +339,18 @@ fn every_builder_route_has_a_fixture() {
             .join(file);
         let text = std::fs::read_to_string(path).unwrap();
         let value: serde_json::Value = serde_json::from_str(&text).unwrap();
-        if let Some(recorded_route) = value.get("route") {
-            assert_eq!(recorded_route, route);
-            assert_eq!(value["http_status"], 200);
-            assert!(value.get("body").is_some());
+        assert_eq!(value["route"], *route, "{file}");
+        assert_eq!(value["http_status"], 200, "{file}");
+        assert_eq!(value["headers"]["content-type"], "application/json");
+        assert!(value.get("body").is_some(), "{file}");
+        // The envelope cannot silently substitute an unrelated older body.
+        if let Some(original) = file.strip_suffix("_response.json") {
+            let original = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+                .join("tests/fixtures")
+                .join(format!("{original}.json"));
+            let body: serde_json::Value =
+                serde_json::from_str(&std::fs::read_to_string(original).unwrap()).unwrap();
+            assert_eq!(value["body"], body, "{file}");
         }
     }
 }

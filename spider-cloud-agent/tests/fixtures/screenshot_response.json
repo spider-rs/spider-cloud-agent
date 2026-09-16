@@ -1,0 +1,31 @@
+{
+  "body": [
+    {
+      "content": {
+        "screenshot": [
+          137,
+          80,
+          78,
+          71,
+          13,
+          10,
+          26,
+          10
+        ]
+      },
+      "costs": {
+        "compute_cost": 1.2,
+        "file_cost": 0.3,
+        "total_cost": 1.5
+      },
+      "error": null,
+      "status": 200,
+      "url": "https://example.com/"
+    }
+  ],
+  "headers": {
+    "content-type": "application/json"
+  },
+  "http_status": 200,
+  "route": "/screenshot"
+}
