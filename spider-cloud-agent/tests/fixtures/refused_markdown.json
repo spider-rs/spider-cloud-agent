@@ -1,0 +1,53 @@
+[
+  {
+    "content": {
+      "markdown": "# Access denied\n\nYou do not have permission to view this page.\n\nReference 7b2c9e. [Contact us](https://example.com/contact) if you think this is a mistake.\n"
+    },
+    "cookies": {
+      "session": "REDACTED",
+      "theme": "light"
+    },
+    "costs": {
+      "ai_cost": 0.0,
+      "ai_cost_formatted": "$0.00000",
+      "bytes_transferred_cost": 3.01e-6,
+      "bytes_transferred_cost_formatted": "$0.00000",
+      "compute_cost": 0.0002,
+      "compute_cost_formatted": "$0.00020",
+      "file_cost": 0.0,
+      "file_cost_formatted": "$0.00000",
+      "total_cost": 0.00021301,
+      "total_cost_formatted": "$0.00021",
+      "transform_cost": 0.00001,
+      "transform_cost_formatted": "$0.00001"
+    },
+    "duration_elasped_ms": 412,
+    "error": "the site refused the fetch",
+    "headers": {
+      "content-type": "text/html; charset=utf-8",
+      "server": "nginx",
+      "x-robots-tag": "noindex"
+    },
+    "links": [
+      "https://example.com/",
+      "https://example.com/contact"
+    ],
+    "metadata": {
+      "automation_data": null,
+      "crawl_id": null,
+      "description": null,
+      "domain": "example.com",
+      "extracted_data": null,
+      "file_size": 1874,
+      "final_url": null,
+      "keywords": null,
+      "og_image": null,
+      "original_url": "https://example.com/account",
+      "pathname": "/account",
+      "resource_type": "html",
+      "title": "Access denied"
+    },
+    "status": 403,
+    "url": "https://example.com/account"
+  }
+]

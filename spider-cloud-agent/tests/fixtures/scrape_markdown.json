@@ -1,0 +1,25 @@
+[
+  {
+    "url": "https://example.com/pricing",
+    "status": 200,
+    "content": {
+      "markdown": "# Pricing\n\nStarter, Growth, Scale.\n"
+    },
+    "metadata": {
+      "title": "Pricing",
+      "description": "What the plans cost.",
+      "domain": "example.com",
+      "pathname": "/pricing",
+      "resource_type": "html"
+    },
+    "costs": {
+      "ai_cost": 0,
+      "compute_cost": 0.42,
+      "file_cost": 0,
+      "bytes_transferred_cost": 0.08,
+      "transform_cost": 0.1,
+      "total_cost": 0.6
+    },
+    "error": null
+  }
+]
