@@ -8,11 +8,40 @@ error.
 ## Unreleased
 
 - Reject redirects in the built-in API transport with `Error::Transport` before
-  sending a second request. A 302 must not discard a POST body or hide another
-  call inside one attempt. `a_302_redirect_is_a_transport_error_after_one_request`
-  pins the result and request count. Custom clients retain their redirect policy.
-  Truncated bodies already fail as transport errors, chunked bodies decode, and
-  gzip remains unsupported and fails as `Error::Decode`.
+  sending a second request. Until now the client followed them, because F1 landed
+  without the `redirect::Policy::none()` an earlier draft carried. The API is a
+  JSON POST API, so following a 302 is never what the caller asked for: reqwest
+  rewrites the POST as a GET and drops the body, a same-host hop resends the
+  bearer to a path nobody named, a cross-host hop strips it and arrives
+  unauthenticated, and either way two requests happen inside one attempt, so the
+  attempt and cost accounting undercount what was spent. Removing the policy is
+  what `a_302_redirect_is_a_transport_error_after_one_request` was shown red
+  against: the call came back `Ok` with a page fetched from the `Location`
+  address. Callers who pass their own client through `Transport::with_client`
+  keep its redirect policy. Truncated bodies and a connection closed mid body
+  already fail as `Error::Transport`, chunked bodies decode, and a gzip body is
+  not decoded and fails as `Error::Decode`, because the built-in client does not
+  enable reqwest's gzip feature.
+
+- The API plane error codes now cross a real socket in `tests/wire.rs`: 401 and
+  402 stop after one request, 403 stops after one, and 500 retries once per
+  ladder rung until the five-attempt cap, with every attempt keeping its API
+  status. The same four codes in a page-shaped body take the page path instead,
+  which is the F1 classification held in place. The stub can write raw bytes, so
+  a body shorter than its declared length, a connection closed mid body, chunked
+  framing, a gzip body and a 302 each have a case that names the terminal result
+  and the request count.
+
+- Fixtures for `/links`, `/transform`, `/fetch/{domain}/{path}`, `/data/{table}`
+  and for 401, 402, 429 and 503 error envelopes, each the output of
+  `cargo run --locked -p xtask -- redact` over a recording held outside the repo.
+  The error records carry their HTTP status and the headers the send loop reads,
+  so a recorded 429 proves the one-second `retry-after` beats the two-second
+  `ratelimit-reset` fallback. `every_fixture` now recurses, so `fixtures/thrift/`
+  is inside "every fixture parses" and "documentation hosts only" rather than
+  beside it, and a coverage manifest in `tests/endpoints.rs` maps every builder
+  route to a fixture and checks the fixture holds that route's answer, by the
+  fields only that answer carries.
 
 - Release verification requires a readable private denylist with at least one term
   and cargo-deny. Ordinary verification keeps the private-list note and uses cached
