@@ -545,6 +545,56 @@ fn stub(reply: &'static str) -> (String, std::sync::mpsc::Receiver<String>) {
     (format!("http://{address}"), seen)
 }
 
+/// The same stub with the status, extra header lines and body scripted per
+/// request. Once the script runs out the last answer is repeated.
+fn stub_script(script: &'static [(u16, &'static str, &'static str)]) -> String {
+    use std::io::{BufRead, BufReader, Read, Write};
+
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("a port");
+    let address = listener.local_addr().expect("an address");
+
+    std::thread::spawn(move || {
+        for (answered, stream) in listener.incoming().enumerate() {
+            let Ok(mut stream) = stream else { break };
+            let Ok(clone) = stream.try_clone() else { break };
+            let mut reader = BufReader::new(clone);
+            let mut length = 0usize;
+            let mut line = String::new();
+            if reader.read_line(&mut line).unwrap_or(0) == 0 {
+                break;
+            }
+            loop {
+                let mut header = String::new();
+                if reader.read_line(&mut header).unwrap_or(0) == 0 {
+                    break;
+                }
+                if header == "\r\n" {
+                    break;
+                }
+                if let Some(value) = header.to_ascii_lowercase().strip_prefix("content-length:") {
+                    length = value.trim().parse().unwrap_or(0);
+                }
+            }
+            let mut body = vec![0u8; length];
+            if reader.read_exact(&mut body).is_err() {
+                break;
+            }
+            let Some((status, headers, reply)) = script.get(answered).or(script.last()) else {
+                break;
+            };
+            let head = format!(
+                "HTTP/1.1 {status} Scripted\r\ncontent-type: application/json\r\ncontent-length: {}\r\nconnection: close\r\n{headers}\r\n",
+                reply.len()
+            );
+            let _ = stream.write_all(head.as_bytes());
+            let _ = stream.write_all(reply.as_bytes());
+            let _ = stream.flush();
+        }
+    });
+
+    format!("http://{address}")
+}
+
 /// Run the binary with a key and an address that go nowhere but the stub.
 fn run_against(base: &str, args: &[&str]) -> Output {
     Command::new(env!("CARGO_BIN_EXE_spider-agent"))
@@ -1210,6 +1260,25 @@ fn a_site_that_refuses_every_attempt_leaves_with_five() {
     );
     assert!(String::from_utf8_lossy(&output.stderr).contains("no usable page"));
     assert!(seen.try_iter().count() > 0);
+}
+
+/// A page came back blank, the walk climbed a step, and the service then rate
+/// limited every retry. The run reached the site, so it leaves with the refused
+/// code, the same as before, and the line says what stopped it.
+#[test]
+fn a_rate_limit_after_a_page_leaves_with_five() {
+    const BLANK: &str = r#"[{"url":"https://example.com/","status":200,"content":"",
+        "costs":{"total_cost":0.0001}}]"#;
+    const LIMITED: (u16, &str, &str) = (429, "retry-after: 0\r\n", r#"{"error":"slow down"}"#);
+    let base = stub_script(&[(200, "", BLANK), LIMITED, LIMITED, LIMITED, LIMITED]);
+    let output = run_against(&base, &["run", "https://example.com/"]);
+    let said = String::from_utf8_lossy(&output.stderr);
+    assert_eq!(code(&output), 5, "{said}");
+    assert!(said.contains("no usable page"), "{said}");
+    assert!(
+        said.contains("429"),
+        "the line does not say what stopped it: {said}"
+    );
 }
 
 #[test]

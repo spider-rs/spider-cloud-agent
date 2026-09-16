@@ -18,6 +18,15 @@ error.
   the deployed service revision. It accounts for all nine tests and records the
   selector-name service failure as the tracked F7a exception, never as a pass.
   Explicit live test runs without a key now fail.
+- Breaking: `Error::Auth` is now `Auth { cause: AuthCause, message }`, with the
+  causes `NoKey`, `EmptyKey`, `Refused`, `SignInFailed` and `Local`, so a key
+  the service refused can be told from a key that was never there.
+  `Error::Exhausted` gained `reason: StopReason` and
+  `source: Option<Box<Error>>`, and its message now says why the walk stopped.
+  A walk that got a page back and then stopped, on a refusal, a rate limit or
+  a failed call, ends in `Exhausted` with that call error as its source. A walk
+  that never got a page back still fails with the call error itself. The new
+  `Error::recovery()` answers whether to wait, sign in again, or stop.
 - A 502, 504 or 408 from the service is retried the way a 503 is: up to three
   times, honoring `Retry-After`, and never climbing the ladder, so a gateway
   failure no longer pays for a heavier page request. The statuses are named once

@@ -35,7 +35,7 @@ use spider_route::{HeuristicRouter, Router};
 
 use crate::auth::Credentials;
 use crate::credits::Credits;
-use crate::error::Error;
+use crate::error::{AuthCause, Error};
 use crate::memory::SiteMemoryStore;
 use crate::ops::crawl::Crawl;
 use crate::ops::data::{CrawlLogs, Table};
@@ -476,7 +476,10 @@ impl SpiderBuilder {
             None => resolve_key().ok_or_else(no_key)?,
         };
         if key.trim().is_empty() {
-            return Err(Error::Auth("the api key is empty".to_string()));
+            return Err(Error::Auth {
+                cause: AuthCause::EmptyKey,
+                message: "the api key is empty".to_string(),
+            });
         }
         let base = match self.base_url {
             Some(base) => base,
@@ -517,9 +520,12 @@ fn resolve_key() -> Option<String> {
 /// Why a client could not be built, naming the places that were tried and none
 /// of the values that were found.
 fn no_key() -> Error {
-    Error::Auth(format!(
-        "no api key. Set {API_KEY_ENV}, set {API_KEY_ENV_ALT}, or sign in so the key is written to ~/{CREDENTIALS_PATH}"
-    ))
+    Error::Auth {
+        cause: AuthCause::NoKey,
+        message: format!(
+            "no api key. Set {API_KEY_ENV}, set {API_KEY_ENV_ALT}, or sign in so the key is written to ~/{CREDENTIALS_PATH}"
+        ),
+    }
 }
 
 #[cfg(test)]
@@ -560,7 +566,13 @@ mod tests {
     #[test]
     fn an_empty_key_is_refused_before_a_call_is_made() {
         let built = SpiderBuilder::new().key("   ").build();
-        assert!(matches!(built, Err(Error::Auth(_))));
+        assert!(matches!(
+            built,
+            Err(Error::Auth {
+                cause: AuthCause::EmptyKey,
+                ..
+            })
+        ));
     }
 
     #[test]
@@ -608,6 +620,7 @@ mod tests {
     /// this walks every path that makes an error.
     fn every_error(spider: &Spider) -> Vec<Error> {
         use crate::error::BudgetKind;
+        use crate::policy::StopReason;
         use crate::status::ApiStatus;
         use crate::transport::{RateLimit, Reply};
         use bytes::Bytes;
@@ -643,11 +656,37 @@ mod tests {
             kind: BudgetKind::Credits,
             attempts: Vec::new(),
         });
+        // A walk that stopped after a page came back, with and without the
+        // call error that stopped it, which is the one place an error holds
+        // another.
         out.push(Error::Exhausted {
             attempts: Vec::new(),
             last: None,
+            reason: StopReason::LadderExhausted,
+            source: None,
+        });
+        out.push(Error::Exhausted {
+            attempts: Vec::new(),
+            last: None,
+            reason: StopReason::RetriesExhausted,
+            source: reply(429, r#"{"error":"slow down"}"#)
+                .as_error()
+                .map(Box::new),
         });
         out.push(Error::InsufficientCredits);
+        // Every way a key can fail to be usable, built the way the crate
+        // builds them, so a new cause has to be added here to be covered.
+        out.push(no_key());
+        out.extend(SpiderBuilder::new().key("   ").build().err());
+        out.extend(Credentials::store("   ").err());
+        out.push(Error::Auth {
+            cause: AuthCause::SignInFailed,
+            message: "the browser did not come back".to_string(),
+        });
+        out.push(Error::Auth {
+            cause: AuthCause::Local,
+            message: "no home directory to write to".to_string(),
+        });
         out
     }
 
@@ -672,7 +711,23 @@ mod tests {
         let spider = Spider::with_key(SECRET).expect("a client");
         let errors = every_error(&spider);
         // A loop over an empty list passes and proves nothing.
-        assert_eq!(errors.len(), 9, "an error path stopped being covered");
+        assert_eq!(errors.len(), 15, "an error path stopped being covered");
+        let causes: Vec<AuthCause> = errors
+            .iter()
+            .filter_map(|error| match error {
+                Error::Auth { cause, .. } => Some(*cause),
+                _ => None,
+            })
+            .collect();
+        for cause in [
+            AuthCause::NoKey,
+            AuthCause::EmptyKey,
+            AuthCause::Refused,
+            AuthCause::SignInFailed,
+            AuthCause::Local,
+        ] {
+            assert!(causes.contains(&cause), "no error path makes {cause:?}");
+        }
         for error in errors {
             let debug = format!("{error:?}");
             let display = format!("{error}");
