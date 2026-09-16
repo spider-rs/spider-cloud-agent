@@ -70,29 +70,38 @@ now maps numbers to bare labels such as `budget`, replacing descriptions such as
 - Walk router modules recursively for host access and assert the exact inventory.
 - Correct the fixture host allowlist promise and document that no model
   configuration exists yet. Principle 3 names F7a's private release gate.
-- Page operations and search now default to a 15-minute wall. This leaves room
-  for five browser attempts and backoff. Account reads keep their 60-second
-  cap even with an unlimited budget; a shorter client wall wins. Only the
-  client's `without_wall` removes the account read cap. `without_wall` on the
-  client or operation builder explicitly removes
-  the cap. Raw calls still have no wall or response size cap.
-- One deadline covers sends and sleeps. Decode and settlement work take at most
-  8 MiB of response input, including replies without Content-Length, and check
-  the deadline before returning success. Larger replies return
-  `Error::ResponseTooLarge`. Caller-supplied synchronous hooks must return promptly.
-- API bases require HTTPS. Literal loopback HTTP addresses remain allowed, so
-  the CLI test stub needs no change. Other HTTP bases need
-  `allow_insecure_http(true)`. The built-in HTTP client no longer follows redirects.
-- An empty HTTP 204 returns empty `Pages` from `send_all`. Single-page `send`
-  returns `Error::Exhausted` with no last page and one recorded attempt.
-- Missing target statuses are unknown (code zero), never copied from the API
-  envelope. Page-fetch routes keep these as failures. Transform explicitly
-  accepts status-less documents with unknown target status.
-- Page-shaped 401 and 402 replies remain target refusals and keep their costs.
-  A mirrored envelope records unknown API status, never an API success invented
-  from the page. Account error envelopes still stop on the account plane.
-- Cookies accept a wire string or map. `Page::cookies` now exposes a map from
-  name to value. The cookie map fixture was made with `xtask redact`.
+- Every operation ends. `Budget::wall` defaults to fifteen minutes, which
+  leaves room for five browser attempts and the waits between them, and the
+  wall is one deadline over every send and every sleep in the walk rather
+  than a check between calls. Account reads keep their own minute, or the
+  client's wall when it is shorter. `SpiderBuilder::without_wall` and
+  `Budget::without_wall` are the opt-out; only the builder's lifts the read
+  wall. `Spider::raw` is unchanged and has no wall.
+- The API base must be `https`. A base that is not is refused at build time
+  with `Error::Config`, except a literal loopback address, which is what a
+  test stub listens on, and a base the builder was told to accept with
+  `allow_insecure_http(true)`. `SPIDER_API_URL` is held to the same rule.
+- Nothing caps the size of an answer unless the client is built with
+  `max_response_bytes`. An answer past that cap ends the operation in
+  `Error::Exhausted` with `Error::ResponseTooLarge` as its source and the
+  cut-off call among its attempts, so what the walk spent before it is still
+  on the error. Raw calls are never capped.
+- An empty 204 is an empty `Pages` from `send_all` rather than a decode
+  failure. `send` has no single page to return and ends in `Error::Exhausted`
+  with no last page.
+- A page with no status of its own reports an unknown status, code zero,
+  rather than a copy of the call's status. On a page route that is a failed
+  page. On `transform`, whose documents were never fetched, it is the
+  document, and `Page::status` says so in its doc.
+- A 401 or 402 whose body is a page, with a `url` and a `status`, is the site
+  refusing the fetch: it walks the ladder and keeps its cost. A 401 or 402
+  with an error envelope and no page is still the account being refused,
+  and stops after one request. An attempt whose status was mirrored from the
+  page records an unknown API status rather than one made from the page.
+- `Page::cookies` is a map from name to value. The service sends cookies as
+  a map, and the crate read them as a string, so asking for cookies dropped
+  the page and its cost. A string on the wire is still accepted and split
+  into the map.
 
 ## 0.3.1 (2026-09-16)
 

@@ -5,21 +5,30 @@
 //! page, so none of them escalates and none of them costs credits.
 
 use std::future::Future;
+use std::time::Duration;
 
 use crate::client::Spider;
 use crate::credits::Credits;
 use crate::error::Error;
 use crate::ops::{out_of_time, within, Deadline};
-use crate::transport::{route, Reply, MAX_RESPONSE_BYTES};
+use crate::transport::{route, Reply};
 use crate::Result;
+
+/// How long an account read may take unless the client's wall is shorter.
+///
+/// A balance or a page of the crawl record is a database read, and one that
+/// has not answered in a minute is not going to. The page operations have a
+/// longer default of their own, because a crawl runs for as long as the site
+/// is large.
+pub(crate) const DEFAULT_READ_WALL: Duration = Duration::from_secs(60);
 
 /// One account read, held to the client's wall and judged on the call plane.
 ///
 /// These reads take no builder budget, so the wall on the client is what
-/// bounds them, capped at 60 seconds even with an unlimited budget. A shorter
-/// client wall wins; the client's explicit `without_wall` removes the cap. A
-/// read against a service that accepted the request and went quiet used to
-/// wait for as long as the socket stayed open.
+/// bounds them: [`DEFAULT_READ_WALL`], or the client's own wall when that is
+/// shorter, and nothing at all only when the client was built with
+/// `without_wall`. A read against a service that accepted the request and
+/// went quiet used to wait for as long as the socket stayed open.
 pub(crate) async fn read_under_wall<T, F, D>(spider: &Spider, call: F, decode: D) -> Result<T>
 where
     F: Future<Output = Result<Reply>>,
@@ -125,7 +134,7 @@ impl<'a> CrawlLogs<'a> {
                 route::DATA_CRAWL_LOGS,
                 &[],
                 &pairs,
-                Some(MAX_RESPONSE_BYTES),
+                self.spider.response_limit,
             ),
             rows,
         )
@@ -176,7 +185,7 @@ impl<'a> Table<'a> {
                 route::DATA_TABLE,
                 &[&self.name],
                 &pairs,
-                Some(MAX_RESPONSE_BYTES),
+                self.spider.response_limit,
             ),
             rows,
         )

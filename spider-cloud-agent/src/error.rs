@@ -85,11 +85,18 @@ pub enum Error {
     #[error("could not read the response: {0}")]
     Decode(#[source] serde_json::Error),
 
-    /// A high-level response exceeded the bound on decoding and trimming work.
-    #[error("response exceeds the {limit} byte limit")]
+    /// The answer ran past the size the client was built to read.
+    ///
+    /// Only a client built with `max_response_bytes` can see this. Inside a
+    /// page operation it arrives as the source of an [`Error::Exhausted`]
+    /// whose attempts include the cut-off call, so nothing spent before it is
+    /// lost.
+    #[error("the answer ran past {limit} bytes")]
     ResponseTooLarge {
-        /// The maximum response size accepted by high-level operations.
+        /// The most the client was built to read.
         limit: usize,
+        /// The status the answer arrived with. The body behind it was not read.
+        status: ApiStatus,
     },
 
     /// The client was built with settings that cannot work.

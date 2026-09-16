@@ -42,15 +42,13 @@ fn f1_cookie_map_fixture_decodes_as_a_page() {
         .read(&url::Url::parse("https://example.com").unwrap(), None)
         .unwrap();
     let page = pages.first_ok().unwrap();
-    assert_eq!(
-        page.cookies
-            .as_ref()
-            .unwrap()
-            .get("session")
-            .map(String::as_str),
-        Some("REDACTED")
-    );
+    let cookies = page.cookies.as_ref().unwrap();
+    // The session value looked like a credential, so the redactor dropped it.
+    // The theme did not, so it survived. Both names came through as a map.
+    assert_eq!(cookies.get("session").map(String::as_str), Some("REDACTED"));
+    assert_eq!(cookies.get("theme").map(String::as_str), Some("dark"));
     assert_eq!(page.cost(), Credits::from_usd(0.0001));
+    assert_eq!(page.text(), Some("<h1>Your account</h1>"));
 }
 
 /// One fixture, by file name.

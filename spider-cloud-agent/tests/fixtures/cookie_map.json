@@ -1,14 +1,27 @@
-{
-  "content": {
-    "raw": "A page with cookies."
-  },
-  "cookies": {
-    "session": "REDACTED",
-    "theme": "REDACTED"
-  },
-  "costs": {
-    "total_cost": 0.0001
-  },
-  "status": 200,
-  "url": "https://example.com/"
-}
+[
+  {
+    "content": "<h1>Your account</h1>",
+    "cookies": {
+      "session": "REDACTED",
+      "theme": "dark"
+    },
+    "costs": {
+      "ai_cost": 0,
+      "bytes_transferred_cost": 0.00002,
+      "compute_cost": 0.00008,
+      "file_cost": 0,
+      "total_cost": 0.0001,
+      "transform_cost": 0
+    },
+    "error": null,
+    "metadata": {
+      "description": "Orders and settings.",
+      "domain": "example.com",
+      "pathname": "/account",
+      "resource_type": "html",
+      "title": "Your account"
+    },
+    "status": 200,
+    "url": "https://example.com/account"
+  }
+]

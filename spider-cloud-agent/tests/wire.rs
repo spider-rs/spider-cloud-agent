@@ -28,6 +28,7 @@ use spider_cloud_agent::ops::transform::Document;
 use spider_cloud_agent::params::ReturnFormat;
 use spider_cloud_agent::policy::StopReason;
 use spider_cloud_agent::{Body, Budget, Credits, Error, Spider};
+use std::future::Future;
 use std::io::{BufRead, BufReader, Read, Write};
 use std::net::{TcpListener, TcpStream};
 use std::sync::mpsc::{channel, Receiver, Sender};
@@ -219,6 +220,37 @@ fn client_with_wall(stub: &Stalled, wall: Duration) -> Spider {
         .expect("a client")
 }
 
+/// Drive `op` until the stub holds its request, then freeze the clock so that
+/// only a timer can end the call, and let tokio jump straight to the next one.
+///
+/// This is how a fifteen minute wall is proved in a few milliseconds. The
+/// connection is made on the real clock first, because the built-in client's
+/// connect timeout is a timer too and a frozen clock would jump to it before
+/// the loopback handshake was seen. The clock is thawed again on the way out.
+///
+/// Returns what the call ended with and how much clock it took. A call that
+/// nothing ends is cut at `patience` of frozen time and reported as `None`.
+async fn frozen<T>(
+    stub: &Stalled,
+    patience: Duration,
+    op: impl Future<Output = T>,
+) -> (Option<T>, Duration) {
+    let mut op = std::pin::pin!(op);
+    let mut held = 0;
+    while held == 0 {
+        tokio::select! {
+            _ = &mut op => panic!("the call ended before the stub held its request"),
+            _ = tokio::time::sleep(Duration::from_millis(2)) => held += stub.received(),
+        }
+    }
+    tokio::time::pause();
+    let started = tokio::time::Instant::now();
+    let result = tokio::time::timeout(patience, op).await.ok();
+    let took = started.elapsed();
+    tokio::time::resume();
+    (result, took)
+}
+
 /// Long enough that a hang is what it measures, short enough to fail fast.
 const HANG: Duration = Duration::from_secs(5);
 
@@ -364,6 +396,145 @@ async fn f1_wall_ends_every_operation() {
     }
 }
 
+/// The default wall, exercised as a caller meets it: a client built with no
+/// budget at all, against a service that takes the request and never answers,
+/// on every page operation and on search. The clock is frozen once the stub
+/// holds the request, so the test proves the fifteen minutes without waiting
+/// them, and a build with no default wall fails here because nothing ends the
+/// call before the patience runs out.
+#[tokio::test]
+async fn f1_the_default_wall_ends_every_page_operation_and_search() {
+    let wall = Budget::default().wall.expect("a finite default wall");
+    assert_eq!(wall, Duration::from_secs(15 * 60));
+    let clock = std::time::Instant::now();
+    for operation in 0..7 {
+        let stub = stall();
+        let spider = Spider::builder()
+            .key("not-a-real-key")
+            .base_url(stub.base.clone())
+            .build()
+            .unwrap();
+        let (result, took) = frozen(&stub, wall * 2, async {
+            match operation {
+                0 => spider
+                    .scrape("https://example.com")
+                    .send_all()
+                    .await
+                    .map(|_| ()),
+                1 => spider
+                    .crawl("https://example.com")
+                    .send_all()
+                    .await
+                    .map(|_| ()),
+                2 => spider
+                    .links("https://example.com")
+                    .send_all()
+                    .await
+                    .map(|_| ()),
+                3 => spider
+                    .screenshot("https://example.com")
+                    .send_all()
+                    .await
+                    .map(|_| ()),
+                4 => spider
+                    .fetch("example.com", "/")
+                    .send_all()
+                    .await
+                    .map(|_| ()),
+                5 => spider
+                    .transform(vec![Document::html("<p>hello</p>")])
+                    .send_all()
+                    .await
+                    .map(|_| ()),
+                _ => spider.search("example").send().await.map(|_| ()),
+            }
+        })
+        .await;
+        let result = result.expect("no wall ended the call");
+        assert!(
+            matches!(
+                result,
+                Err(Error::BudgetExceeded {
+                    kind: BudgetKind::Time,
+                    ..
+                })
+            ),
+            "operation {operation}: {result:?}"
+        );
+        assert!(took <= wall, "operation {operation} took {took:?}");
+    }
+    assert!(clock.elapsed() < HANG, "the frozen clock was not used");
+}
+
+/// An account read runs under a minute unless the client's wall is shorter,
+/// whatever the budget says, and a budget with a longer wall does not stretch
+/// it. Only `without_wall` on the builder lifts it.
+#[tokio::test]
+async fn f1_account_reads_end_under_the_read_wall_by_default() {
+    let minute = Duration::from_secs(60);
+    let default = || Spider::builder().key("not-a-real-key");
+    let long = || {
+        Spider::builder()
+            .key("not-a-real-key")
+            .budget(Budget::default().with_wall(Duration::from_secs(2 * 60 * 60)))
+    };
+    let builders: [&dyn Fn() -> spider_cloud_agent::client::SpiderBuilder; 2] = [&default, &long];
+    for (which, builder) in builders.iter().enumerate() {
+        for operation in 0..3 {
+            let stub = stall();
+            let spider = builder().base_url(stub.base.clone()).build().unwrap();
+            let (result, took) = frozen(&stub, minute * 2, async {
+                match operation {
+                    0 => spider.credits().await.map(|_| ()),
+                    1 => spider.crawl_logs().send().await.map(|_| ()),
+                    _ => spider.table("pages").send().await.map(|_| ()),
+                }
+            })
+            .await;
+            let result = result.expect("no wall ended the read");
+            assert!(
+                matches!(
+                    result,
+                    Err(Error::BudgetExceeded {
+                        kind: BudgetKind::Time,
+                        ..
+                    })
+                ),
+                "builder {which}, read {operation}: {result:?}"
+            );
+            assert!(
+                took <= minute,
+                "builder {which}, read {operation} took {took:?}"
+            );
+        }
+    }
+}
+
+#[tokio::test]
+async fn f1_without_wall_lets_an_account_read_wait() {
+    for operation in 0..3 {
+        let stub = stall();
+        let spider = Spider::builder()
+            .key("not-a-real-key")
+            .base_url(stub.base.clone())
+            .without_wall()
+            .build()
+            .unwrap();
+        let (result, _) = frozen(&stub, Duration::from_secs(60 * 60), async {
+            match operation {
+                0 => spider.credits().await.map(|_| ()),
+                1 => spider.crawl_logs().send().await.map(|_| ()),
+                _ => spider.table("pages").send().await.map(|_| ()),
+            }
+        })
+        .await;
+        assert!(
+            result.is_none(),
+            "read {operation} ended with no wall: {result:?}"
+        );
+    }
+}
+
 #[tokio::test]
 async fn f1_http_base_is_refused_before_sending() {
     let stub = serve(&[PAGE_ANSWER]);
@@ -392,39 +563,132 @@ async fn f1_insecure_opt_in_allows_a_test_service() {
     assert_eq!(stub.sent().len(), 1);
 }
 
-#[test]
-fn f1_wall_opt_out_is_explicit() {
+/// The opt-out is a method the caller has to name, and once named a page
+/// operation waits past the default wall the way it always did.
+#[tokio::test]
+async fn f1_wall_opt_out_is_explicit() {
+    let stub = stall();
     let spider = Spider::builder()
         .key("not-a-real-key")
-        .base_url(Url::parse("https://example.com").unwrap())
+        .base_url(stub.base.clone())
         .without_wall()
         .build()
         .unwrap();
     assert_eq!(spider.budget().wall, None);
+    let wall = Budget::default().wall.expect("a finite default wall");
+    let (result, _) = frozen(&stub, wall * 2, spider.scrape("https://example.com").send()).await;
+    assert!(result.is_none(), "the call ended with no wall: {result:?}");
 }
 
+/// One page, larger than the cap the crate used to carry. Nothing caps an
+/// answer unless the caller built the client with a cap, because a crawl
+/// answer is as large as the site and a limit nobody asked for turned real
+/// pages into errors.
 #[tokio::test]
-async fn f1_large_response_is_bounded_before_decoding() {
-    let stub = serve(&[&" ".repeat(spider_cloud_agent::client::MAX_RESPONSE_BYTES + 1)]);
-    assert!(matches!(
-        client(&stub).scrape("https://example.com").send().await,
-        Err(Error::ResponseTooLarge { .. })
-    ));
+async fn f1_no_answer_is_too_large_unless_the_client_says_so() {
+    let body = format!(
+        r#"[{{"url":"https://example.com/","status":200,"content":"{}","costs":{{"total_cost":0.0001}}}}]"#,
+        "x".repeat(9 * 1024 * 1024)
+    );
+    let stub = serve(&[&body]);
+    let page = client(&stub)
+        .scrape("https://example.com")
+        .send()
+        .await
+        .expect("a page of nine megabytes");
+    assert_eq!(page.value.text().map(str::len), Some(9 * 1024 * 1024));
+    assert_eq!(stub.sent().len(), 1);
 }
 
+/// A cap the client asked for cuts the answer off, and the walk that hit it
+/// keeps its trail: a refusal that cost credits before it is still on the
+/// error, and the cut-off call is recorded with the status it arrived with.
 #[tokio::test]
-async fn f1_chunked_response_is_bounded_before_decoding() {
-    let limit = spider_cloud_agent::client::MAX_RESPONSE_BYTES;
-    let stub = serve_answers(&[Answer::with(
+async fn f1_a_cap_the_client_asked_for_keeps_the_spend() {
+    let limit = 4096;
+    let refused = r#"[{"url":"https://example.com/","status":403,"content":"",
+        "costs":{"total_cost":0.0001}}]"#;
+    let stub = serve_answers(&[Answer::ok(refused), Answer::ok(&" ".repeat(limit + 1))]);
+    let spider = Spider::builder()
+        .key("not-a-real-key")
+        .base_url(stub.base.clone())
+        .max_response_bytes(limit)
+        .build()
+        .unwrap();
+    let error = tokio::time::timeout(HANG, spider.scrape("https://example.com").send())
+        .await
+        .expect("the capped call hung")
+        .unwrap_err();
+    assert_eq!(error.spent(), Credits::from_usd(0.0001));
+    match &error {
+        Error::Exhausted {
+            attempts, source, ..
+        } => {
+            assert_eq!(attempts.len(), 2);
+            assert_eq!(attempts[1].api.code(), 200);
+            assert!(
+                matches!(
+                    source.as_deref(),
+                    Some(Error::ResponseTooLarge { limit: got, .. }) if *got == limit
+                ),
+                "{error:?}"
+            );
+        }
+        other => panic!("{other:?}"),
+    }
+    assert_eq!(stub.sent().len(), 2);
+}
+
+/// The cap holds on a chunked answer too, where there is no length to read
+/// ahead of the body, and on search, whose one call is recorded the same way.
+#[tokio::test]
+async fn f1_a_cap_holds_on_chunked_answers_and_on_search() {
+    let limit = 4096;
+    let chunked = serve_answers(&[Answer::with(
         200,
         "transfer-encoding: chunked\r\n",
         &" ".repeat(limit + 1),
     )]);
-    let result = tokio::time::timeout(HANG, client(&stub).scrape("https://example.com").send())
+    let spider = Spider::builder()
+        .key("not-a-real-key")
+        .base_url(chunked.base.clone())
+        .max_response_bytes(limit)
+        .build()
+        .unwrap();
+    let result = tokio::time::timeout(HANG, spider.scrape("https://example.com").send())
         .await
-        .expect("streaming response hung");
-    assert!(matches!(result, Err(Error::ResponseTooLarge { limit: got }) if got == limit));
-    assert_eq!(stub.sent().len(), 1);
+        .expect("the streaming answer hung");
+    assert!(
+        matches!(
+            &result,
+            Err(Error::Exhausted { attempts, source, .. })
+                if attempts.len() == 1
+                    && matches!(source.as_deref(), Some(Error::ResponseTooLarge { limit: got, .. }) if *got == limit)
+        ),
+        "{result:?}"
+    );
+    assert_eq!(chunked.sent().len(), 1);
+
+    let searched = serve(&[&" ".repeat(limit + 1)]);
+    let spider = Spider::builder()
+        .key("not-a-real-key")
+        .base_url(searched.base.clone())
+        .max_response_bytes(limit)
+        .build()
+        .unwrap();
+    let result = tokio::time::timeout(HANG, spider.search("example").send())
+        .await
+        .expect("the search hung");
+    assert!(
+        matches!(
+            &result,
+            Err(Error::Exhausted { attempts, source, .. })
+                if attempts.len() == 1
+                    && matches!(source.as_deref(), Some(Error::ResponseTooLarge { limit: got, .. }) if *got == limit)
+        ),
+        "{result:?}"
+    );
+    assert_eq!(searched.sent().len(), 1);
 }
 
 #[tokio::test]

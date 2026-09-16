@@ -24,7 +24,7 @@ citations. Run `scripts/check-anchors.sh` after moving code so these references 
    `Code(<redacted>)` at `spider-cloud-agent/src/auth/oauth.rs:186` (`Code(<redacted>)`). A
    `#[derive(Debug)]` on a struct that later gains a key field is the ordinary way a credential gets
    out, and where it goes is a log the caller ships somewhere else. The tests that hold this are
-   `spider-cloud-agent/src/client.rs:784` (`fn no_error_the_crate_makes_carries_the_key`) and
+   `spider-cloud-agent/src/client.rs:814` (`fn no_error_the_crate_makes_carries_the_key`) and
    `spider-cloud-agent/src/auth/oauth.rs:810` (`fn a_code_never_prints_itself`).
 
 2. **A recorded response becomes a fixture only by way of `cargo run -p xtask -- redact`.** It
@@ -191,7 +191,7 @@ citations. Run `scripts/check-anchors.sh` after moving code so these references 
 17. **A new knob on the curated surface needs an argument, not a use case.** The curated set is
     request mode, proxy pool, country, wait condition, profile, timeout, session, budget, need and
     max tokens, plus `page_links` on page operations. `params_mut()` reaches the full parameter set.
-    The exact method membership is checked at `spider-cloud-agent/src/ops/mod.rs:1014`
+    The exact method membership is checked at `spider-cloud-agent/src/ops/mod.rs:1044`
     (`fn curated_surface_membership_is_explicit`), and each method has a reason in
     `docs/action-vocabulary.md`. Every promotion is a label the router has to learn and a column the
     trainer has to carry, and a new routing action lands in `spider-route` first

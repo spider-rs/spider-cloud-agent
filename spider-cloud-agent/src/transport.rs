@@ -65,11 +65,6 @@ const REDACTED: &str = "<redacted>";
 /// operating system's own retries, which run to minutes.
 pub const CONNECT_TIMEOUT: Duration = Duration::from_secs(30);
 
-/// High-level operations read at most 8 MiB before decoding or trimming.
-/// Raw calls keep their caller-owned limits. This bounds synchronous work as
-/// well as memory, even when the service omits Content-Length.
-pub const MAX_RESPONSE_BYTES: usize = 8 * 1024 * 1024;
-
 /// Only literal loopback addresses bypass TLS without an explicit opt-in.
 pub(crate) fn validate_base(base: &Url, insecure: bool) -> Result<()> {
     let loopback = match base.host() {
@@ -512,7 +507,6 @@ impl Transport {
         let client = reqwest::Client::builder()
             .user_agent(USER_AGENT)
             .connect_timeout(CONNECT_TIMEOUT)
-            .redirect(reqwest::redirect::Policy::none())
             .build()
             .map_err(Error::Transport)?;
         Ok(Transport::with_client(key, base, client).allow_insecure_http(insecure))
@@ -579,6 +573,11 @@ impl Transport {
         self.post_with_limit(route, args, body, None).await
     }
 
+    /// The same, reading at most `limit` bytes of the answer.
+    ///
+    /// `None` reads whatever arrives. A reply past the limit is cut off with
+    /// [`Error::ResponseTooLarge`] carrying the status it arrived with, so the
+    /// send loop can record the attempt before it gives up.
     pub(crate) async fn post_with_limit<B: Serialize>(
         &self,
         route: Route,
@@ -659,12 +658,12 @@ impl Transport {
                     .content_length()
                     .is_some_and(|size| size > limit as u64)
                 {
-                    return Err(Error::ResponseTooLarge { limit });
+                    return Err(Error::ResponseTooLarge { limit, status });
                 }
                 let mut bytes = Vec::new();
                 while let Some(chunk) = response.chunk().await.map_err(Error::Transport)? {
                     if chunk.len() > limit.saturating_sub(bytes.len()) {
-                        return Err(Error::ResponseTooLarge { limit });
+                        return Err(Error::ResponseTooLarge { limit, status });
                     }
                     bytes.extend_from_slice(&chunk);
                 }

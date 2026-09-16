@@ -4,11 +4,12 @@
 //! need to, then `send`. `send` hands back the one page that worked. `send_all`
 //! hands back everything, failures included, which is what a crawl and a batch
 //! are actually for.
-//! An empty HTTP 204 returns empty `Pages` from `send_all`. A single-page
-//! `send` returns `Error::Exhausted` with no last page, because no page exists.
-//! High-level operations default to fifteen minutes, including backoff, and
-//! accept at most 8 MiB per response to bound decoding and trimming work.
-//! Synchronous caller hooks must return promptly; they cannot be preempted.
+//!
+//! Every operation ends. The budget's wall, fifteen minutes unless the caller
+//! says otherwise, is one deadline over every send and every sleep in the
+//! walk, and an empty 204 is an empty `Pages` from `send_all` rather than a
+//! decode failure. A router, recorder or policy the caller supplied runs on
+//! the caller's thread between calls and is not under the deadline.
 //!
 //! The adjustable surface is short on purpose. Mode, proxy pool, country, wait
 //! condition, profile, timeout, session and budget are the settings worth
@@ -45,7 +46,7 @@ use crate::thrift::plan::Endpoint;
 use crate::thrift::tokens::{approx_tokens, TokenBudget};
 use crate::thrift::trim::Trimmer;
 use crate::thrift::{Need, Plan, ThriftReport};
-use crate::transport::{route, Route, MAX_RESPONSE_BYTES};
+use crate::transport::{route, Route};
 use crate::Result;
 use spider_route::featurize;
 use tokio::time::{sleep, timeout_at, Instant as DeadlineInstant};
@@ -294,7 +295,7 @@ impl<'a> Call<'a> {
                 deadline,
                 self.spider
                     .raw()
-                    .post_with_limit(current, args, &body, Some(MAX_RESPONSE_BYTES)),
+                    .post_with_limit(current, args, &body, self.spider.response_limit),
             )
             .await;
             let mut wall_ran_out = false;
@@ -370,6 +371,20 @@ impl<'a> Call<'a> {
                 Some(Err(Error::Transport(e))) if e.is_connect() => {
                     call_error = Some(Error::Transport(e));
                     Observed::connect_failed().taking(before.elapsed())
+                }
+                // The answer ran past the size the caller asked the client to
+                // read. The call is recorded before the walk stops, so what
+                // was spent on the attempts before it stays on the error, and
+                // the walk stops rather than climbs, because a heavier request
+                // buys a bigger answer.
+                Some(Err(Error::ResponseTooLarge { limit, status })) => {
+                    attempts.push(Attempt::new(before.elapsed(), status, None, Credits::ZERO));
+                    return Err(Error::Exhausted {
+                        attempts,
+                        last: last_failed.map(Box::new),
+                        reason: StopReason::Unhandled,
+                        source: Some(Box::new(Error::ResponseTooLarge { limit, status })),
+                    });
                 }
                 // Anything else went wrong before a call could be judged, so
                 // there is nothing for the policy to read.
@@ -565,14 +580,29 @@ impl<'a> Call<'a> {
         let body = make_body(&self.params);
         // One call, held to the wall the same way the send loop holds its
         // calls. A search against a service that went quiet hung here too.
-        let reply = within(
+        let before = Instant::now();
+        let reply = match within(
             deadline,
             self.spider
                 .raw()
-                .post_with_limit(route, &[], &body, Some(MAX_RESPONSE_BYTES)),
+                .post_with_limit(route, &[], &body, self.spider.response_limit),
         )
         .await
-        .ok_or_else(|| out_of_time(Vec::new()))??
+        .ok_or_else(|| out_of_time(Vec::new()))?
+        {
+            Ok(reply) => reply,
+            // Recorded the way the send loop records it, so the one call this
+            // made is on the error rather than lost with it.
+            Err(Error::ResponseTooLarge { limit, status }) => {
+                return Err(Error::Exhausted {
+                    attempts: vec![Attempt::new(before.elapsed(), status, None, Credits::ZERO)],
+                    last: None,
+                    reason: StopReason::Unhandled,
+                    source: Some(Box::new(Error::ResponseTooLarge { limit, status })),
+                });
+            }
+            Err(other) => return Err(other),
+        }
         .into_result()?;
         let body: serde_json::Value = reply.json()?;
         let cost = charged(&body);
