@@ -41,6 +41,9 @@ pub struct Attempt {
     pub page: Option<PageStatus>,
     /// What this attempt cost.
     pub cost: Credits,
+    /// The request may have been accepted, but its full charge could not be recovered.
+    pub charge_unknown: bool,
+    pub(crate) reserved: Credits,
 }
 
 impl Attempt {
@@ -56,6 +59,8 @@ impl Attempt {
             api,
             page,
             cost,
+            charge_unknown: false,
+            reserved: cost,
         }
     }
 }
@@ -77,6 +82,8 @@ impl Attempt {
 #[derive(Debug, Clone)]
 #[non_exhaustive]
 pub struct Outcome<T> {
+    /// Reported spend beyond the available cap. The paid result is kept.
+    pub overrun: Option<BudgetOverrun>,
     /// What the operation produced.
     pub value: T,
     /// Every call made, in order.
@@ -94,17 +101,49 @@ pub struct Outcome<T> {
     pub route: Option<RouteDecision>,
 }
 
+/// A successful operation whose reported bill exceeded its available credit cap.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct BudgetOverrun {
+    /// Whether the cap belongs to the operation or the shared run.
+    pub scope: BudgetScope,
+    /// Credits allowed by this cap.
+    pub cap: Credits,
+    /// Known spend against this cap.
+    pub spent: Credits,
+}
+
+/// The owner of a reported credit overrun.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum BudgetScope {
+    /// All attempts in one operation.
+    Operation,
+    /// All operations sharing a run budget.
+    Run,
+    /// One page within an operation.
+    Page,
+}
+
 impl<T> Outcome<T> {
     /// Build an outcome. Internal to the client.
     pub(crate) fn new(value: T, attempts: Vec<Attempt>) -> Outcome<T> {
         let cost = attempts.iter().map(|a| a.cost).sum();
         Outcome {
+            overrun: None,
             value,
             attempts,
             cost,
             thrift: ThriftReport::default(),
             route: None,
         }
+    }
+
+    pub(crate) fn with_cap(mut self, cap: Option<Credits>) -> Self {
+        self.overrun = cap.filter(|cap| self.cost > *cap).map(|cap| BudgetOverrun {
+            scope: BudgetScope::Operation,
+            cap,
+            spent: self.cost,
+        });
+        self
     }
 
     /// Attach what the router chose. Internal to the client.
@@ -143,6 +182,7 @@ impl<T> Outcome<T> {
     pub fn map<U>(self, f: impl FnOnce(T) -> U) -> Outcome<U> {
         Outcome {
             value: f(self.value),
+            overrun: self.overrun,
             attempts: self.attempts,
             cost: self.cost,
             thrift: self.thrift,
@@ -173,6 +213,25 @@ mod tests {
     )]
     use super::page::PageParts;
     use super::*;
+
+    #[test]
+    fn f2_mapping_an_outcome_preserves_its_overrun() {
+        let outcome = Outcome::new(
+            1,
+            vec![Attempt::new(
+                Duration::ZERO,
+                ApiStatus::new(200),
+                None,
+                Credits(2.0),
+            )],
+        )
+        .with_cap(Some(Credits(1.0)));
+        let expected = outcome.overrun;
+        let mapped = outcome.map(|value| value.to_string());
+        assert_eq!(mapped.overrun, expected);
+        assert_eq!(mapped.cost, Credits(2.0));
+        assert_eq!(mapped.value, "1");
+    }
 
     fn attempt(code: u16, page: Option<u16>, cost: f64) -> Attempt {
         Attempt::new(

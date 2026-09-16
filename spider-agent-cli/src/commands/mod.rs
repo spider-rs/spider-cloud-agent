@@ -12,7 +12,7 @@ use serde_json::json;
 use url::Url;
 
 use spider_cloud_agent::response::{Outcome, PageResult, Pages};
-use spider_cloud_agent::{Budget, Credits};
+use spider_cloud_agent::{Budget, RunBudget, Spider};
 
 use crate::cli::{Format, Global};
 use crate::emit::{Emitter, Item};
@@ -23,14 +23,10 @@ use crate::setup;
 /// The caps a run over several addresses shares.
 ///
 /// `--budget` and `--wall` are documented as the most the whole run may
-/// spend. The client applies them to one operation, and a command that
-/// works a list of addresses runs one operation per address, so without this
-/// every page started with the whole cap again: a hundred pages under a cap
-/// of one credit paid for a hundred pages. The check is made before every
-/// page, against what the report says has been spent so far, and what is
-/// left is handed to the next operation as its own cap.
+/// spend. The library owns credit admission and settlement. This helper keeps
+/// the run's wall and checks the shared credit balance between pages.
 pub struct Caps {
-    credits: Option<f64>,
+    credits: Option<RunBudget>,
     /// In seconds, as the flag reads it.
     wall: Option<u64>,
     started: Instant,
@@ -38,9 +34,9 @@ pub struct Caps {
 
 impl Caps {
     /// The caps the caller set, counting from now.
-    pub fn new(global: &Global, started: Instant) -> Caps {
+    pub fn new(global: &Global, started: Instant, spider: &Spider) -> Caps {
         Caps {
-            credits: global.budget,
+            credits: spider.run_budget().cloned(),
             wall: global.wall,
             started,
         }
@@ -48,12 +44,10 @@ impl Caps {
 
     /// Which cap is spent before the next page goes out, if one is.
     ///
-    /// The first page always goes out under a credit cap, because a price is
-    /// not known until it is asked for. The clock is known, so a wall that is
-    /// already spent stops the run before anything is sent.
-    pub fn spent(&self, report: &Report) -> Option<&'static str> {
-        if let Some(cap) = self.credits {
-            if report.attempts > 0 && report.cost.get() >= cap {
+    /// Credit admission also checks the estimate immediately before each send.
+    pub fn spent(&self, _report: &Report) -> Option<&'static str> {
+        if let Some(cap) = &self.credits {
+            if cap.remaining() < spider_cloud_agent::policy::budget::ASSUMED_MINIMUM_COST {
                 return Some("budget");
             }
         }
@@ -66,11 +60,8 @@ impl Caps {
     }
 
     /// What the next operation may spend, out of what the run has left.
-    pub fn budget(&self, global: &Global, report: &Report) -> Budget {
+    pub fn budget(&self, global: &Global, _report: &Report) -> Budget {
         let mut budget = setup::budget(global);
-        if let Some(cap) = self.credits {
-            budget = budget.with_credits(Credits::new((cap - report.cost.get()).max(0.0)));
-        }
         if let Some(seconds) = self.wall {
             let left = Duration::from_secs(seconds).saturating_sub(self.started.elapsed());
             budget = budget.with_wall(left);
@@ -145,6 +136,13 @@ pub fn absorb(emitter: &mut Emitter, report: &mut Report, outcome: Outcome<Pages
         }
     }
     Ok(())
+}
+
+/// Keep the paid trail before converting the underlying error to the CLI code.
+pub fn failure(report: &mut Report, error: spider_cloud_agent::Error) -> Failure {
+    report.attempts += error.attempts().len();
+    report.cost += error.spent();
+    Failure::from(error.into_cause())
 }
 
 /// A failure against one address, as a record.

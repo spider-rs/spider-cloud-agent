@@ -23,7 +23,7 @@ use std::time::{Duration, Instant};
 use serde_json::Value;
 use url::Url;
 
-use spider_cloud_agent::{Budget, Credits, Need};
+use spider_cloud_agent::{Budget, Need};
 
 use crate::cli::{Format, Global, Goal, RunArgs};
 use crate::commands::{close_caps, finish, record};
@@ -48,7 +48,7 @@ pub async fn run(global: &Global, args: &RunArgs, log: Log) -> Run<Code> {
     if plan.need == Need::screenshot() {
         setup::refuse_bytes_on_a_terminal(global)?;
     }
-    let spider = setup::client(global)?;
+    let spider = setup::client_with_credits(global, plan.credits)?;
     let mut emitter = setup::emitter(global, Format::Ndjson)?;
     let mut report = Report {
         targets: plan.urls.len(),
@@ -61,7 +61,6 @@ pub async fn run(global: &Global, args: &RunArgs, log: Log) -> Run<Code> {
     let mut seen: Vec<String> = plan.urls.iter().map(|u| u.as_str().to_string()).collect();
     let mut followed = 0usize;
     let mut pages = 0usize;
-    let mut spent = Credits::ZERO;
     let mut stopped = None;
 
     while let Some(url) = frontier.pop_front() {
@@ -71,8 +70,8 @@ pub async fn run(global: &Global, args: &RunArgs, log: Log) -> Run<Code> {
                 break;
             }
         }
-        if let Some(cap) = plan.credits {
-            if spent.get() >= cap {
+        if let Some(cap) = spider.run_budget() {
+            if cap.remaining() < spider_cloud_agent::policy::budget::ASSUMED_MINIMUM_COST {
                 stopped = Some("budget");
                 break;
             }
@@ -84,7 +83,7 @@ pub async fn run(global: &Global, args: &RunArgs, log: Log) -> Run<Code> {
             }
         }
 
-        let budget = remaining(global, plan.credits, spent, started);
+        let budget = remaining(global, started);
         log.note(format!("working {url}"));
 
         let mut call = pin!(
@@ -105,7 +104,6 @@ pub async fn run(global: &Global, args: &RunArgs, log: Log) -> Run<Code> {
             Ok(outcome) => {
                 report.attempts += outcome.attempts.len();
                 report.cost += outcome.cost;
-                spent += outcome.cost;
                 report.add_thrift(&outcome.thrift);
                 if outcome.attempts.len() > 1 {
                     log.note(format!(
@@ -137,7 +135,7 @@ pub async fn run(global: &Global, args: &RunArgs, log: Log) -> Run<Code> {
                 }
             }
             Err(error) => {
-                let failure = Failure::from(error);
+                let failure = super::failure(&mut report, error);
                 if failure.code == Code::Budget {
                     stopped = Some("budget");
                 }
@@ -154,11 +152,8 @@ pub async fn run(global: &Global, args: &RunArgs, log: Log) -> Run<Code> {
 }
 
 /// What one page may spend, out of what the run has left.
-fn remaining(global: &Global, credits: Option<f64>, spent: Credits, started: Instant) -> Budget {
+fn remaining(global: &Global, started: Instant) -> Budget {
     let mut budget = setup::budget(global);
-    if let Some(cap) = credits {
-        budget = budget.with_credits(Credits::new((cap - spent.get()).max(0.0)));
-    }
     if let Some(seconds) = global.wall {
         let left = Duration::from_secs(seconds).saturating_sub(started.elapsed());
         budget = budget.with_wall(left);

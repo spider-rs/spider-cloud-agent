@@ -211,10 +211,16 @@ pub fn budget(global: &Global) -> Budget {
 
 /// A client carrying the caps, ready to be asked for an operation.
 pub fn client(global: &Global) -> Run<Spider> {
-    Spider::builder()
-        .budget(budget(global))
-        .build()
-        .map_err(Failure::from)
+    client_with_credits(global, global.budget)
+}
+
+/// Build the shared run cap, including a cap supplied by a plan.
+pub fn client_with_credits(global: &Global, credits: Option<f64>) -> Run<Spider> {
+    let mut builder = Spider::builder().budget(budget(global));
+    if let Some(cap) = credits {
+        builder = builder.run_budget(spider_cloud_agent::RunBudget::new(Credits::new(cap)));
+    }
+    builder.build().map_err(Failure::from)
 }
 
 /// The fetch mode the caller fixed, when they fixed one.

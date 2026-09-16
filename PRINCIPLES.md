@@ -12,19 +12,19 @@ citations. Run `scripts/check-anchors.sh` after moving code so these references 
 ## Credentials
 
 1. **A key never reaches a log line, an error message, a `Debug` output, a fixture or a commit.**
-   The bearer header is the only place the key is written (`spider-cloud-agent/src/transport.rs:696`
+   The bearer header is the only place the key is written (`spider-cloud-agent/src/transport.rs:690`
    (`fn bearer(`)), `REDACTED` stands in everywhere else (`spider-cloud-agent/src/transport.rs:59`
    (`const REDACTED:`), `spider-cloud-agent/src/client.rs:61` (`const REDACTED:`)), and `Debug` is
    hand written rather than derived on every type that holds one: `Spider` at
-   `spider-cloud-agent/src/client.rs:118` (`impl fmt::Debug for Spider {`), `SpiderBuilder` at
-   `spider-cloud-agent/src/client.rs:354` (`impl fmt::Debug for SpiderBuilder`), `Credentials` at
+   `spider-cloud-agent/src/client.rs:122` (`impl fmt::Debug for Spider {`), `SpiderBuilder` at
+   `spider-cloud-agent/src/client.rs:558` (`impl fmt::Debug for SpiderBuilder`), `Credentials` at
    `spider-cloud-agent/src/auth/store.rs:108` (`impl fmt::Debug for Credentials`). The OAuth
    authorization code gets its own newtype for this and nothing else, `Code` at
    `spider-cloud-agent/src/auth/oauth.rs:176` (`struct Code(`), whose `Debug` prints
    `Code(<redacted>)` at `spider-cloud-agent/src/auth/oauth.rs:186` (`Code(<redacted>)`). A
    `#[derive(Debug)]` on a struct that later gains a key field is the ordinary way a credential gets
    out, and where it goes is a log the caller ships somewhere else. The tests that hold this are
-   `spider-cloud-agent/src/client.rs:814` (`fn no_error_the_crate_makes_carries_the_key`) and
+   `spider-cloud-agent/src/client.rs:1032` (`fn no_error_the_crate_makes_carries_the_key`) and
    `spider-cloud-agent/src/auth/oauth.rs:810` (`fn a_code_never_prints_itself`).
 
 2. **A recorded response becomes a fixture only by way of `cargo run -p xtask -- redact`.** It
@@ -65,7 +65,7 @@ citations. Run `scripts/check-anchors.sh` after moving code so these references 
    `spider-cloud-agent/src/status/mod.rs:31` (`let _ = PageStatus::from`). The rule table keeps them
    apart as separate triggers (`spider-cloud-agent/src/policy/rule.rs:17` (`pub enum Trigger`)), and
    the send loop sorts a body status the service mirrored onto the envelope back where it belongs
-   (`spider-cloud-agent/src/ops/mod.rs:321`
+   (`spider-cloud-agent/src/ops/mod.rs:432`
    (`if reply.is_success() || reply.is_mirrored_page_status()`)).
 
    How the call to Spider Cloud went and how the target site answered are different facts that
@@ -93,7 +93,7 @@ citations. Run `scripts/check-anchors.sh` after moving code so these references 
 
 7. **An empty body is a failure only when the caller wanted a body.** `Need::Metadata` and
    `Need::Fields` ask for `return_format=empty` on purpose, so the page arrives with nothing in it
-   and that is the request working as asked (`spider-cloud-agent/src/ops/mod.rs:349`
+   and that is the request working as asked (`spider-cloud-agent/src/ops/mod.rs:490`
    (`if nothing_came_back(&pages) && !body_was_declined`)). Reading it as a blank page sent the walk
    up the whole ladder against a request that had already succeeded and billed for every step. That
    bill is the reason principle 12 is written down rather than assumed.
@@ -191,7 +191,7 @@ citations. Run `scripts/check-anchors.sh` after moving code so these references 
 17. **A new knob on the curated surface needs an argument, not a use case.** The curated set is
     request mode, proxy pool, country, wait condition, profile, timeout, session, budget, need and
     max tokens, plus `page_links` on page operations. `params_mut()` reaches the full parameter set.
-    The exact method membership is checked at `spider-cloud-agent/src/ops/mod.rs:1044`
+    The exact method membership is checked at `spider-cloud-agent/src/ops/mod.rs:1309`
     (`fn curated_surface_membership_is_explicit`), and each method has a reason in
     `docs/action-vocabulary.md`. Every promotion is a label the router has to learn and a column the
     trainer has to carry, and a new routing action lands in `spider-route` first

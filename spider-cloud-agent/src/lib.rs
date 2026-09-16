@@ -30,7 +30,7 @@ pub mod status;
 pub mod thrift;
 mod transport;
 
-pub use client::{Spider, SpiderBuilder, Transport};
+pub use client::{RunBudget, RunSpend, Spider, SpiderBuilder, Transport};
 pub use credits::{Credits, Usd, WholeCredits, CREDITS_PER_USD};
 pub use error::{AuthCause, BudgetKind, Error, Recovery};
 pub use memory::SiteMemoryStore;
