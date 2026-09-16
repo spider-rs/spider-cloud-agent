@@ -67,6 +67,12 @@ impl Default for Budget {
 }
 
 impl Budget {
+    /// Admission before any send, including the first call and non-page operations.
+    pub fn preflight(&self, made: u8, spent: Credits, estimate: Credits) -> Result<(), BudgetKind> {
+        self.allows_attempt(made)?;
+        self.allows_spend(spent, estimate)
+    }
+
     /// A budget that stops on nothing but the account balance.
     pub fn unlimited() -> Budget {
         Budget {
@@ -117,14 +123,22 @@ impl Budget {
     /// cap of one credit ran to the end and cost 172 credits when this was measured on
     /// 2026-09-15. The cap this client keeps for itself is the one that stops a run.
     ///
-    /// Anything already set on the request is left alone. A caller who set a tighter
-    /// cap by hand keeps it.
+    /// A cap already set on the request can only be tightened. A caller who set a
+    /// tighter cap by hand keeps it, and a retry gets the remaining allowance.
     pub fn apply(&self, params: &mut RequestParams) {
-        if params.max_credits_allowed.is_none() {
-            params.max_credits_allowed = self.credits.map(WholeCredits::floor);
+        if let Some(cap) = self.credits.map(WholeCredits::floor) {
+            params.max_credits_allowed = Some(
+                params
+                    .max_credits_allowed
+                    .map_or(cap, |old| WholeCredits::new(old.get().min(cap.get()))),
+            );
         }
-        if params.max_credits_per_page.is_none() {
-            params.max_credits_per_page = self.per_page_credits;
+        if let Some(cap) = self.per_page_credits {
+            params.max_credits_per_page = Some(
+                params
+                    .max_credits_per_page
+                    .map_or(cap, |old| Credits(old.get().min(cap.get()))),
+            );
         }
     }
 

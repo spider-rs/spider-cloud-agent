@@ -101,7 +101,7 @@ fn serve(script: &[&str]) -> Stub {
 
 /// The same, with the status and the headers scripted too.
 fn serve_answers(script: &[Answer]) -> Stub {
-    let listener = TcpListener::bind("127.0.0.1:0").expect("a port");
+    let listener = TcpListener::bind((std::net::Ipv4Addr::new(127, 0, 0, 1), 0)).expect("a port");
     let address = listener.local_addr().expect("an address");
     let script: Vec<Answer> = script.to_vec();
     let (sender, seen) = channel();
@@ -171,7 +171,7 @@ struct Stalled {
 }
 
 fn stall() -> Stalled {
-    let listener = TcpListener::bind("127.0.0.1:0").expect("a port");
+    let listener = TcpListener::bind((std::net::Ipv4Addr::new(127, 0, 0, 1), 0)).expect("a port");
     let address = listener.local_addr().expect("an address");
     let (sender, seen) = channel();
     let (release, held) = channel::<()>();
@@ -302,6 +302,9 @@ async fn f1_retry_sleep_uses_the_operation_deadline() {
         .key("not-a-real-key")
         .base_url(stub.base.clone())
         .router(SlowObserver)
+        // Keep the 500 ms wait fixed: random jitter can legitimately leave
+        // room for another call after the observer's 200 ms of work.
+        .policy(spider_cloud_agent::policy::Policy::standard())
         .budget(Budget::default().with_wall(Duration::from_millis(600)))
         .build()
         .unwrap();
@@ -763,11 +766,16 @@ async fn f1_mirrored_login_walks_but_account_refusal_stops() {
     assert_eq!(stub.sent().len(), 2);
     let stub = serve_answers(&[Answer::with(401, "", r#"{"error":"key refused"}"#)]);
     assert!(matches!(
-        client(&stub).scrape("https://example.com").send().await,
-        Err(Error::Auth {
+        client(&stub)
+            .scrape("https://example.com")
+            .send()
+            .await
+            .unwrap_err()
+            .cause(),
+        Error::Auth {
             cause: AuthCause::Refused,
             ..
-        })
+        }
     ));
     assert_eq!(stub.sent().len(), 1);
 }
@@ -904,11 +912,9 @@ async fn a_reset_header_on_one_answer_does_not_set_the_wait_for_a_later_one() {
     assert_eq!(stub.sent().len(), 3);
 }
 
-/// A service asking for a wait of 999999 seconds is not a reason to wait that
-/// long. The curve's ceiling holds the figure down, and this pins that the
-/// send loop honours the ceiling rather than the header.
+/// A server wait that cannot fit the wall stops the walk without retrying early.
 #[tokio::test]
-async fn a_huge_retry_after_is_held_to_the_backoff_ceiling() {
+async fn a_huge_retry_after_stops_at_the_wall_without_retrying_early() {
     use spider_cloud_agent::policy::Backoff;
     use spider_cloud_agent::Policy;
 
@@ -931,10 +937,17 @@ async fn a_huge_retry_after_is_held_to_the_backoff_ceiling() {
         spider.scrape("https://example.com").send(),
     )
     .await
-    .expect("the retry waited on the header rather than the ceiling")
-    .expect("the page");
+    .expect("the policy must refuse the wait immediately")
+    .unwrap_err();
 
-    assert_eq!(outcome.attempts.len(), 2, "{:?}", outcome.attempts);
+    assert!(matches!(
+        outcome,
+        Error::BudgetExceeded {
+            kind: BudgetKind::Time,
+            ..
+        }
+    ));
+    assert_eq!(stub.sent().len(), 1);
 }
 
 /// Read one request and hand back its request line and its body.
@@ -963,6 +976,190 @@ fn read_request(stream: &mut TcpStream) -> Option<Sent> {
         line: first.trim_end().to_string(),
         body: String::from_utf8(body).ok()?,
     })
+}
+
+#[tokio::test]
+async fn f2_zero_caps_send_nothing_on_scrape_and_search() {
+    for (budget, kind) in [
+        (Budget::default().with_attempts(0), BudgetKind::Attempts),
+        (
+            Budget::default().with_credits(Credits::ZERO),
+            BudgetKind::Credits,
+        ),
+    ] {
+        let stub = serve(&[PAGE_ANSWER]);
+        let spider = client(&stub);
+        let scrape = spider
+            .scrape("https://example.com")
+            .budget(budget)
+            .send()
+            .await
+            .unwrap_err();
+        let search = spider
+            .search("example")
+            .budget(budget)
+            .send()
+            .await
+            .unwrap_err();
+        for error in [scrape, search] {
+            assert!(
+                matches!(error, Error::BudgetExceeded { kind: got, ref attempts } if got == kind && attempts.is_empty())
+            );
+        }
+        assert!(stub.sent().is_empty());
+    }
+}
+
+#[tokio::test]
+async fn f2_paid_success_keeps_the_page_and_reports_overrun() {
+    let stub = serve(&[
+        r#"[{"url":"https://example.com","status":200,"content":"paid","costs":{"total_cost":0.0002}}]"#,
+    ]);
+    let spider = client(&stub);
+    let outcome = spider
+        .scrape("https://example.com")
+        .budget(Budget::default().with_credits(Credits(1.0)))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(outcome.text(), Some("paid"));
+    let overrun = outcome.overrun.unwrap();
+    assert_eq!(overrun.cap, Credits(1.0));
+    assert_eq!(overrun.spent, Credits(2.0));
+    assert_eq!(stub.sent().len(), 1);
+}
+
+#[tokio::test]
+async fn f2_run_credits_carry_across_operations_and_clones() {
+    let stub = serve(&[
+        r#"[{"url":"https://example.com","status":200,"content":"paid","costs":{"total_cost":0.000031}}]"#,
+    ]);
+    let run = spider_cloud_agent::RunBudget::new(Credits(1.0));
+    let spider = Spider::builder()
+        .key("not-a-real-key")
+        .base_url(stub.base.clone())
+        .run_budget(run.clone())
+        .build()
+        .unwrap();
+    for _ in 0..3 {
+        spider
+            .clone()
+            .scrape("https://example.com")
+            .send()
+            .await
+            .unwrap();
+    }
+    let error = spider
+        .scrape("https://example.com")
+        .send()
+        .await
+        .unwrap_err();
+    assert!(matches!(
+        error.cause(),
+        Error::BudgetExceeded {
+            kind: BudgetKind::Credits,
+            ..
+        }
+    ));
+    match error {
+        Error::Accounted { run: Some(run), .. } => {
+            assert_eq!(run.attempts, 3);
+            assert!((run.spent.get() - 0.93).abs() < 1e-9);
+        }
+        other => panic!("missing run accounting: {other:?}"),
+    }
+    assert_eq!(stub.sent().len(), 3);
+}
+
+#[tokio::test]
+async fn f2_concurrent_operations_reserve_before_sending() {
+    let stub = stall();
+    let run = spider_cloud_agent::RunBudget::new(Credits(0.1));
+    let spider = Spider::builder()
+        .key("not-a-real-key")
+        .base_url(stub.base.clone())
+        .budget(Budget::default().with_wall(WALL))
+        .run_budget(run.clone())
+        .build()
+        .unwrap();
+    let (first, second) = tokio::join!(
+        spider.scrape("https://example.com").send(),
+        spider.search("example").send()
+    );
+    for error in [first.unwrap_err(), second.unwrap_err()] {
+        assert!(matches!(error.cause(), Error::BudgetExceeded { .. }));
+    }
+    assert_eq!(stub.received(), 1);
+    assert_eq!(run.snapshot().attempts, 1);
+    assert_eq!(run.snapshot().unknown, 1);
+    assert_eq!(run.remaining(), Credits::ZERO);
+}
+
+#[tokio::test]
+async fn f2_decode_failure_keeps_previous_and_current_known_bills() {
+    let paid = r#"[{"url":"https://example.com","status":403,"costs":{"total_cost":0.0001}}]"#;
+    for malformed in [
+        "not json",
+        r#"{"status":"bad","costs":{"total_cost":0.0002}}"#,
+    ] {
+        let stub = serve(&[paid, malformed]);
+        let run = spider_cloud_agent::RunBudget::new(Credits(100.0));
+        let spider = Spider::builder()
+            .key("not-a-real-key")
+            .base_url(stub.base.clone())
+            .run_budget(run.clone())
+            .build()
+            .unwrap();
+        let error = spider
+            .scrape("https://example.com")
+            .send()
+            .await
+            .unwrap_err();
+        assert!(matches!(error.cause(), Error::Decode(_)));
+        assert_eq!(error.attempts().len(), 2);
+        let expected = if malformed == "not json" { 1.0 } else { 3.0 };
+        assert_eq!(error.spent(), Credits(expected));
+        assert_eq!(run.snapshot().spent, Credits(expected));
+        assert_eq!(error.attempts()[1].charge_unknown, malformed == "not json");
+        assert_eq!(stub.sent().len(), 2);
+    }
+}
+
+#[tokio::test]
+async fn f2_search_decode_keeps_a_known_bill() {
+    let stub = serve(&[r#"{"content":false,"costs":{"total_cost":0.0002}}"#]);
+    let error = client(&stub).search("example").send().await.unwrap_err();
+    assert!(matches!(error.cause(), Error::Decode(_)));
+    assert_eq!(error.spent(), Credits(2.0));
+    assert_eq!(error.attempts().len(), 1);
+    assert!(!error.attempts()[0].charge_unknown);
+}
+
+#[tokio::test]
+async fn f2_clients_add_different_jitter_after_the_same_429() {
+    use spider_cloud_agent::policy::Backoff;
+    let mut waits = Vec::new();
+    for seed in [1, 3] {
+        let stub = serve_answers(&[
+            Answer::with(429, "retry-after: 0\r\n", r#"{"error":"slow down"}"#),
+            Answer::ok(PAGE_ANSWER),
+        ]);
+        let spider = Spider::builder()
+            .key("not-a-real-key")
+            .base_url(stub.base.clone())
+            .jitter_seed(seed)
+            .build()
+            .unwrap();
+        let started = std::time::Instant::now();
+        let outcome = spider.scrape("https://example.com").send().await.unwrap();
+        let wait = started.elapsed().saturating_sub(outcome.elapsed());
+        let expected = Backoff::seeded(seed).delay(0, Some(Duration::ZERO));
+        assert!(wait >= expected, "{wait:?} shorter than {expected:?}");
+        assert!(wait < expected + Duration::from_millis(200), "{wait:?}");
+        waits.push(wait);
+        assert_eq!(stub.sent().len(), 2);
+    }
+    assert!((waits[0].as_secs_f64() - waits[1].as_secs_f64()).abs() > 0.1);
 }
 
 /// A client pointed at the stub.
@@ -1486,7 +1683,7 @@ async fn a_refused_key_with_no_page_is_an_auth_error_after_one_request() {
         .await
         .expect_err("a refused key");
 
-    match &failed {
+    match failed.cause() {
         Error::Auth { cause, message } => {
             assert_eq!(*cause, AuthCause::Refused);
             assert_eq!(message, "invalid api key");

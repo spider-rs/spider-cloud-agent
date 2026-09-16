@@ -30,7 +30,7 @@ pub async fn scrape(global: &Global, args: &ScrapeArgs, log: Log) -> Run<Code> {
         ..Report::default()
     };
     let started = Instant::now();
-    let caps = Caps::new(global, started);
+    let caps = Caps::new(global, started, &spider);
     let mut worst = None;
     let mut stopped = None;
 
@@ -61,6 +61,9 @@ pub async fn scrape(global: &Global, args: &ScrapeArgs, log: Log) -> Run<Code> {
                 absorb(&mut emitter, &mut report, outcome)?;
             }
             Err(error) => {
+                report.attempts += error.attempts().len();
+                report.cost += error.spent();
+                let error = error.into_cause();
                 if record(
                     &mut emitter,
                     &mut report,
@@ -119,6 +122,9 @@ pub async fn fetch(global: &Global, args: &FetchArgs, log: Log) -> Run<Code> {
     match call.send_all().await {
         Ok(outcome) => absorb(&mut emitter, &mut report, outcome)?,
         Err(error) => {
+            report.attempts += error.attempts().len();
+            report.cost += error.spent();
+            let error = error.into_cause();
             record(
                 &mut emitter,
                 &mut report,
@@ -144,7 +150,7 @@ pub async fn crawl(global: &Global, args: &CrawlArgs, log: Log) -> Run<Code> {
         ..Report::default()
     };
     let started = Instant::now();
-    let caps = Caps::new(global, started);
+    let caps = Caps::new(global, started, &spider);
     let mut worst = None;
     let mut stopped = None;
 
@@ -171,6 +177,9 @@ pub async fn crawl(global: &Global, args: &CrawlArgs, log: Log) -> Run<Code> {
         match call.send_all().await {
             Ok(outcome) => absorb(&mut emitter, &mut report, outcome)?,
             Err(error) => {
+                report.attempts += error.attempts().len();
+                report.cost += error.spent();
+                let error = error.into_cause();
                 if record(
                     &mut emitter,
                     &mut report,
@@ -200,7 +209,7 @@ pub async fn extract(global: &Global, args: &ExtractArgs, log: Log) -> Run<Code>
         ..Report::default()
     };
     let started = Instant::now();
-    let caps = Caps::new(global, started);
+    let caps = Caps::new(global, started, &spider);
     let mut worst = None;
     let mut stopped = None;
 
@@ -221,6 +230,9 @@ pub async fn extract(global: &Global, args: &ExtractArgs, log: Log) -> Run<Code>
         match call.send_all().await {
             Ok(outcome) => absorb(&mut emitter, &mut report, outcome)?,
             Err(error) => {
+                report.attempts += error.attempts().len();
+                report.cost += error.spent();
+                let error = error.into_cause();
                 if record(
                     &mut emitter,
                     &mut report,
@@ -249,7 +261,7 @@ pub async fn links(global: &Global, args: &LinksArgs, log: Log) -> Run<Code> {
         ..Report::default()
     };
     let started = Instant::now();
-    let caps = Caps::new(global, started);
+    let caps = Caps::new(global, started, &spider);
     let mut worst = None;
     let mut stopped = None;
 
@@ -286,6 +298,9 @@ pub async fn links(global: &Global, args: &LinksArgs, log: Log) -> Run<Code> {
                 }
             }
             Err(error) => {
+                report.attempts += error.attempts().len();
+                report.cost += error.spent();
+                let error = error.into_cause();
                 if record(
                     &mut emitter,
                     &mut report,
@@ -323,7 +338,7 @@ pub async fn screenshot(global: &Global, args: &ScreenshotArgs, log: Log) -> Run
         ..Report::default()
     };
     let started = Instant::now();
-    let caps = Caps::new(global, started);
+    let caps = Caps::new(global, started, &spider);
     let mut worst = None;
     let mut stopped = None;
 
@@ -343,6 +358,9 @@ pub async fn screenshot(global: &Global, args: &ScreenshotArgs, log: Log) -> Run
         match call.send_all().await {
             Ok(outcome) => absorb(&mut emitter, &mut report, outcome)?,
             Err(error) => {
+                report.attempts += error.attempts().len();
+                report.cost += error.spent();
+                let error = error.into_cause();
                 if record(
                     &mut emitter,
                     &mut report,
@@ -384,6 +402,9 @@ pub async fn transform(global: &Global, args: &TransformArgs, log: Log) -> Run<C
     match call.send_all().await {
         Ok(outcome) => absorb(&mut emitter, &mut report, outcome)?,
         Err(error) => {
+            report.attempts += error.attempts().len();
+            report.cost += error.spent();
+            let error = error.into_cause();
             // Transform works on supplied markup, so exhaustion is a failed
             // conversion rather than a refusal by a target site.
             let failure = match error {

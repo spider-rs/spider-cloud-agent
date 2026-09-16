@@ -74,6 +74,14 @@ impl Deadline {
     pub(crate) fn expired(self) -> bool {
         self.0.is_some_and(|end| DeadlineInstant::now() >= end)
     }
+
+    /// Observer work is outside the pure policy's elapsed accounting. Recheck
+    /// its chosen wait against the actual clock before sleeping, without
+    /// shortening a server-directed wait to fit the remaining wall.
+    fn allows_wait(self, after: Duration) -> bool {
+        self.0
+            .is_none_or(|end| after < end.saturating_duration_since(DeadlineInstant::now()))
+    }
 }
 
 /// Run one call under a wall, or under none.
@@ -128,6 +136,70 @@ impl std::fmt::Debug for Call<'_> {
 }
 
 impl<'a> Call<'a> {
+    /// Recheck admission immediately before every send. The run reservation is the
+    /// concurrency gate; a snapshot alone would let two tasks spend the same credit.
+    fn admit(
+        &mut self,
+        attempts: &[Attempt],
+        estimate: Credits,
+    ) -> Result<Option<crate::client::Reservation>> {
+        let spent: Credits = attempts
+            .iter()
+            .map(|a| Credits(a.cost.get().max(a.reserved.get())))
+            .sum();
+        self.budget
+            .preflight(attempts.len().min(255) as u8, spent, estimate)
+            .map_err(|kind| {
+                let error = Error::BudgetExceeded {
+                    kind,
+                    attempts: attempts.to_vec(),
+                };
+                match self.spider.run_budget() {
+                    Some(run) => error.accounted(attempts.to_vec(), Some(run.snapshot())),
+                    None => error,
+                }
+            })?;
+        match self.spider.run_budget() {
+            None => Ok(None),
+            Some(run) => run
+                .reserve(estimate)
+                .map(|reservation| {
+                    let cap = spent + reservation.allowance;
+                    self.budget.credits = Some(
+                        self.budget
+                            .credits
+                            .map_or(cap, |old| Credits(old.get().min(cap.get()))),
+                    );
+                    Some(reservation)
+                })
+                .ok_or_else(|| {
+                    Error::BudgetExceeded {
+                        kind: BudgetKind::Credits,
+                        attempts: attempts.to_vec(),
+                    }
+                    .accounted(attempts.to_vec(), Some(run.snapshot()))
+                }),
+        }
+    }
+
+    fn cap_for_run(&mut self) {
+        if let Some(run) = self.spider.run_budget() {
+            let left = run.remaining();
+            self.budget.credits = Some(
+                self.budget
+                    .credits
+                    .map_or(left, |cap| Credits(cap.get().min(left.get()))),
+            );
+        }
+    }
+
+    fn call_failure(&self, error: Error, attempts: Vec<Attempt>) -> Error {
+        error.accounted(
+            attempts,
+            self.spider.run_budget().map(crate::RunBudget::snapshot),
+        )
+    }
+
     /// A call against one address. A bad address is held until `send`.
     pub(crate) fn new(spider: &'a Spider, url: impl IntoUrl) -> Call<'a> {
         let mut call = Call::bare(spider);
@@ -218,12 +290,35 @@ impl<'a> Call<'a> {
         B: Serialize,
         F: Fn(&crate::params::RequestParams) -> B,
     {
+        self.run_at_inner(route, args, make_body)
+            .await
+            .map_err(|error| match self.spider.run_budget() {
+                Some(run) => error.with_run(run.snapshot()),
+                None => error,
+            })
+    }
+
+    async fn run_at_inner<B, F>(
+        &mut self,
+        route: Route,
+        args: &[&str],
+        make_body: F,
+    ) -> Result<Outcome<Pages>>
+    where
+        B: Serialize,
+        F: Fn(&crate::params::RequestParams) -> B,
+    {
         // The clock starts before routing and is never reset by an attempt.
+        self.cap_for_run();
         let deadline = Deadline::new(self.budget.wall)?;
         let target = self.target()?;
         let policy = match self.spider.policy() {
             Some(policy) => policy.clone(),
-            None => Policy::for_target(target.as_str()),
+            None => {
+                let mut policy = Policy::for_target(target.as_str());
+                policy.backoff = crate::policy::Backoff::seeded(self.spider.jitter_seed);
+                policy
+            }
         };
         // The plan is settled before anything is sent, because the format it
         // chooses is what tells markdown from markup on the way back. The
@@ -278,10 +373,11 @@ impl<'a> Call<'a> {
         let mut call_error: Option<Error>;
         let current = endpoint_for(&plan, route);
         let mut wire_bytes = 0usize;
+        let mut estimate = Budget::floor(Credits::ZERO);
+        let mut run_overrun = None;
+        let mut page_overrun = None;
         loop {
             let mut attempt_bytes = 0u32;
-            self.budget.apply(&mut self.params);
-            let body = make_body(&self.params);
 
             // A call is held to whatever is left of the wall. Without this a
             // service that accepted the request and never answered held the
@@ -290,6 +386,18 @@ impl<'a> Call<'a> {
             if deadline.expired() {
                 return Err(out_of_time(attempts));
             }
+            if attempts.len() >= usize::from(policy.max_attempts) {
+                return Err(Error::BudgetExceeded {
+                    kind: BudgetKind::Attempts,
+                    attempts,
+                });
+            }
+            let reservation = self.admit(&attempts, estimate)?;
+            state.budget = self.budget;
+            let mut wire_budget = self.budget;
+            wire_budget.credits = self.budget.remaining_credits(state.spent);
+            wire_budget.apply(&mut self.params);
+            let body = make_body(&self.params);
             let before = Instant::now();
             let sent = within(
                 deadline,
@@ -299,9 +407,11 @@ impl<'a> Call<'a> {
             )
             .await;
             let mut wall_ran_out = false;
+            let mut charge_unknown = false;
 
             let observed = match sent {
                 None => {
+                    charge_unknown = true;
                     call_error = None;
                     pages = Pages::default();
                     wall_ran_out = true;
@@ -320,10 +430,40 @@ impl<'a> Call<'a> {
                     // makes a refusal something to escalate rather than something
                     // to give up on.
                     if reply.is_success() || reply.is_mirrored_page_status() {
+                        charge_unknown = !reply.body.is_empty()
+                            && serde_json::from_slice::<serde_json::Value>(&reply.body)
+                                .ok()
+                                .as_ref()
+                                .is_none_or(|body| !has_charge(body));
                         call_error = None;
-                        pages = reply.read_pages(&target, format, current == route::TRANSFORM)?;
+                        pages = match reply.read_pages(&target, format, current == route::TRANSFORM)
+                        {
+                            Ok(pages) => pages,
+                            Err(error) => {
+                                let body =
+                                    serde_json::from_slice::<serde_json::Value>(&reply.body).ok();
+                                let cost = body.as_ref().map(charged).unwrap_or(Credits::ZERO);
+                                let mut attempt = Attempt::new(elapsed, status, None, cost);
+                                attempt.charge_unknown =
+                                    body.as_ref().is_none_or(|body| !has_charge(body));
+                                if let Some(reservation) = reservation {
+                                    let _ = reservation.settle(cost, attempt.charge_unknown);
+                                }
+                                attempts.push(attempt);
+                                return Err(self.call_failure(error, attempts));
+                            }
+                        };
                         if !pages.is_empty() {
                             pages_came_back = true;
+                        }
+                        if let Some(cap) = self.budget.per_page_credits {
+                            if let Some(page) = pages.0.iter().find(|page| page.cost() > cap) {
+                                page_overrun = Some(crate::response::BudgetOverrun {
+                                    scope: crate::response::BudgetScope::Page,
+                                    cap,
+                                    spent: page.cost(),
+                                });
+                            }
                         }
                         if let Some(failed) = pages.failed().next() {
                             last_failed = Some(failed.clone());
@@ -357,7 +497,14 @@ impl<'a> Call<'a> {
                     } else {
                         call_error = reply.as_error();
                         pages = Pages::default();
-                        let observed = Observed::seen(status.code(), None).taking(elapsed);
+                        let cost = serde_json::from_slice::<serde_json::Value>(&reply.body)
+                            .ok()
+                            .as_ref()
+                            .map(charged)
+                            .unwrap_or(Credits::ZERO);
+                        let observed = Observed::seen(status.code(), None)
+                            .taking(elapsed)
+                            .costing(cost);
                         match wait {
                             Some(after) => observed.retry_after(after),
                             None => observed,
@@ -365,6 +512,7 @@ impl<'a> Call<'a> {
                     }
                 }
                 Some(Err(Error::Transport(e))) if e.is_timeout() => {
+                    charge_unknown = true;
                     call_error = Some(Error::Transport(e));
                     Observed::timed_out().taking(before.elapsed())
                 }
@@ -378,7 +526,9 @@ impl<'a> Call<'a> {
                 // the walk stops rather than climbs, because a heavier request
                 // buys a bigger answer.
                 Some(Err(Error::ResponseTooLarge { limit, status })) => {
-                    attempts.push(Attempt::new(before.elapsed(), status, None, Credits::ZERO));
+                    let mut attempt = Attempt::new(before.elapsed(), status, None, Credits::ZERO);
+                    attempt.charge_unknown = true;
+                    attempts.push(attempt);
                     return Err(Error::Exhausted {
                         attempts,
                         last: last_failed.map(Box::new),
@@ -388,7 +538,17 @@ impl<'a> Call<'a> {
                 }
                 // Anything else went wrong before a call could be judged, so
                 // there is nothing for the policy to read.
-                Some(Err(other)) => return Err(other),
+                Some(Err(other)) => {
+                    let mut attempt =
+                        Attempt::new(before.elapsed(), ApiStatus::new(0), None, Credits::ZERO);
+                    attempt.charge_unknown =
+                        matches!(&other, Error::Transport(e) if !e.is_connect() && !e.is_builder());
+                    if let Some(reservation) = reservation {
+                        let _ = reservation.settle(attempt.cost, attempt.charge_unknown);
+                    }
+                    attempts.push(attempt);
+                    return Err(self.call_failure(other, attempts));
+                }
             }
             // Read off the request whether it carried anything a session could
             // keep, which is what decides whether a login wall gets a second
@@ -396,12 +556,24 @@ impl<'a> Call<'a> {
             .for_request(&self.params);
 
             state.record(&observed);
+            if let Some(reservation) = reservation {
+                run_overrun = reservation
+                    .settle(observed.cost, charge_unknown)
+                    .or(run_overrun);
+            }
             attempts.push(Attempt::new(
                 observed.elapsed,
                 api_status_of(&observed),
                 observed.page,
                 observed.cost,
             ));
+            if let Some(attempt) = attempts.last_mut() {
+                attempt.charge_unknown = charge_unknown;
+                if charge_unknown {
+                    attempt.reserved = Credits(estimate.get().max(attempt.cost.get()));
+                    state.spent += Credits((estimate.get() - attempt.cost.get()).max(0.0));
+                }
+            }
 
             // The wall ended the call, so the budget has already decided. The
             // policy is not asked, because whatever it answered would be a call
@@ -444,11 +616,22 @@ impl<'a> Call<'a> {
                     if deadline.expired() {
                         return Err(out_of_time(attempts));
                     }
-                    return Ok(Outcome::new(pages, attempts)
+                    let mut outcome = Outcome::new(pages, attempts)
+                        .with_cap(self.budget.credits)
                         .reporting(report)
-                        .routed(decision));
+                        .routed(decision);
+                    outcome.overrun = run_overrun.or(outcome.overrun).or(page_overrun);
+                    return Ok(outcome);
                 }
                 Next::Retry { after } => {
+                    if !deadline.allows_wait(after) {
+                        return Err(out_of_time(attempts));
+                    }
+                    estimate = Budget::floor(if observed.was_billed() {
+                        state.last_cost
+                    } else {
+                        Credits::ZERO
+                    });
                     if within(deadline, async {
                         sleep(after).await;
                         Ok(())
@@ -460,6 +643,14 @@ impl<'a> Call<'a> {
                     }
                 }
                 Next::Escalate { step, after, .. } => {
+                    if !deadline.allows_wait(after) {
+                        return Err(out_of_time(attempts));
+                    }
+                    estimate = step.estimate(if observed.was_billed() {
+                        state.last_cost
+                    } else {
+                        Credits::ZERO
+                    });
                     if within(deadline, async {
                         sleep(after).await;
                         Ok(())
@@ -575,11 +766,30 @@ impl<'a> Call<'a> {
         T: serde::de::DeserializeOwned,
         F: Fn(&crate::params::RequestParams) -> B,
     {
+        self.run_json_inner(route, make_body)
+            .await
+            .map_err(|error| match self.spider.run_budget() {
+                Some(run) => error.with_run(run.snapshot()),
+                None => error,
+            })
+    }
+
+    async fn run_json_inner<B, T, F>(&mut self, route: Route, make_body: F) -> Result<Outcome<T>>
+    where
+        B: Serialize,
+        T: serde::de::DeserializeOwned,
+        F: Fn(&crate::params::RequestParams) -> B,
+    {
+        self.cap_for_run();
         let deadline = Deadline::new(self.budget.wall)?;
-        self.budget.apply(&mut self.params);
-        let body = make_body(&self.params);
         // One call, held to the wall the same way the send loop holds its
         // calls. A search against a service that went quiet hung here too.
+        if deadline.expired() {
+            return Err(out_of_time(Vec::new()));
+        }
+        let reservation = self.admit(&[], Budget::floor(Credits::ZERO))?;
+        self.budget.apply(&mut self.params);
+        let body = make_body(&self.params);
         let before = Instant::now();
         let reply = match within(
             deadline,
@@ -588,34 +798,80 @@ impl<'a> Call<'a> {
                 .post_with_limit(route, &[], &body, self.spider.response_limit),
         )
         .await
-        .ok_or_else(|| out_of_time(Vec::new()))?
-        {
+        .unwrap_or_else(|| {
+            let mut attempt =
+                Attempt::new(before.elapsed(), ApiStatus::new(0), None, Credits::ZERO);
+            attempt.charge_unknown = true;
+            Err(out_of_time(vec![attempt]))
+        }) {
             Ok(reply) => reply,
             // Recorded the way the send loop records it, so the one call this
             // made is on the error rather than lost with it.
             Err(Error::ResponseTooLarge { limit, status }) => {
                 return Err(Error::Exhausted {
-                    attempts: vec![Attempt::new(before.elapsed(), status, None, Credits::ZERO)],
+                    attempts: vec![Attempt {
+                        charge_unknown: true,
+                        ..Attempt::new(before.elapsed(), status, None, Credits::ZERO)
+                    }],
                     last: None,
                     reason: StopReason::Unhandled,
                     source: Some(Box::new(Error::ResponseTooLarge { limit, status })),
                 });
             }
-            Err(other) => return Err(other),
+            Err(other) => {
+                if matches!(other, Error::BudgetExceeded { .. }) {
+                    return Err(other);
+                }
+                let mut attempt =
+                    Attempt::new(before.elapsed(), ApiStatus::new(0), None, Credits::ZERO);
+                attempt.charge_unknown =
+                    matches!(&other, Error::Transport(e) if !e.is_connect() && !e.is_builder());
+                if let Some(reservation) = reservation {
+                    let _ = reservation.settle(attempt.cost, attempt.charge_unknown);
+                }
+                return Err(self.call_failure(other, vec![attempt]));
+            }
+        };
+        let body = reply.json::<serde_json::Value>();
+        let cost = body.as_ref().map(charged).unwrap_or(Credits::ZERO);
+        let mut attempt = Attempt::new(reply.elapsed, reply.status, None, cost);
+        attempt.charge_unknown =
+            reply.is_success() && body.as_ref().map_or(true, |body| !has_charge(body));
+        let run_overrun =
+            reservation.and_then(|reservation| reservation.settle(cost, attempt.charge_unknown));
+        if let Some(error) = reply.as_error() {
+            return Err(self.call_failure(error, vec![attempt]));
         }
-        .into_result()?;
-        let body: serde_json::Value = reply.json()?;
-        let cost = charged(&body);
-        let value: T = serde_json::from_value(body).map_err(Error::Decode)?;
-        let attempt = Attempt::new(reply.elapsed, reply.status, None, cost);
+        let body = body.map_err(|error| self.call_failure(error, vec![attempt.clone()]))?;
+        let value: T = serde_json::from_value(body)
+            .map_err(|error| self.call_failure(Error::Decode(error), vec![attempt.clone()]))?;
         if deadline.expired() {
             return Err(out_of_time(vec![attempt]));
         }
-        Ok(Outcome::new(value, vec![attempt]))
+        let mut outcome = Outcome::new(value, vec![attempt]).with_cap(self.budget.credits);
+        outcome.overrun = run_overrun.or(outcome.overrun);
+        Ok(outcome)
     }
 }
 
-/// What the service said an answer that is not a page cost.
+/// Whether every item supplied a readable total, including an explicit zero.
+fn has_charge(body: &serde_json::Value) -> bool {
+    match body {
+        serde_json::Value::Array(items) => !items.is_empty() && items.iter().all(has_charge),
+        other => reported_charge(other).is_some(),
+    }
+}
+
+/// Recover the total independently of page fields and cost breakdown fields.
+/// A malformed optional field must not erase a readable bill beside it.
+fn reported_charge(body: &serde_json::Value) -> Option<Credits> {
+    let total = body.get("costs")?.get("total_cost")?;
+    serde_json::from_value::<crate::credits::Usd>(total.clone())
+        .ok()
+        .map(Credits::from)
+}
+
+/// What the service said an answer cost, even if its page fields cannot be decoded.
 ///
 /// A page carries its own cost block and the send loop reads it. The answers
 /// that are not pages were recorded as zero whatever the body said, so a search
@@ -629,11 +885,7 @@ impl<'a> Call<'a> {
 fn charged(body: &serde_json::Value) -> Credits {
     match body {
         serde_json::Value::Array(items) => items.iter().map(charged).sum(),
-        other => other
-            .get("costs")
-            .and_then(|costs| serde_json::from_value::<crate::response::Costs>(costs.clone()).ok())
-            .map(|costs| costs.total())
-            .unwrap_or(Credits::ZERO),
+        other => reported_charge(other).unwrap_or(Credits::ZERO),
     }
 }
 
@@ -771,7 +1023,7 @@ fn nothing_came_back(pages: &Pages) -> bool {
 
 /// Turn the policy's reason for stopping into the error the caller sees.
 ///
-/// When no page ever came back, the caller sees the call error itself, an
+/// When no page ever came back, [`Error::Accounted`] keeps the call error, an
 /// [`Error::Api`], [`Error::Auth`] or [`Error::Transport`], because what
 /// stopped the walk is a fact about the call rather than about a page. Only
 /// when pages came back and the walk then stopped is it [`Error::Exhausted`],
@@ -786,10 +1038,10 @@ fn stopped(
     call_error: Option<Error>,
 ) -> Error {
     match reason {
-        StopReason::OutOfCredits => Error::InsufficientCredits,
+        StopReason::OutOfCredits => Error::InsufficientCredits.accounted(attempts, None),
         StopReason::Budget(kind) => Error::BudgetExceeded { kind, attempts },
         _ => match call_error {
-            Some(error) if !pages_came_back => error,
+            Some(error) if !pages_came_back => error.accounted(attempts, None),
             source => Error::Exhausted {
                 attempts,
                 last: last_failed.map(Box::new),
@@ -811,6 +1063,7 @@ fn stopped(
 /// no last failure, and the error carries neither.
 pub(crate) fn first_page(outcome: Outcome<Pages>) -> Result<Outcome<Page>> {
     let Outcome {
+        overrun,
         value,
         attempts,
         cost,
@@ -820,6 +1073,7 @@ pub(crate) fn first_page(outcome: Outcome<Pages>) -> Result<Outcome<Page>> {
     let last = value.failed().next().cloned();
     match value.into_ok().into_iter().next() {
         Some(page) => Ok(Outcome {
+            overrun,
             value: page,
             attempts,
             cost,
@@ -1022,6 +1276,17 @@ mod tests {
     use crate::thrift::Need;
 
     #[test]
+    fn f2_a_malformed_breakdown_does_not_erase_a_readable_total() {
+        let body = serde_json::json!({
+            "costs": { "total_cost": 0.0002, "compute_cost": {} },
+            "status": "not a status"
+        });
+        assert!(has_charge(&body));
+        assert_eq!(charged(&body), Credits(2.0));
+        assert!(!has_charge(&serde_json::json!({"costs": {}})));
+    }
+
+    #[test]
     fn f1_default_wall_reaches_page_and_search_calls() {
         let spider = Spider::builder()
             .key("not-a-real-key")
@@ -1194,5 +1459,19 @@ mod tests {
         let mut shot = Body::Screenshot(bytes::Bytes::from_static(b"png"));
         replace_text(&mut shot, "nonsense".into());
         assert_eq!(shot, Body::Screenshot(bytes::Bytes::from_static(b"png")));
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn f2_wait_admission_uses_time_spent_outside_the_policy() {
+        let deadline = Deadline::new(Some(Duration::from_millis(600))).unwrap();
+        let wait = Duration::from_millis(500);
+        assert!(deadline.allows_wait(wait));
+        tokio::time::advance(Duration::from_millis(200)).await;
+        assert!(!deadline.allows_wait(wait));
+        assert!(!deadline.allows_wait(Duration::from_millis(400)));
+        assert!(deadline.allows_wait(Duration::from_millis(399)));
+        tokio::time::advance(Duration::from_millis(400)).await;
+        assert!(!deadline.allows_wait(Duration::ZERO));
+        assert!(Deadline::new(None).unwrap().allows_wait(Duration::MAX));
     }
 }
