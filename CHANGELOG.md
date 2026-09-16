@@ -7,6 +7,16 @@ error.
 
 ## Unreleased
 
+- Release verification requires a readable private denylist with at least one term
+  and cargo-deny. Ordinary verification keeps the private-list note and uses cached
+  advisories when cargo-deny is installed.
+- Ship Cargo.lock and declare Rust 1.88, the floor required by the locked ICU crates.
+  Test and package with the lockfile, audit dependencies, dry-run all three crates
+  in dependency order, and run the client and route allocation baselines.
+- Add a release-only live gate that requires credentials, an explicit endpoint and
+  the deployed service revision. It accounts for all nine tests and records the
+  selector-name service failure as the tracked F7a exception, never as a pass.
+  Explicit live test runs without a key now fail.
 - Request and builder `Debug` output hides caller cookies, every header value,
   proxy credentials and other free-form credential input. Header names and proxy
   endpoints remain visible. Serialization still sends the original values.

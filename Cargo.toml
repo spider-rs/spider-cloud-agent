@@ -5,6 +5,13 @@ resolver = "2"
 [workspace.package]
 version = "0.3.1"
 edition = "2021"
+# Cargo metadata for the locked graph declares Rust 1.88 for icu_collections,
+# icu_locale_core, icu_normalizer{,_data}, icu_properties{,_data} and icu_provider.
+# url -> idna -> idna_adapter pulls these into every workspace build. No locked
+# dependency declares a higher floor, so 1.87 cannot build this graph.
+# This also covers lockfile v4 (1.78) and correct Windows home_dir behavior (1.85).
+# Keep this floor tied to Cargo.lock when updating dependencies.
+rust-version = "1.88"
 authors = ["j-mendez <jeff@spider.cloud>"]
 license = "MIT"
 repository = "https://github.com/spider-rs/spider-cloud-agent"

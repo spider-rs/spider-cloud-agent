@@ -13,7 +13,7 @@ cargo bench --workspace -- --test           # compile and run once, no timing
 cargo bench --workspace -- decide/accept    # one group, by name
 ```
 
-`--test` is the mode CI uses on a pull request. It runs every benchmark once and checks
+`--test` is the mode `scripts/verify.sh` uses for the allocation and route gates. It runs every benchmark once and checks
 nothing times out or panics, which is enough to catch the failure that actually kills a
 benchmark suite: it stops compiling and nobody notices for six months.
 

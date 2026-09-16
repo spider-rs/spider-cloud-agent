@@ -45,21 +45,24 @@ impl Finding {
 struct Options {
     tree: bool,
     explain: bool,
+    require_private: bool,
 }
 
 fn parse_args(args: &[String]) -> Result<Options, String> {
     let mut opts = Options {
         tree: false,
         explain: false,
+        require_private: false,
     };
     for arg in args {
         match arg.as_str() {
+            "--require-private" => opts.require_private = true,
             "--tree" => opts.tree = true,
             "--packaged" => opts.tree = false,
             "--explain" => opts.explain = true,
             other => {
                 return Err(format!(
-                    "unknown option {other}. leakcheck takes --tree, --packaged or --explain."
+                    "unknown option {other}. leakcheck takes --tree, --packaged, --explain or --require-private."
                 ))
             }
         }
@@ -71,7 +74,7 @@ fn parse_args(args: &[String]) -> Result<Options, String> {
 pub fn run(args: &[String]) -> Result<bool, String> {
     let opts = parse_args(args)?;
     let root = repo_root();
-    let words = leak_words::load()?;
+    let words = leak_words::load(opts.require_private)?;
 
     if opts.explain {
         print_explain(&words);
