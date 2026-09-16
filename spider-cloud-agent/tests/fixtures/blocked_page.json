@@ -1,0 +1,7 @@
+{
+  "url": "https://example.net/checkout",
+  "status": 403,
+  "content": null,
+  "costs": { "compute_cost": 0.5, "total_cost": 0.5 },
+  "error": "the site refused the fetch"
+}

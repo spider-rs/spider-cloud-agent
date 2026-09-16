@@ -1,0 +1,14 @@
+{
+  "content": [
+    {
+      "title": "Example Domain",
+      "description": "This domain is for use in documentation.",
+      "url": "https://example.com/"
+    },
+    {
+      "title": "Example, the other one",
+      "description": "Also reserved for documentation.",
+      "url": "https://example.org/"
+    }
+  ]
+}

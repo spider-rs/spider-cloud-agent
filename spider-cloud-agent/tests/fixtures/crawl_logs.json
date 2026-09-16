@@ -1,0 +1,16 @@
+{
+  "data": [
+    {
+      "domain": "example.com",
+      "status": 200,
+      "pages": 12,
+      "credits_used": 7.25
+    },
+    {
+      "domain": "example.org",
+      "status": 403,
+      "pages": 0,
+      "credits_used": 0.4
+    }
+  ]
+}
