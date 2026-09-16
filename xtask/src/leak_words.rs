@@ -4,8 +4,9 @@
 //! list below holds only terms that are safe to read in a public repo: host suffixes,
 //! a shipped-default hostname, and obvious placeholders. The real list, with the
 //! internal service, cluster, queue, engine and codename vocabulary spelled out,
-//! lives in the private checkout and is applied in CI by pointing
-//! `SPIDER_LEAKCHECK_WORDS` at it.
+//! stays in the private checkout. Run the release mode of `scripts/verify.sh`
+//! on a developer machine with `SPIDER_LEAKCHECK_WORDS` pointing at that list.
+//! There is no hosted CI. Never copy the private list into this repo.
 //!
 //! Extra list format: one term per line. Blank lines and lines starting with `#` are
 //! ignored. A term may be prefixed with `category:` to label it in the output, for

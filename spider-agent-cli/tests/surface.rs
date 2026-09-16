@@ -57,6 +57,33 @@ fn help_leaves_with_zero_and_writes_to_stdout() {
 }
 
 #[test]
+fn help_and_schema_share_the_key_resolution_wording() {
+    let output = run(&["schema"]);
+    assert_eq!(code(&output), 0);
+    let document: serde_json::Value =
+        serde_json::from_str(&stdout(&output)).expect("a schema document");
+    let note = document["notes"]
+        .as_array()
+        .expect("schema notes")
+        .iter()
+        .filter_map(serde_json::Value::as_str)
+        .find(|note| note.starts_with("The key comes from "))
+        .expect("the key resolution note");
+    assert!(note.contains("then the keychain, when the binary was built with the keyring feature"));
+
+    let help = run(&["--help"]);
+    assert_eq!(code(&help), 0);
+    let normalized_help = stdout(&help)
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ");
+    assert!(
+        normalized_help.contains(note),
+        "help differs from schema: {note}"
+    );
+}
+
+#[test]
 fn a_command_that_does_not_exist_is_a_usage_failure() {
     let output = run(&["frobnicate"]);
     assert_eq!(code(&output), 2);

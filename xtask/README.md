@@ -47,8 +47,10 @@ SPIDER_LEAKCHECK_WORDS=/path/to/private/leak-words.txt cargo run -p xtask -- lea
 One term per line. Blank lines and lines starting with `#` are skipped. A term may carry
 a `category:` prefix, which only changes how the finding is labelled.
 
-CI runs the packaged check with that variable set from the private checkout. Do not move
-the private terms into this repo, since that is the leak the tool exists to prevent.
+There is no hosted CI. Before a release, run the release mode of
+`scripts/verify.sh` on a developer machine with `SPIDER_LEAKCHECK_WORDS` pointing
+to the list in the private checkout. That mode runs the packaged check. Do not
+move the private terms into this repo, since that is the leak the tool exists to prevent.
 
 ## redact
 
@@ -68,6 +70,6 @@ a fixture. Run `leakcheck` on the result before committing it.
 cargo test -p xtask
 ```
 
-Twenty three tests cover the denylist matcher, the address classifier, the fixture host
+The tests cover the denylist matcher, the address classifier, the fixture host
 allowlist, the ASCII run detector and the redactor. A test filter that matches nothing
 exits 0, so read the reported count rather than the exit status.

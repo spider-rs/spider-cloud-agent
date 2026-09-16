@@ -4,9 +4,10 @@ The command line tool for [Spider Cloud](https://spider.cloud), built on
 `spider-cloud-agent`. It picks transport locally before a call goes out,
 escalates on the status a site returned, and stops on a budget you set.
 
-Prebuilt binaries for macOS, Linux and Windows are on the
-[releases page](https://github.com/spider-rs/spider-cloud-agent/releases/latest).
-Or build it:
+## Install
+
+Install with a stable Rust toolchain; see the workspace's
+[Cargo.toml](../Cargo.toml) for the toolchain requirement.
 
 ```bash
 cargo install spider-agent-cli
@@ -115,7 +116,7 @@ that reply, and `token_name` is the label you gave a key rather than any part of
 it. It is the read for finding a key nothing has used in months. Revoking one is
 done on the dashboard.
 
-Up to 0.2.0 there was a `table <name>` command that read any name under
+Removed in 0.3.0, the `table <name>` command read any name under
 `/data`. The commands above replaced it, because a tool that takes a table name
 is a way to ask the service for tables nobody meant to expose. `Spider::table`
 in the library is still there for a table this version has no command for.
@@ -191,10 +192,31 @@ carries no separator and stays in the directory you named.
 
 ## Where the key comes from
 
-`SPIDER_API_KEY`, then `SPIDER_CLOUD_API_KEY`, then `~/.spider/credentials`,
-which `spider-agent login` writes at mode 0600. The key is never printed, never
-logged and never put in a record. `spider-agent login --print` is the one thing
-that writes it anywhere, and it writes it to stdout and nowhere else.
+The key comes from SPIDER_API_KEY, then SPIDER_CLOUD_API_KEY, then the keychain,
+when the binary was built with the keyring feature, then ~/.spider/credentials.
+The first non-empty value after trimming wins. There is no flag for the key,
+because an argument is readable in the process list.
+
+The CLI enables `oauth` by default and leaves `keyring` off. `spider-agent login`
+tries the keyring when enabled, then falls back to the credentials file. On Unix,
+the file is created at mode 0600; reading a file with broader permissions logs a
+warning once, and `Credentials::tighten_file_permissions` can narrow its mode.
+The permission check and tightening are Unix only. On Windows, the file uses
+the default ACL; the keyring is tried first if that feature is enabled.
+The key is never logged. `spider-agent login --print` writes it to stdout,
+including in a key record with `--json`, and does not store it.
+
+## Environment
+
+| variable | effect |
+|---|---|
+| `SPIDER_API_KEY` | First environment source for the API key. Empty values after trimming are skipped. |
+| `SPIDER_CLOUD_API_KEY` | Fallback API key when `SPIDER_API_KEY` is empty or unset. |
+| `SPIDER_API_URL` | Overrides the API base, normally `https://api.spider.cloud`, for every key-bearing API request. The API base must use https. |
+| `SPIDER_MCP_SERVER` | Overrides the sign-in discovery server, normally `https://mcp.spider.cloud/mcp`, when OAuth is enabled. |
+
+Set either server override only to a server you trust: one receives API requests
+with your key, and the other directs sign-in.
 
 ## License
 

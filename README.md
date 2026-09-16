@@ -14,23 +14,13 @@ Three crates ship from this workspace:
 
 ## Install
 
-Download a prebuilt binary from the
-[latest release](https://github.com/spider-rs/spider-cloud-agent/releases/latest):
-
-| platform | file |
-|---|---|
-| macOS, Apple silicon | `spider-agent-aarch64-apple-darwin.tar.gz` |
-| macOS, Intel | `spider-agent-x86_64-apple-darwin.tar.gz` |
-| Linux, x86_64 | `spider-agent-x86_64-unknown-linux-gnu.tar.gz` |
-| Linux, ARM64 | `spider-agent-aarch64-unknown-linux-gnu.tar.gz` |
-| Windows, x86_64 | `spider-agent-x86_64-pc-windows-msvc.zip` |
+Install with a stable Rust toolchain; see [Cargo.toml](Cargo.toml) for the
+workspace's toolchain requirement.
 
 ```bash
-curl -fsSL https://github.com/spider-rs/spider-cloud-agent/releases/latest/download/spider-agent-aarch64-apple-darwin.tar.gz | tar xz
-./spider-agent --version
+cargo install spider-agent-cli
+spider-agent --version
 ```
-
-Or build it with `cargo install spider-agent-cli`.
 
 ## From another program
 
@@ -116,6 +106,11 @@ by asking for nothing in particular:
 | `Need::Text` | 2156 | 76.1% |
 | `Need::Markdown` | 2249 | 75.1% |
 | `Need::Html` | 4342 | 51.9% |
+
+Regenerate these numbers with the ignored `measured_numbers` test:
+`cargo test -p spider-cloud-agent --test thrift_budget measured_numbers -- --ignored --nocapture`,
+which reads `spider-cloud-agent/tests/fixtures/thrift/product_page.json` for the
+table and `crawl_widgets.json` in the same directory for the crawl below.
 
 Across a six page crawl, dropping the navigation and footer that repeat on every
 page takes 5261 bytes to 2269, and 1333 approximate tokens to 509.
