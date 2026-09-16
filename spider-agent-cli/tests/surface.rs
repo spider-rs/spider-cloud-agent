@@ -650,23 +650,23 @@ fn a_page_record_carries_the_service_timing_its_note_and_the_vendor_line() {
 }
 
 /// A site that refuses the fetch still answers with a page, and the record
-/// for the refusal carries it, so a block page and a login wall can be told
-/// apart from the log.
+/// for the refusal carries it, so a reader of the log can tell a block page
+/// from a login wall. The reply holds a served page beside the refused one,
+/// which is what stops the client from climbing the ladder over the refusal
+/// and lets the run settle on the first call.
 #[test]
 fn a_failed_record_carries_the_body_the_site_refused_with() {
     let (base, _seen) = stub(
-        r##"{"url":"https://example.com/account","status":403,"error":"the site refused the fetch","content":{"markdown":"# Access denied\n\nSign in to continue.\n"},"duration_elasped_ms":97,"costs":{"total_cost":0.0002,"compute_cost":0.0002}}"##,
+        r##"[{"url":"https://example.com/","status":200,"content":{"markdown":"# Home"},"duration_elasped_ms":80,"costs":{"total_cost":0.0002,"compute_cost":0.0002}},{"url":"https://example.com/account","status":403,"error":"the site refused the fetch","content":{"markdown":"# Access denied\n\nSign in to continue.\n"},"duration_elasped_ms":97,"costs":{"total_cost":0.0002,"compute_cost":0.0002}}]"##,
     );
     let output = run_against(
         &base,
         &[
             "scrape",
-            "https://example.com/account",
+            "https://example.com/",
             "--goal",
             "markdown",
             "--ndjson",
-            "--budget",
-            "0",
         ],
     );
     let records: Vec<serde_json::Value> = stdout(&output)

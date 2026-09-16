@@ -1,0 +1,117 @@
+[
+  {
+    "content": {
+      "markdown": "# Pricing\n\nStarter, Growth, Scale.\n"
+    },
+    "cookies": {
+      "theme": "dark"
+    },
+    "costs": {
+      "ai_cost": 0.0,
+      "ai_cost_formatted": "$0.00000",
+      "bytes_transferred_cost": 0.0,
+      "bytes_transferred_cost_formatted": "$0.00000",
+      "compute_cost": 0.0002,
+      "compute_cost_formatted": "$0.00020",
+      "file_cost": 0.0,
+      "file_cost_formatted": "$0.00000",
+      "total_cost": 0.00321,
+      "total_cost_formatted": "$0.00321",
+      "transform_cost": 0.00001,
+      "transform_cost_formatted": "$0.00001",
+      "vendor": {
+        "attempts": 2,
+        "billed_cost": 0.003,
+        "byok": false,
+        "provider": "example-vendor",
+        "route": "example-vendor.unlocker",
+        "vendor_cost": 0.002
+      }
+    },
+    "css_extracted": {
+      "heading": [
+        "Pricing"
+      ],
+      "plans": [
+        "Starter",
+        "Growth",
+        "Scale"
+      ]
+    },
+    "duration_elasped_ms": 1288,
+    "error": null,
+    "headers": {
+      "content-type": "text/html; charset=utf-8"
+    },
+    "json_data": {
+      "other_scripts": [
+        {
+          "@context": "https://example.com",
+          "@type": "Product",
+          "name": "Growth plan",
+          "offers": {
+            "@type": "Offer",
+            "price": "49.00",
+            "priceCurrency": "USD"
+          }
+        }
+      ]
+    },
+    "links": [
+      "https://example.com/",
+      "https://example.com/pricing/faq"
+    ],
+    "metadata": {
+      "automation_data": null,
+      "crawl_id": "REDACTED",
+      "description": "What the plans cost.",
+      "domain": "example.com",
+      "embedding": [
+        0.0213,
+        -0.0871,
+        0.1044,
+        0.0007
+      ],
+      "extracted_data": null,
+      "file_size": 48213,
+      "final_url": "https://example.com/pricing",
+      "keywords": null,
+      "og_image": "https://example.com/og/pricing.png",
+      "original_url": "https://example.com/plans",
+      "pathname": "/pricing",
+      "resource_type": "html",
+      "title": "Pricing"
+    },
+    "request_map": {
+      "https://example.com/app.css": 43.0,
+      "https://example.com/app.js": 41.5,
+      "https://example.com/pricing": 0.0
+    },
+    "response_map": {
+      "https://example.com/app.css": 12480.0,
+      "https://example.com/app.js": 90211.0,
+      "https://example.com/pricing": 48213.0
+    },
+    "status": 200,
+    "trace": [
+      [
+        "queue",
+        0,
+        3
+      ],
+      [
+        "fetch",
+        3,
+        1201,
+        "example-vendor.unlocker"
+      ],
+      [
+        "transform",
+        1204,
+        6,
+        "markdown"
+      ]
+    ],
+    "url": "https://example.com/pricing"
+  }
+]
