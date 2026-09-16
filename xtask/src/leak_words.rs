@@ -113,18 +113,28 @@ pub const CATEGORIES: &[Category] = &[
 pub const EXTRA_LIST_ENV: &str = "SPIDER_LEAKCHECK_WORDS";
 
 /// Built-in terms plus, when `SPIDER_LEAKCHECK_WORDS` is set, the terms in that file.
-pub fn load() -> Result<Vec<Word>, String> {
+pub fn load(require_private: bool) -> Result<Vec<Word>, String> {
+    let path = std::env::var_os(EXTRA_LIST_ENV).map(std::path::PathBuf::from);
+    load_from(path.as_deref(), require_private)
+}
+
+fn load_from(path: Option<&Path>, require_private: bool) -> Result<Vec<Word>, String> {
     let mut words = builtin();
-    if let Some(path) = std::env::var_os(EXTRA_LIST_ENV) {
-        let path = std::path::PathBuf::from(path);
-        let text = std::fs::read_to_string(&path).map_err(|e| {
-            format!(
-                "cannot read the extra denylist at {}: {e}. Point {} at a readable file or unset it.",
-                path.display(),
-                EXTRA_LIST_ENV
-            )
-        })?;
-        words.extend(parse_extra(&text));
+    match path {
+        Some(path) => {
+            let text = std::fs::read_to_string(path).map_err(|e| {
+                format!("cannot read the private denylist from {EXTRA_LIST_ENV}: {e}")
+            })?;
+            let extra = parse_extra(&text);
+            if require_private && extra.is_empty() {
+                return Err(format!("{EXTRA_LIST_ENV} must contain at least one term"));
+            }
+            words.extend(extra);
+        }
+        None if require_private => {
+            return Err(format!("{EXTRA_LIST_ENV} is required by --require-private"));
+        }
+        None => {}
     }
     Ok(words)
 }
@@ -266,3 +276,7 @@ mod tests {
         }
     }
 }
+
+#[cfg(test)]
+#[path = "private_denylist_tests.rs"]
+mod private_denylist_tests;

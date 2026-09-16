@@ -2,7 +2,7 @@
 
 ## Setup
 
-You need a stable Rust toolchain. Nothing else.
+You need Rust 1.88 or newer and Python 3. Release checks also need cargo-deny.
 
 ```bash
 git clone https://github.com/spider-rs/spider-cloud-agent
@@ -10,11 +10,7 @@ cd spider-cloud-agent
 cargo test --workspace
 ```
 
-Live tests are ignored by default and need a key:
-
-```bash
-SPIDER_API_KEY=... cargo test -p spider-cloud-agent --features full -- --ignored live_
-```
+Live tests are ignored by default. Run them with the release script described below.
 
 ## Before you open a pull request
 
@@ -23,8 +19,9 @@ scripts/verify.sh
 ```
 
 That runs every gate this project ships behind: format, clippy with warnings denied,
-the tests with all features and again with none, the docs, both leak checks, and a
-packaging dry run. It stops at the first failure and names it.
+the tests with all features and again with none, the allocation baselines, the docs,
+both leak checks, a dependency audit when cargo-deny is installed, and a packaging
+dry run of all three publishable crates. It stops at the first failure and names it.
 
 There is no hosted CI. The checks live in that script so they can be read, and so a
 green run means the same thing on your machine as on anyone else's. Nothing merges on
@@ -33,19 +30,47 @@ the strength of a badge.
 The `--no-default-features` run inside it is not optional. It is what proves the crate
 still works with no model compiled in, and that path has to keep working.
 
-The `leakcheck` above checks a shorter list than the one that matters. The denylist in
-this repo carries only terms already safe to read in public, because spelling out an
-internal service name here is the leak the tool exists to stop. The real list lives in the
-private checkout and never travels to this repository, not as a file and not as a CI
-secret, because a list held to protect a public repo should not sit inside it. Before a
-push that changes what the crate ships, run it against the real list:
+## Release checks
 
-```
+There is no hosted CI. Run these gates from a developer machine before a release:
+
+```bash
+cargo install cargo-deny --locked
 SPIDER_LEAKCHECK_WORDS=<private-checkout>/tools/leakcheck/words.txt \
-  cargo run -p xtask -- leakcheck --tree
+  scripts/verify.sh --release
+SPIDER_API_KEY=<key> SPIDER_API_URL=<service-url> \
+  SPIDER_SERVICE_REVISION=<deployed-revision> scripts/verify-live.sh --release
 ```
 
-Anyone without that checkout gets the short list, and their green run does not settle it.
+The private denylist lives in the private checkout and never enters this repository,
+not as a file and not as a CI secret. Release mode fails if the variable is unset,
+the file cannot be read, or it contains no terms after blank and comment lines are
+removed. The same rule is available directly with `cargo run --locked -p xtask --
+leakcheck --require-private`, with `--tree` added to check the working tree. An
+ordinary run without the list prints a note and only checks the short public list.
+That pass is not release evidence.
+
+The lockfile ships with the binary. Tests, allocation gates and packaging use
+`--locked`. Release mode requires cargo-deny and refreshes its advisory database.
+Ordinary mode skips the audit with a reason if cargo-deny is absent; otherwise it
+uses only cached data with `--offline`. Prepare the cache with `cargo deny fetch`.
+A missing or stale cache fails the audit rather than silently skipping it.
+`deny.toml` checks advisories, licenses and duplicate versions, with exact exceptions
+for the older transitive versions already in the lockfile.
+
+The live script spends credits and requires a non-empty key, an explicit API URL and
+`SPIDER_SERVICE_REVISION`. Obtain that revision from the deployment serving that URL;
+it is an operator attestation, not the client's Git revision. Python 3 checks the
+compiled inventory and the results: all nine tests must execute, eight must pass,
+and none may skip. No test-name filter is accepted. The selector-name test is the
+tracked F7a exception: the backend extraction cache does not include the selector map
+in its key. Its failure is recorded separately, never as a pass. A pass from that test
+also fails the gate so the exception must be reviewed and removed after the service fix.
+The tests' assertions stay intact.
+
+Keep `target/live-verification/*.json` with the release evidence. Each record contains
+the service revision, client revision, test inventory and per-test outcomes. A local
+release gate and a live gate against the intended service revision are both required.
 
 ## Rules the build enforces
 

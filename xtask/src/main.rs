@@ -47,7 +47,7 @@ fn usage() {
         "\
 xtask, repo tasks for spider-agent.
 
-  cargo run -p xtask -- leakcheck [--tree] [--explain]
+  cargo run -p xtask -- leakcheck [--tree] [--explain] [--require-private]
       Check what publishing would expose. The default checks the packaged file set,
       the list cargo package would ship. --tree checks the working tree instead,
       which is faster and does not need the workspace to compile. --explain prints
@@ -59,7 +59,7 @@ xtask, repo tasks for spider-agent.
       printed. Writes to stdout unless -o or --in-place is given.
 
 Environment:
-  {}   path to the private denylist, one term per line. Set it in ci from the
+  {}   path to the private denylist, one term per line. Required for releases from the
   private checkout. The list compiled in here holds only public terms.",
         leak_words::EXTRA_LIST_ENV
     );

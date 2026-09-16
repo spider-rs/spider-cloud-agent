@@ -12,8 +12,8 @@
 
 //! The calls that only the real service can answer.
 //!
-//! Every test here spends credits, so each one is ignored by default and the CI
-//! job runs them by name with `--ignored live_`. They exist because the fixtures
+//! Every test here spends credits, so each one is ignored by default and
+//! `scripts/verify-live.sh --release` runs the target with `--ignored`. The fixtures
 //! in `tests/fixtures` prove only that the crate reads what it was told the wire
 //! sends. Every case below pins a fix that no recorded fixture could have
 //! prompted, because the recording was of the wrong shape.
@@ -23,8 +23,8 @@
 //! than about the crate, and it stays until the extraction cache starts keying
 //! on the selector map.
 //!
-//! Without a key they skip rather than fail. A missing secret on a fork is not a
-//! broken client, and a red run there teaches contributors to ignore red runs.
+//! The release script requires a key, an explicit API URL and a service revision.
+//! Direct runs without a key fail rather than report success without a request.
 //!
 //! The target is `example.com` throughout. It is the cheapest page the service
 //! can be asked for, it does not change, and it is the only sort of host allowed
@@ -50,14 +50,13 @@ fn spider() -> Option<Spider> {
     Some(Spider::new().expect("a key was found, so a client builds"))
 }
 
-/// Say why a test did nothing, so a skipped run is not read as a passing one.
+/// An explicitly requested live test must have credentials.
 macro_rules! client {
     () => {
         match spider() {
             Some(spider) => spider,
             None => {
-                eprintln!("skipped: no SPIDER_API_KEY in the environment");
-                return;
+                panic!("live tests require a non-empty SPIDER_API_KEY");
             }
         }
     };

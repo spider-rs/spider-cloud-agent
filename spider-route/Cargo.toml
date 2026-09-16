@@ -8,6 +8,7 @@ categories = ["web-programming", "algorithms"]
 include = ["src/**/*.rs", "assets/*.bin", "Cargo.toml", "README.md", "LICENSE"]
 version.workspace = true
 edition.workspace = true
+rust-version.workspace = true
 authors.workspace = true
 license.workspace = true
 repository.workspace = true

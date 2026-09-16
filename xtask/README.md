@@ -7,6 +7,7 @@ Repo tasks for spider-agent. This crate is never published.
 ```
 cargo run -p xtask -- leakcheck            # the packaged file set, what cargo package would ship
 cargo run -p xtask -- leakcheck --tree     # the working tree, for fast local iteration
+cargo run -p xtask -- leakcheck --require-private # require a readable list with at least one term
 cargo run -p xtask -- leakcheck --explain  # what the denylist categories are for
 ```
 
@@ -49,7 +50,8 @@ a `category:` prefix, which only changes how the finding is labelled.
 
 There is no hosted CI. Before a release, run the release mode of
 `scripts/verify.sh` on a developer machine with `SPIDER_LEAKCHECK_WORDS` pointing
-to the list in the private checkout. That mode runs the packaged check. Do not
+to the list in the private checkout. That mode runs both checks with `--require-private`. Missing, unreadable and
+zero-term lists fail. Ordinary checks keep the private list optional. Do not
 move the private terms into this repo, since that is the leak the tool exists to prevent.
 
 ## redact
@@ -71,5 +73,8 @@ cargo test -p xtask
 ```
 
 The tests cover the denylist matcher, the address classifier, the fixture host
-allowlist, the ASCII run detector and the redactor. A test filter that matches nothing
+allowlist, the ASCII run detector and the redactor. Private-list tests cover missing,
+unreadable, empty and usable files, plus the required-list option parser. They run in
+the unit test executable so another checkout sharing Cargo artifacts cannot replace
+the binary under test. A test filter that matches nothing
 exits 0, so read the reported count rather than the exit status.
