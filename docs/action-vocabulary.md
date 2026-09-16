@@ -22,3 +22,21 @@ dependency and makes the classifier crate pull in an HTTP stack it never calls.
 The consequence to remember: a new routing action is a change in `spider-route` first. It
 is a new label the model has to learn and a new column the trainer has to carry, which is
 exactly the friction that should exist before the curated surface grows.
+
+The curated method membership is checked by `curated_surface_membership_is_explicit`.
+A promotion needs a matching test change and a row here, so its reason stays visible.
+
+| Method | Reason for inclusion |
+| --- | --- |
+| `mode` | Choose whether the page needs rendering. |
+| `proxy` | Choose the request's proxy pool. |
+| `country` | Choose the country the site serves. |
+| `wait_for` | Let the needed content arrive. |
+| `profile` | Set a coarse identity and viewport. |
+| `timeout` | Bound the time for one page. |
+| `session` | Keep state across requests when needed. |
+| `budget` | Bound what the operation may spend. |
+| `need` | Ask only for the output the caller wants. |
+| `max_tokens` | Bound the returned text. |
+| `params_mut` | Reach the full documented parameter set. |
+| `page_links` | Reuse a fetched page to return its links, on page operations only. |

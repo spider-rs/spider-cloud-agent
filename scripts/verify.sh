@@ -15,6 +15,16 @@ cd "$(dirname "$0")/.."
 step() { printf '\n== %s\n' "$1"; }
 fail() { printf '\nFAILED: %s\n' "$1" >&2; exit 1; }
 
+step "principle anchors"
+scripts/check-anchors.sh || fail "principle anchors"
+
+step "route boundary"
+python3 scripts/check-rust-boundary.py || fail "boundary scanner self-tests"
+scripts/check-route-boundary.sh || fail "route boundary"
+
+step "policy purity"
+scripts/check-policy-purity.sh || fail "policy purity"
+
 step "format"
 cargo fmt --all --check || fail "format, run cargo fmt --all"
 
