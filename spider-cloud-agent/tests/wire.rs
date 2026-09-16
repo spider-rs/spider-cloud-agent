@@ -39,17 +39,33 @@ use url::Url;
 /// asked for, and nothing the need switched off. The recording carried
 /// metadata, headers, cookies and links; the plan for `Need::Markdown` asked
 /// for none of them, and they stay on the wire.
+///
+/// The site refuses every rung, so the walk ends with the policy's own reason
+/// and the last refused page on the error. A credit cap is not a way to stop
+/// after one call here: a cap that stops the walk is reported as the cap,
+/// [`Error::BudgetExceeded`], which carries the attempts and no page.
 #[tokio::test]
 async fn a_refused_page_keeps_the_markdown_the_need_asked_for_and_nothing_else() {
+    use spider_cloud_agent::Policy;
+
     let stub = serve(&[include_str!("fixtures/refused_markdown.json")]);
-    let spider = client(&stub);
-    let error = spider
-        .scrape("https://example.com/account")
-        .need(spider_cloud_agent::Need::Markdown)
-        .budget(Budget::default().with_credits(Credits::ZERO))
-        .send()
-        .await
-        .unwrap_err();
+    let spider = Spider::builder()
+        .key("not-a-real-key")
+        .base_url(stub.base.clone())
+        .budget(Budget::default().with_attempts(20))
+        .policy(Policy::standard().with_max_attempts(20))
+        .build()
+        .expect("a client");
+    let error = tokio::time::timeout(
+        Duration::from_secs(10),
+        spider
+            .scrape("https://example.com/account")
+            .need(spider_cloud_agent::Need::Markdown)
+            .send(),
+    )
+    .await
+    .expect("the walk hung")
+    .unwrap_err();
     let Error::Exhausted {
         last: Some(page), ..
     } = error
@@ -114,7 +130,8 @@ async fn requested_extras_come_back_and_a_cache_control_goes_out_as_an_object() 
     }));
     let outcome = call.send().await.unwrap();
     let page = &outcome.value;
-    assert_eq!(page.text(), Some("# Pricing\n\nStarter, Growth, Scale.\n"));
+    // The client trims trailing whitespace off text it hands back.
+    assert_eq!(page.text(), Some("# Pricing\n\nStarter, Growth, Scale."));
     assert_eq!(page.body.fields().unwrap()["heading"][0], "Pricing");
     assert_eq!(
         page.json_data.as_ref().unwrap()["other_scripts"][0]["@type"],
@@ -163,7 +180,8 @@ async fn extras_the_need_did_not_ask_for_are_dropped_before_the_caller_sees_them
     call.params_mut().metadata = Some(true);
     let outcome = call.send().await.unwrap();
     let page = &outcome.value;
-    assert_eq!(page.text(), Some("# Pricing\n\nStarter, Growth, Scale.\n"));
+    // The client trims trailing whitespace off text it hands back.
+    assert_eq!(page.text(), Some("# Pricing\n\nStarter, Growth, Scale."));
     assert!(page.body.fields().is_none(), "no selector map was sent");
     assert!(page.json_data.is_none() && page.request_map.is_none() && page.trace.is_none());
     assert!(page.headers.is_none() && page.cookies.is_none() && page.links.is_none());
