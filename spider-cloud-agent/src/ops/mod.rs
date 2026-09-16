@@ -892,6 +892,59 @@ mod tests {
     use crate::thrift::Need;
 
     #[test]
+    fn curated_surface_membership_is_explicit() {
+        let source = include_str!("mod.rs");
+        let surface = source
+            .split_once("macro_rules! curated_surface {")
+            .unwrap()
+            .1
+            .split_once("pub(crate) use curated_surface;")
+            .unwrap()
+            .0;
+        let (page_links, common) = surface.split_once("($builder:ident) =>").unwrap();
+        let methods = |arm: &str| -> Vec<String> {
+            let code = arm
+                .lines()
+                .map(|line| line.split_once("//").map_or(line, |(code, _)| code))
+                .collect::<Vec<_>>()
+                .join("\n");
+            let tokens: Vec<_> = code
+                .split(|c: char| !c.is_alphanumeric() && c != '_')
+                .filter(|token| !token.is_empty())
+                .collect();
+            tokens
+                .windows(2)
+                .filter(|pair| pair[0] == "fn")
+                .map(|pair| pair[1].to_owned())
+                .collect()
+        };
+        assert_eq!(methods(page_links), ["page_links"]);
+        let expected = [
+            "mode",
+            "proxy",
+            "country",
+            "wait_for",
+            "profile",
+            "timeout",
+            "session",
+            "budget",
+            "need",
+            "max_tokens",
+            "params_mut",
+        ];
+        assert_eq!(methods(common), expected);
+        let vocabulary = include_str!("../../../docs/action-vocabulary.md");
+        for name in expected.into_iter().chain(["page_links"]) {
+            assert!(
+                vocabulary
+                    .lines()
+                    .any(|line| line.starts_with(&format!("| `{name}` |"))),
+                "{name} needs a line in docs/action-vocabulary.md"
+            );
+        }
+    }
+
+    #[test]
     fn a_caller_that_declined_a_body_is_not_treated_as_a_blank_page() {
         // Need::Metadata and Need::Fields ask for return_format=empty on purpose.
         // Found live: the walk escalated five times against a request that had

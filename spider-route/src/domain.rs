@@ -443,20 +443,29 @@ mod tests {
         let reads = ["host_str(", ".host()", ".domain()", "Host::Domain"];
 
         let mut checked = 0;
+        let mut visited = Vec::new();
+        fn collect(dir: &std::path::Path, files: &mut Vec<std::path::PathBuf>) {
+            for entry in std::fs::read_dir(dir).expect("a readable source directory") {
+                let path = entry.expect("a readable directory entry").path();
+                if path.is_dir() {
+                    collect(&path, files);
+                } else if path.extension().is_some_and(|ext| ext == "rs") {
+                    files.push(path);
+                }
+            }
+        }
+        let mut files = Vec::new();
+        collect(&dir, &mut files);
         let mut this_file_reads_the_host = false;
 
-        for entry in std::fs::read_dir(&dir).expect("the source directory is readable") {
-            let path = entry.expect("a readable directory entry").path();
-
-            if path.extension().is_none_or(|ext| ext != "rs") {
-                continue;
-            }
-
+        for path in files {
             let name = path
-                .file_name()
-                .and_then(|n| n.to_str())
+                .strip_prefix(&dir)
+                .expect("inside src")
+                .to_str()
                 .expect("a source file has a name")
                 .to_string();
+            visited.push(name.clone());
             let body = std::fs::read_to_string(&path).expect("a source file is readable");
             let hits: Vec<&str> = reads
                 .iter()
@@ -465,7 +474,11 @@ mod tests {
                 .collect();
 
             if name == "domain.rs" {
-                this_file_reads_the_host = !hits.is_empty();
+                // The needle list in this test must not satisfy its own control.
+                let production = body
+                    .split_once("#[cfg(test)]")
+                    .map_or(body.as_str(), |(production, _)| production);
+                this_file_reads_the_host = reads.iter().any(|read| production.contains(read));
             } else {
                 assert!(
                     hits.is_empty(),
@@ -482,6 +495,20 @@ mod tests {
         assert!(
             checked >= 5,
             "expected to scan the whole crate, scanned {checked} files"
+        );
+        visited.sort();
+        assert_eq!(
+            visited,
+            [
+                "action.rs",
+                "decision.rs",
+                "domain.rs",
+                "features.rs",
+                "heuristic.rs",
+                "lib.rs",
+                "router.rs",
+            ],
+            "review every added module in the host boundary"
         );
         assert!(
             this_file_reads_the_host,

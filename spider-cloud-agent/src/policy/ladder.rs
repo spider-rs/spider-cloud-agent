@@ -365,6 +365,70 @@ mod tests {
     }
 
     #[test]
+    fn every_rung_and_standard_step_changes_exactly_its_documented_keys() {
+        use std::collections::BTreeSet;
+        let cases: Vec<(Rung, Vec<&str>)> = vec![
+            (Rung::Mode(RequestMode::Browser), vec!["request"]),
+            (Rung::Proxy(ProxyPool::Residential), vec!["proxy"]),
+            (
+                Rung::Country(Country::new("us").unwrap()),
+                vec!["country_code"],
+            ),
+            (Rung::Wait(WaitFor::idle_network(SETTLE)), vec!["wait_for"]),
+            (Rung::Profile(Profile::Desktop), vec!["viewport"]),
+            (Rung::Profile(Profile::MobileDevice), vec!["viewport"]),
+            (Rung::Profile(Profile::Bot), vec!["user_agent", "viewport"]),
+            (
+                Rung::Timeout(Duration::from_secs(45)),
+                vec!["request_timeout"],
+            ),
+            (Rung::Session(true), vec!["session"]),
+        ];
+        let mut steps: Vec<(Step, Vec<&str>)> = cases
+            .into_iter()
+            .map(|(rung, keys)| (Step::new("single rung", 1.0, vec![rung]), keys))
+            .collect();
+        let standard_keys = [
+            vec!["request"],
+            vec!["request", "wait_for"],
+            vec!["request", "wait_for", "proxy"],
+            vec!["request", "wait_for", "proxy", "country_code"],
+        ];
+        let standard = Ladder::standard();
+        assert_eq!(standard.len(), standard_keys.len());
+        steps.extend(standard.0.into_iter().zip(standard_keys));
+        // Values differ from every rung above, including both viewport sizes.
+        // Other populated fields must survive every step unchanged.
+        let populated: RequestParams = serde_json::from_value(serde_json::json!({
+            "url": "https://example.org/page", "request": "http", "proxy": "isp",
+            "country_code": "de", "request_timeout": 12, "session": false,
+            "wait_for": {"delay": {"timeout": {"secs": 1, "nanos": 0}}},
+            "user_agent": "caller agent",
+            "viewport": {"width": 777, "height": 555},
+            "stealth": true, "fingerprint": true, "limit": 3,
+            "metadata": true, "headers": {"accept": "text/html"}, "cookies": "a=b"
+        }))
+        .unwrap();
+        for (step, expected) in steps {
+            for initial in [RequestParams::default(), populated.clone()] {
+                let before = serde_json::to_value(&initial).unwrap();
+                let mut after = initial;
+                step.apply(&mut after);
+                let after = serde_json::to_value(after).unwrap();
+                let before = before.as_object().unwrap();
+                let after = after.as_object().unwrap();
+                let changed: BTreeSet<&str> = before
+                    .keys()
+                    .chain(after.keys())
+                    .filter(|key| before.get(*key) != after.get(*key))
+                    .map(String::as_str)
+                    .collect();
+                assert_eq!(changed, expected.iter().copied().collect(), "{step:?}");
+            }
+        }
+    }
+
+    #[test]
     fn applying_a_step_writes_the_parameters_it_names() {
         let mut params = RequestParams::url("https://example.com");
         Ladder::standard()

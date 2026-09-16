@@ -34,6 +34,16 @@ that need the old command descriptions must use `command_notes`. `exit_codes`
 now maps numbers to bare labels such as `budget`, replacing descriptions such as
 `budget: a cap stopped the run`. These labels match error records.
 
+- Re-anchor every principle to its named code or check. The anchor gate checks
+  symbols within two lines and requires at least 48 citations.
+- Gate the router's normal dependencies and production source, and the policy's
+  freedom from I/O. Each source check counts the files it visits.
+- Check every ladder rung and standard step for exactly its documented changed
+  keys, and make curated method membership and its vocabulary rows explicit.
+- Walk router modules recursively for host access and assert the exact inventory.
+- Correct the fixture host allowlist promise and document that no model
+  configuration exists yet. Principle 3 names F7a's private release gate.
+
 ## 0.3.1 (2026-09-16)
 
 `spider-agent --budget` and `--wall` now cap the whole run on every command. They were
