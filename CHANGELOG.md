@@ -18,6 +18,12 @@ error.
   the deployed service revision. It accounts for all nine tests and records the
   selector-name service failure as the tracked F7a exception, never as a pass.
   Explicit live test runs without a key now fail.
+- A 502, 504 or 408 from the service is retried the way a 503 is: up to three
+  times, honoring `Retry-After`, and never climbing the ladder, so a gateway
+  failure no longer pays for a heavier page request. The statuses are named once
+  by the new `ApiStatus::is_transient` (408, 500, 502, 503, 504), and
+  `Error::is_retryable` reads it, so `is_retryable` now includes 408. A test fails
+  when a transient status loses its retry rule or the two disagree.
 - Request and builder `Debug` output hides caller cookies, every header value,
   proxy credentials and other free-form credential input. Header names and proxy
   endpoints remain visible. Serialization still sends the original values.

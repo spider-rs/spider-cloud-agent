@@ -16,6 +16,10 @@ use std::time::Duration;
 #[serde(transparent)]
 pub struct ApiStatus(u16);
 
+/// The statuses [`ApiStatus::is_transient`] names. The rule table holds a retry for
+/// each of them, and a test in `policy::rule` fails when one goes missing.
+pub(crate) const TRANSIENT: [u16; 5] = [408, 500, 502, 503, 504];
+
 impl ApiStatus {
     /// Record a status seen on the wire. Internal to the transport.
     pub(crate) fn new(code: u16) -> Self {
@@ -48,9 +52,22 @@ impl ApiStatus {
             413 => ApiClass::PayloadTooLarge,
             429 => ApiClass::RateLimited { retry_after },
             500 => ApiClass::ServerError,
-            503 => ApiClass::Draining { retry_after },
+            // A gateway that could not reach the service, or gave up waiting on it, and a
+            // request that timed out before the service read it, are all the service
+            // being briefly unavailable rather than the request being wrong.
+            408 | 502 | 503 | 504 => ApiClass::Draining { retry_after },
             _ => ApiClass::Other,
         }
+    }
+
+    /// Whether the service, or a gateway in front of it, failed this call in a way
+    /// the same call can get past after a wait.
+    ///
+    /// A rate limit is not in this set. It is also worth waiting out, but it is about
+    /// how often the account calls rather than about the service, and it has its own
+    /// class. [`crate::Error::is_retryable`] reads both.
+    pub fn is_transient(self) -> bool {
+        TRANSIENT.contains(&self.0)
     }
 
     /// Whether the call returned a body worth reading.
@@ -92,7 +109,8 @@ pub enum ApiClass {
     },
     /// The service failed on its side. The same request can succeed later.
     ServerError,
-    /// The service is shedding load. The same request can succeed later.
+    /// The service is shedding load, or a gateway in front of it could not get an
+    /// answer in time (408, 502, 503, 504). The same request can succeed later.
     Draining {
         /// How long to wait, when a response header said so.
         retry_after: Option<Duration>,
@@ -127,6 +145,9 @@ mod tests {
             (429, ApiClass::RateLimited { retry_after: None }),
             (500, ApiClass::ServerError),
             (503, ApiClass::Draining { retry_after: None }),
+            (408, ApiClass::Draining { retry_after: None }),
+            (502, ApiClass::Draining { retry_after: None }),
+            (504, ApiClass::Draining { retry_after: None }),
         ];
         for (code, class) in cases {
             assert_eq!(ApiStatus::new(code).class(), class, "code {code}");
@@ -143,6 +164,10 @@ mod tests {
         );
         assert_eq!(
             ApiStatus::new(503).class_with_retry_after(wait),
+            ApiClass::Draining { retry_after: wait }
+        );
+        assert_eq!(
+            ApiStatus::new(502).class_with_retry_after(wait),
             ApiClass::Draining { retry_after: wait }
         );
     }

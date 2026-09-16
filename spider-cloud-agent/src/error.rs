@@ -91,12 +91,12 @@ impl Error {
     /// Whether trying the same call again could plausibly work.
     ///
     /// False for anything caused by the request itself, and false for running
-    /// out of credits, which only gets worse with repetition.
+    /// out of credits, which only gets worse with repetition. On the call plane it
+    /// is a rate limit or a status [`ApiStatus::is_transient`] names, the same set
+    /// the send loop retries.
     pub fn is_retryable(&self) -> bool {
         match self {
-            Error::Api { status, .. } => {
-                matches!(status.code(), 429 | 500 | 502 | 503 | 504)
-            }
+            Error::Api { status, .. } => status.code() == 429 || status.is_transient(),
             Error::Transport(e) => e.is_timeout() || e.is_connect(),
             _ => false,
         }
