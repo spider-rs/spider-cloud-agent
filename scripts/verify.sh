@@ -54,6 +54,14 @@ scripts/check-route-boundary.sh || fail "route boundary"
 step "policy purity"
 scripts/check-policy-purity.sh || fail "policy purity"
 
+step "install script"
+TEST_SHELL=sh sh scripts/test-install.sh || fail "install script under sh"
+if command -v dash >/dev/null 2>&1; then
+  TEST_SHELL=dash dash scripts/test-install.sh || fail "install script under dash"
+else
+  printf '  skipped the dash run: dash is not installed\n'
+fi
+
 step "format"
 cargo fmt --all --check || fail "format, run cargo fmt --all"
 

@@ -14,13 +14,24 @@ Three crates ship from this workspace:
 
 ## Install
 
-Install with a stable Rust toolchain; see [Cargo.toml](Cargo.toml) for the
-workspace's toolchain requirement.
+```bash
+curl -fsSL https://spider.cloud/install/spider-agent.sh | sh
+spider-agent --version
+```
+
+The script downloads the release build for macOS or Linux on arm64 or x86_64,
+checks it against the release's SHA256SUMS.txt, and installs it to the
+XDG user bin directory in your home folder. Set `SPIDER_AGENT_INSTALL_DIR`
+to install somewhere else, or `SPIDER_AGENT_VERSION` to pin a release. Its source is
+[scripts/install.sh](scripts/install.sh).
+
+Or, with a stable Rust toolchain, build it from crates.io:
 
 ```bash
 cargo install spider-agent-cli
-spider-agent --version
 ```
+
+See [Cargo.toml](Cargo.toml) for the workspace's toolchain requirement.
 
 ## From another program
 
