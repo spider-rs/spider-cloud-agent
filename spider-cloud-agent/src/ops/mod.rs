@@ -322,6 +322,7 @@ impl<'a> Call<'a> {
                     if reply.is_success() || reply.is_mirrored_page_status() {
                         call_error = None;
                         pages = reply.read_pages(&target, format, current == route::TRANSFORM)?;
+                        pages.retain_requested(&self.params);
                         if !pages.is_empty() {
                             pages_came_back = true;
                         }
@@ -678,6 +679,7 @@ fn endpoint_for(plan: &Plan, requested: Route) -> Route {
 /// an image, and turning one into a string is not this layer's decision.
 fn replace_text(body: &mut Body, text: String) {
     match body {
+        Body::WithFields { content, .. } => replace_text(content, text),
         Body::Text(held) | Body::Markdown(held) | Body::Html(held) | Body::Xml(held) => {
             *held = text
         }
@@ -718,7 +720,7 @@ fn representative(pages: &Pages) -> Option<PageStatus> {
 fn payload_beside_the_text(page: &Page) -> (usize, usize) {
     let mut bytes = 0usize;
 
-    if let Body::Fields(fields) = &page.body {
+    if let Some(fields) = page.body.fields() {
         if let Ok(encoded) = serde_json::to_string(fields) {
             bytes += encoded.len();
         }
@@ -726,6 +728,25 @@ fn payload_beside_the_text(page: &Page) -> (usize, usize) {
 
     if let Some(meta) = &page.metadata {
         if let Ok(encoded) = serde_json::to_string(meta) {
+            bytes += encoded.len();
+        }
+    }
+
+    for value in [
+        &page.json_data,
+        &page.request_map,
+        &page.response_map,
+        &page.trace,
+    ]
+    .into_iter()
+    .flatten()
+    {
+        if let Ok(encoded) = serde_json::to_string(value) {
+            bytes += encoded.len();
+        }
+    }
+    for value in [&page.headers, &page.cookies].into_iter().flatten() {
+        if let Ok(encoded) = serde_json::to_string(value) {
             bytes += encoded.len();
         }
     }

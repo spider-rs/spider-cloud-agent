@@ -30,6 +30,13 @@ pub enum Body {
     Screenshot(Bytes),
     /// Named values from a `css_extraction_map` request, keyed by the names you gave.
     Fields(BTreeMap<String, serde_json::Value>),
+    /// Named extractions alongside the requested page content.
+    WithFields {
+        /// Content retaining its requested format.
+        content: Box<Body>,
+        /// Named extractions.
+        fields: BTreeMap<String, serde_json::Value>,
+    },
     /// Several formats of the same page in one response.
     Multi(MultiBody),
     /// The request asked for no page bytes, or the site returned none.
@@ -47,6 +54,7 @@ impl Body {
         match self {
             Body::Text(s) | Body::Markdown(s) | Body::Html(s) | Body::Xml(s) => Some(s),
             Body::Multi(m) => m.as_str(),
+            Body::WithFields { content, .. } => content.as_str(),
             _ => None,
         }
     }
@@ -56,6 +64,7 @@ impl Body {
         match self {
             Body::Bytes(b) | Body::Screenshot(b) => Some(b),
             Body::Multi(m) => m.bytes.as_ref().or(m.screenshot.as_ref()),
+            Body::WithFields { content, .. } => content.as_bytes(),
             _ => None,
         }
     }
@@ -63,7 +72,7 @@ impl Body {
     /// The named extractions, when the request asked for them.
     pub fn fields(&self) -> Option<&BTreeMap<String, serde_json::Value>> {
         match self {
-            Body::Fields(f) => Some(f),
+            Body::Fields(f) | Body::WithFields { fields: f, .. } => Some(f),
             _ => None,
         }
     }
@@ -79,6 +88,7 @@ impl Body {
             Body::Bytes(b) | Body::Screenshot(b) => b.is_empty(),
             Body::Fields(f) => f.is_empty(),
             Body::Multi(m) => m.is_empty(),
+            Body::WithFields { content, fields } => content.is_empty() && fields.is_empty(),
         }
     }
 
@@ -90,6 +100,9 @@ impl Body {
             Body::Bytes(b) | Body::Screenshot(b) => b.len(),
             Body::Fields(f) => f.values().map(|v| v.to_string().len()).sum(),
             Body::Multi(m) => m.len(),
+            Body::WithFields { content, fields } => {
+                content.len() + fields.values().map(|v| v.to_string().len()).sum::<usize>()
+            }
         }
     }
 }

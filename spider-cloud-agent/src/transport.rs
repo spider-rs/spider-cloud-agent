@@ -892,13 +892,29 @@ impl Reply {
             url,
             status,
             body: match wire.css_extracted {
-                // A request that named selectors asked for those fields, so they
-                // are the body. Asking for them alongside a page format is
-                // unusual, and the fields are still the more specific answer.
-                Some(fields) if !fields.is_empty() => Body::Fields(fields),
-                _ => body_from(wire.content, format),
+                Some(fields) => {
+                    let content = body_from(wire.content, format);
+                    if matches!(content, Body::Empty) {
+                        Body::Fields(fields)
+                    } else {
+                        Body::WithFields {
+                            content: Box::new(content),
+                            fields,
+                        }
+                    }
+                }
+                None => body_from(wire.content, format),
             },
-            duration: self.elapsed,
+            duration: wire
+                .duration_elasped_ms
+                .and_then(|ms| Duration::try_from_secs_f64(ms / 1000.0).ok())
+                .unwrap_or_default(),
+            duration_elasped_ms: wire.duration_elasped_ms,
+            call_elapsed: self.elapsed,
+            json_data: wire.json_data,
+            request_map: wire.request_map,
+            response_map: wire.response_map,
+            trace: wire.trace,
             costs: wire.costs.unwrap_or_default(),
             metadata: wire.metadata,
             links,
@@ -967,6 +983,11 @@ fn converted_documents(value: serde_json::Value) -> Vec<serde_json::Value> {
 /// without an account, so both spellings are accepted and whichever arrives wins.
 #[derive(Debug, Default, serde::Deserialize)]
 struct WirePage {
+    duration_elasped_ms: Option<f64>,
+    json_data: Option<serde_json::Value>,
+    request_map: Option<serde_json::Value>,
+    response_map: Option<serde_json::Value>,
+    trace: Option<serde_json::Value>,
     #[serde(default)]
     url: Option<String>,
     #[serde(default)]

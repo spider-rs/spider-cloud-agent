@@ -17,6 +17,44 @@ use spider_cloud_agent::{Credits, RouteDecision};
 
 use crate::emit::Item;
 
+// Shared by served and refused records so diagnostic payloads have one contract.
+macro_rules! response_details {
+    ($value:expr, $page:expr) => {{
+        let value = $value;
+        let page = $page;
+        value.insert(
+            "call_elapsed_ms".into(),
+            json!(page.call_elapsed.as_millis() as u64),
+        );
+        value.insert(
+            "duration_elasped_ms".into(),
+            json!(page.duration_elasped_ms),
+        );
+        value.insert("costs".into(), json!(page.costs));
+        if let Some(error) = &page.error {
+            value.insert("error".into(), json!(error));
+        }
+        if let Some(headers) = &page.headers {
+            value.insert("headers".into(), json!(headers));
+        }
+        if let Some(cookies) = &page.cookies {
+            value.insert("cookies".into(), json!(cookies));
+        }
+        if let Some(data) = &page.json_data {
+            value.insert("json_data".into(), data.clone());
+        }
+        if let Some(data) = &page.request_map {
+            value.insert("request_map".into(), data.clone());
+        }
+        if let Some(data) = &page.response_map {
+            value.insert("response_map".into(), data.clone());
+        }
+        if let Some(data) = &page.trace {
+            value.insert("trace".into(), data.clone());
+        }
+    }};
+}
+
 /// What a body is, and what it is worth writing to a file as.
 struct BodyShape {
     kind: &'static str,
@@ -40,6 +78,11 @@ fn shape(body: &Body) -> BodyShape {
         Body::Markdown(text) => plain("markdown", text, "md"),
         Body::Html(text) => plain("html", text, "html"),
         Body::Xml(text) => plain("xml", text, "xml"),
+        Body::WithFields { content, fields } => {
+            let mut shaped = shape(content);
+            shaped.fields = serde_json::to_value(fields).ok();
+            shaped
+        }
         Body::Bytes(bytes) => BodyShape {
             kind: "bytes",
             text: None,
@@ -106,7 +149,8 @@ pub fn page(page: &Page) -> Item {
             // a third more for the base64.
             Some(_) => Value::Null,
             None => match &shape.fields {
-                Some(_) => Value::Null,
+                Some(_) if matches!(page.body, Body::Fields(_)) => Value::Null,
+                Some(_) => shape.text.clone().map(Value::String).unwrap_or(Value::Null),
                 None => shape.text.clone().map(Value::String).unwrap_or(Value::Null),
             },
         },
@@ -131,6 +175,7 @@ pub fn page(page: &Page) -> Item {
         json!(page.duration.as_millis() as u64),
     );
     value.insert("cost_credits".into(), json!(page.cost().get()));
+    response_details!(&mut value, page);
 
     let mut item = Item {
         value: Value::Object(value),
@@ -147,7 +192,7 @@ pub fn page(page: &Page) -> Item {
 
 /// A page the site did not serve.
 pub fn failed(failed: &FailedPage) -> Item {
-    let value = json!({
+    let mut value = json!({
         "type": "failed",
         "url": failed.url.as_str(),
         "status": failed.status.code(),
@@ -156,7 +201,36 @@ pub fn failed(failed: &FailedPage) -> Item {
         "billed": failed.was_billed(),
         "cost_credits": failed.cost().get(),
     });
-    Item::structured(value).with_url(failed.url.clone())
+    let shaped = shape(&failed.body);
+    if let Some(object) = value.as_object_mut() {
+        object.insert("content".into(), json!(shaped.kind));
+        object.insert("body".into(), json!(failed.body.as_str()));
+        object.insert("bytes".into(), json!(failed.body.len()));
+        object.insert(
+            "duration_ms".into(),
+            json!(failed.duration.as_millis() as u64),
+        );
+        if let Some(fields) = &shaped.fields {
+            object.insert("fields".into(), fields.clone());
+        }
+        if let Some(metadata) = &failed.metadata {
+            object.insert("metadata".into(), json!(metadata));
+        }
+        if let Some(links) = &failed.links {
+            object.insert(
+                "links".into(),
+                json!(links.iter().map(Url::as_str).collect::<Vec<_>>()),
+            );
+        }
+        response_details!(object, failed);
+    }
+    Item {
+        value,
+        text: shaped.text,
+        bytes: shaped.bytes,
+        url: Some(failed.url.clone()),
+        extension: shaped.extension,
+    }
 }
 
 /// What to change before asking for the same page again, as a stable name.
@@ -338,6 +412,41 @@ mod tests {
         clippy::indexing_slicing
     )]
     use super::*;
+
+    #[test]
+    fn served_and_refused_records_keep_body_fields_and_billing() {
+        use spider_cloud_agent::client::{RateLimit, Reply};
+        use spider_cloud_agent::policy::engine::Reached;
+        use spider_cloud_agent::policy::Observed;
+        let Reached::Api(status) = Observed::seen(200, None).api else {
+            panic!("api status")
+        };
+        for code in [200, 403] {
+            let reply = Reply {
+                status, rate_limit: RateLimit::default(), retry_after: None,
+                elapsed: std::time::Duration::from_millis(90), content_type: None,
+                body: serde_json::to_vec(&json!({"url":"https://example.com", "status":code,
+                    "content":{"markdown":"# Example"}, "css_extracted":{"title":["Example"]},
+                    "duration_elasped_ms":12.5, "json_data":{"name":"Example"},
+                    "error":"diagnostic", "costs":{"total_cost":0.003,"vendor":{"provider":"example","billed_cost":0.002}}
+                })).unwrap().into(),
+            };
+            let pages = reply
+                .read(&Url::parse("https://example.com").unwrap(), None)
+                .unwrap();
+            let item = match &pages.0[0] {
+                spider_cloud_agent::response::PageResult::Ok(p) => page(p),
+                spider_cloud_agent::response::PageResult::Failed(p) => failed(p),
+            };
+            assert_eq!(item.value["body"], "# Example");
+            assert_eq!(item.value["fields"]["title"][0], "Example");
+            assert_eq!(item.value["duration_elasped_ms"], 12.5);
+            assert_eq!(item.value["call_elapsed_ms"], 90);
+            assert_eq!(item.value["json_data"]["name"], "Example");
+            assert_eq!(item.value["costs"]["vendor"]["provider"], "example");
+            assert_eq!(item.value["error"], "diagnostic");
+        }
+    }
 
     #[test]
     fn a_hint_has_a_stable_name() {

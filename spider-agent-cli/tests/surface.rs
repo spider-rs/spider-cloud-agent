@@ -496,7 +496,8 @@ fn the_schema_names_the_account_reads_and_not_table() {
 fn stub(reply: &'static str) -> (String, std::sync::mpsc::Receiver<String>) {
     use std::io::{BufRead, BufReader, Read, Write};
 
-    let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("a port");
+    let listener =
+        std::net::TcpListener::bind((std::net::Ipv4Addr::new(127, 0, 0, 1), 0)).expect("a port");
     let address = listener.local_addr().expect("an address");
     let (sender, seen) = std::sync::mpsc::channel();
 
@@ -550,7 +551,8 @@ fn stub(reply: &'static str) -> (String, std::sync::mpsc::Receiver<String>) {
 fn stub_script(script: &'static [(u16, &'static str, &'static str)]) -> String {
     use std::io::{BufRead, BufReader, Read, Write};
 
-    let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("a port");
+    let listener =
+        std::net::TcpListener::bind((std::net::Ipv4Addr::new(127, 0, 0, 1), 0)).expect("a port");
     let address = listener.local_addr().expect("an address");
 
     std::thread::spawn(move || {
@@ -605,6 +607,42 @@ fn run_against(base: &str, args: &[&str]) -> Output {
         .env("USERPROFILE", std::env::temp_dir())
         .output()
         .expect("the binary runs")
+}
+
+#[test]
+fn page_records_keep_server_timing_diagnostics_and_vendor_billing() {
+    let (base, _seen) = stub(
+        r##"{"url":"https://example.com","status":200,"content":{"markdown":"# Example"},"error":"partial result","duration_elasped_ms":12.5,"costs":{"total_cost":0.003,"vendor":{"provider":"example","billed_cost":0.002}}}"##,
+    );
+    let output = run_against(
+        &base,
+        &[
+            "scrape",
+            "https://example.com",
+            "--goal",
+            "markdown",
+            "--ndjson",
+        ],
+    );
+    assert_eq!(
+        code(&output),
+        0,
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let records: Vec<serde_json::Value> = stdout(&output)
+        .lines()
+        .map(|line| serde_json::from_str(line).unwrap())
+        .collect();
+    let page = records
+        .iter()
+        .find(|record| record["type"] == "page")
+        .expect("page record");
+    assert_eq!(page["body"], "# Example");
+    assert_eq!(page["duration_elasped_ms"], 12.5);
+    assert!(page["call_elapsed_ms"].is_number());
+    assert_eq!(page["error"], "partial result");
+    assert_eq!(page["costs"]["vendor"]["provider"], "example");
 }
 
 /// One page and its links, the way the service answers a scrape that asked for
@@ -1032,7 +1070,8 @@ fn an_interrupt_mid_run_keeps_what_was_written_and_leaves_promptly() {
 
     // A stub that answers the first request and holds every later one open
     // for as long as the process lives.
-    let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("a port");
+    let listener =
+        std::net::TcpListener::bind((std::net::Ipv4Addr::new(127, 0, 0, 1), 0)).expect("a port");
     let address = listener.local_addr().expect("an address");
     std::thread::spawn(move || {
         let mut held = Vec::new();
@@ -1283,7 +1322,7 @@ fn a_rate_limit_after_a_page_leaves_with_five() {
 
 #[test]
 fn an_unreachable_service_leaves_with_six() {
-    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let listener = std::net::TcpListener::bind((std::net::Ipv4Addr::new(127, 0, 0, 1), 0)).unwrap();
     let base = format!("http://{}", listener.local_addr().unwrap());
     drop(listener);
     let output = run_against(&base, &["credits"]);

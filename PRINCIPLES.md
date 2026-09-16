@@ -191,7 +191,7 @@ citations. Run `scripts/check-anchors.sh` after moving code so these references 
 17. **A new knob on the curated surface needs an argument, not a use case.** The curated set is
     request mode, proxy pool, country, wait condition, profile, timeout, session, budget, need and
     max tokens, plus `page_links` on page operations. `params_mut()` reaches the full parameter set.
-    The exact method membership is checked at `spider-cloud-agent/src/ops/mod.rs:1044`
+    The exact method membership is checked at `spider-cloud-agent/src/ops/mod.rs:1065`
     (`fn curated_surface_membership_is_explicit`), and each method has a reason in
     `docs/action-vocabulary.md`. Every promotion is a label the router has to learn and a column the
     trainer has to carry, and a new routing action lands in `spider-route` first

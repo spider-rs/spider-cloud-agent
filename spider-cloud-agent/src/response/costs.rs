@@ -16,8 +16,12 @@ use serde::{Deserialize, Serialize};
 /// unit the rest of the crate uses means calling [`Costs::total`]. The wire
 /// omits the block on some endpoints, so an absent breakdown reads as all zeros
 /// rather than as an error.
-#[derive(Debug, Clone, Copy, Default, PartialEq, Serialize, Deserialize)]
+/// The total may exceed the named parts because it includes vendor charges.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 pub struct Costs {
+    /// External provider billing included in the total.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub vendor: Option<VendorCosts>,
     /// Model inference run for this request.
     #[serde(default)]
     pub ai_cost: Usd,
@@ -36,6 +40,23 @@ pub struct Costs {
     /// Converting the page into the requested format.
     #[serde(default)]
     pub transform_cost: Usd,
+}
+
+/// Provider billing details. Monetary amounts are in US dollars.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+pub struct VendorCosts {
+    /// Provider name.
+    pub provider: Option<String>,
+    /// Provider route.
+    pub route: Option<String>,
+    /// Provider charge.
+    pub vendor_cost: Option<Usd>,
+    /// Charge billed to the caller.
+    pub billed_cost: Option<Usd>,
+    /// Whether the caller supplied the provider key.
+    pub byok: Option<bool>,
+    /// Provider attempts.
+    pub attempts: Option<u64>,
 }
 
 impl Costs {
@@ -69,12 +90,12 @@ impl Costs {
         Credits::from(self.transform_cost)
     }
 
-    /// The parts added up, in credits.
+    /// The named non-vendor parts added up, in credits.
     ///
     /// The line items are in the same unit as the total. On the fetch measured
     /// on 2026-09-15 they summed to the reported `total_cost` to the last digit
-    /// the wire carried, so this is a cross-check on a bill rather than a
-    /// second opinion about the unit.
+    /// the wire carried. Vendor billing is separate and can make the total
+    /// greater than this subtotal. Neither value changes the monetary unit.
     pub fn sum_of_parts(&self) -> Credits {
         Credits::from(
             self.ai_cost

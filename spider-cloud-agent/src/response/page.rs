@@ -16,6 +16,12 @@ pub(crate) struct PageParts {
     pub status: PageStatus,
     pub body: Body,
     pub duration: Duration,
+    pub duration_elasped_ms: Option<f64>,
+    pub call_elapsed: Duration,
+    pub json_data: Option<serde_json::Value>,
+    pub request_map: Option<serde_json::Value>,
+    pub response_map: Option<serde_json::Value>,
+    pub trace: Option<serde_json::Value>,
     pub costs: Costs,
     pub metadata: Option<Metadata>,
     pub links: Option<Vec<Url>>,
@@ -36,6 +42,12 @@ impl PageParts {
             status: PageStatus::new(code),
             body: Body::Text("hello".into()),
             duration: Duration::from_millis(120),
+            duration_elasped_ms: None,
+            call_elapsed: Duration::from_millis(120),
+            json_data: None,
+            request_map: None,
+            response_map: None,
+            trace: None,
             costs: Costs {
                 total_cost: Credits::new(4.0).into(),
                 ..Costs::default()
@@ -66,8 +78,22 @@ pub struct Page {
     pub status: PageStatus,
     /// The content.
     pub body: Body,
-    /// How long the fetch took.
+    /// Server page duration, or zero when absent.
     pub duration: Duration,
+    /// Server milliseconds, retaining the backend's field spelling.
+    pub duration_elasped_ms: Option<f64>,
+    /// Wall time of the API call, shared by pages in one reply.
+    pub call_elapsed: Duration,
+    /// Requested structured page data.
+    pub json_data: Option<serde_json::Value>,
+    /// Requested page traffic.
+    pub request_map: Option<serde_json::Value>,
+    /// Requested page responses.
+    pub response_map: Option<serde_json::Value>,
+    /// Requested automation trace.
+    pub trace: Option<serde_json::Value>,
+    /// Diagnostic text, including warnings accompanying a success.
+    pub error: Option<String>,
     /// What the fetch cost.
     pub costs: Costs,
     /// Page metadata, when the request asked for it.
@@ -103,6 +129,13 @@ impl Page {
             status: parts.status,
             body: parts.body,
             duration: parts.duration,
+            duration_elasped_ms: parts.duration_elasped_ms,
+            call_elapsed: parts.call_elapsed,
+            json_data: parts.json_data,
+            request_map: parts.request_map,
+            response_map: parts.response_map,
+            trace: parts.trace,
+            error: parts.error,
             costs: parts.costs,
             metadata: parts.metadata,
             links: parts.links,
@@ -137,6 +170,30 @@ impl Page {
 #[derive(Debug, Clone)]
 #[non_exhaustive]
 pub struct FailedPage {
+    /// Requested content, even when the target refused the fetch.
+    pub body: Body,
+    /// Server page duration, or zero when absent.
+    pub duration: Duration,
+    /// Server milliseconds, retaining the backend's field spelling.
+    pub duration_elasped_ms: Option<f64>,
+    /// Wall time of the API call.
+    pub call_elapsed: Duration,
+    /// Requested structured page data.
+    pub json_data: Option<serde_json::Value>,
+    /// Requested page traffic.
+    pub request_map: Option<serde_json::Value>,
+    /// Requested page responses.
+    pub response_map: Option<serde_json::Value>,
+    /// Requested automation trace.
+    pub trace: Option<serde_json::Value>,
+    /// Requested metadata.
+    pub metadata: Option<Metadata>,
+    /// Requested links.
+    pub links: Option<Vec<Url>>,
+    /// Requested headers.
+    pub headers: Option<BTreeMap<String, String>>,
+    /// Requested cookies.
+    pub cookies: Option<BTreeMap<String, String>>,
     /// The address that was asked for.
     pub url: Url,
     /// The status the site returned.
@@ -152,6 +209,18 @@ pub struct FailedPage {
 impl FailedPage {
     fn from_parts(parts: PageParts) -> FailedPage {
         FailedPage {
+            body: parts.body,
+            duration: parts.duration,
+            duration_elasped_ms: parts.duration_elasped_ms,
+            call_elapsed: parts.call_elapsed,
+            json_data: parts.json_data,
+            request_map: parts.request_map,
+            response_map: parts.response_map,
+            trace: parts.trace,
+            metadata: parts.metadata,
+            links: parts.links,
+            headers: parts.headers,
+            cookies: parts.cookies,
             url: parts.url,
             hint: Hint::for_class(parts.status.class()),
             status: parts.status,
@@ -315,6 +384,81 @@ impl PageResult {
 pub struct Pages(pub Vec<PageResult>);
 
 impl Pages {
+    /// Apply the effective request to both status planes before policy sees them.
+    /// Unset return switches preserve the service defaults for Raw requests.
+    pub(crate) fn retain_requested(&mut self, params: &crate::params::RequestParams) {
+        macro_rules! retain {
+            ($page:expr) => {{
+                let page = $page;
+                if params.metadata == Some(false) {
+                    page.metadata = None;
+                }
+                if params.return_headers == Some(false) {
+                    page.headers = None;
+                }
+                if params.return_cookies == Some(false) {
+                    page.cookies = None;
+                }
+                if params.return_page_links == Some(false) {
+                    page.links = None;
+                }
+                if params.return_json_data == Some(false) {
+                    page.json_data = None;
+                }
+                if params.return_embeddings == Some(false) {
+                    if let Some(meta) = &mut page.metadata {
+                        meta.embedding = None;
+                        for value in meta.extra.values_mut() {
+                            if let Some(object) = value.as_object_mut() {
+                                object.remove("embedding");
+                            }
+                        }
+                    }
+                }
+                let tracker = params.event_tracker.unwrap_or_default();
+                if tracker.requests != Some(true) {
+                    page.request_map = None;
+                }
+                if tracker.responses != Some(true) {
+                    page.response_map = None;
+                }
+                if tracker.automation != Some(true) {
+                    page.trace = None;
+                }
+                let no_content = params.return_format.as_ref().is_some_and(|f| {
+                    f.formats()
+                        .iter()
+                        .all(|f| *f == crate::params::ReturnFormat::Empty)
+                });
+                let fields = params.css_extraction_map.is_some();
+                page.body = match std::mem::take(&mut page.body) {
+                    Body::WithFields {
+                        content,
+                        fields: values,
+                    } => match (no_content, fields) {
+                        (true, true) => Body::Fields(values),
+                        (true, false) => Body::Empty,
+                        (false, true) => Body::WithFields {
+                            content,
+                            fields: values,
+                        },
+                        (false, false) => *content,
+                    },
+                    Body::Fields(_) if !fields => Body::Empty,
+                    body @ Body::Fields(_) => body,
+                    _ if no_content => Body::Empty,
+                    body => body,
+                };
+            }};
+        }
+        for result in &mut self.0 {
+            match result {
+                PageResult::Ok(page) => retain!(page),
+                PageResult::Failed(page) => retain!(page),
+            }
+        }
+    }
+
     /// The pages the sites served.
     pub fn ok(&self) -> impl Iterator<Item = &Page> {
         self.0.iter().filter_map(PageResult::ok)
@@ -396,6 +540,57 @@ mod tests {
         clippy::string_slice
     )]
     use super::*;
+
+    #[test]
+    fn effective_request_filters_both_successes_and_refusals() {
+        use crate::params::RequestParams;
+        use crate::thrift::{Need, Plan};
+        for code in [200, 403] {
+            let mut parts = PageParts::for_test("https://example.com", code);
+            parts.json_data = Some(serde_json::json!({"name": "Example"}));
+            parts.request_map = Some(serde_json::json!({}));
+            parts.response_map = Some(serde_json::json!({}));
+            parts.trace = Some(serde_json::json!([]));
+            parts.metadata = Some(Metadata {
+                embedding: Some(vec![0.1]),
+                ..Metadata::default()
+            });
+            parts.headers = Some(BTreeMap::new());
+            parts.cookies = Some(BTreeMap::new());
+            parts.links = Some(Vec::new());
+            parts.body = Body::WithFields {
+                content: Box::new(Body::Markdown("# refused".into())),
+                fields: BTreeMap::from([("title".into(), serde_json::json!("refused"))]),
+            };
+            let mut pages = Pages(vec![PageResult::from_parts(parts)]);
+            let mut params = RequestParams::default();
+            Plan::for_need(&Need::Markdown).apply_over(&mut params, &RequestParams::default());
+            pages.retain_requested(&params);
+            macro_rules! check {
+                ($p:expr) => {{
+                    let p = $p;
+                    assert_eq!(p.body.as_str(), Some("# refused"));
+                    assert!(p.body.fields().is_none());
+                    assert!(
+                        p.metadata.is_none()
+                            && p.headers.is_none()
+                            && p.cookies.is_none()
+                            && p.links.is_none()
+                    );
+                    assert!(
+                        p.json_data.is_none()
+                            && p.request_map.is_none()
+                            && p.response_map.is_none()
+                            && p.trace.is_none()
+                    );
+                }};
+            }
+            match &pages.0[0] {
+                PageResult::Ok(p) => check!(p),
+                PageResult::Failed(p) => check!(p),
+            }
+        }
+    }
 
     #[test]
     fn a_non_2xx_status_cannot_produce_a_page() {

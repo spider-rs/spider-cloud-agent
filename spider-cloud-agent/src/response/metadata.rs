@@ -9,6 +9,22 @@ use serde::{Deserialize, Serialize};
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 #[non_exhaustive]
 pub struct Metadata {
+    /// Address before redirects.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub original_url: Option<String>,
+    /// Address after redirects.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub final_url: Option<String>,
+    /// Crawl identifier.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub crawl_id: Option<String>,
+    /// Requested embedding vector.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub embedding: Option<Vec<f64>>,
+    /// Additional metadata, including transcripts, places and per-format blocks.
+    /// Format keys stay nested so independent format metadata is never merged.
+    #[serde(default, flatten)]
+    pub extra: serde_json::Map<String, serde_json::Value>,
     /// The page title.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub title: Option<String>,

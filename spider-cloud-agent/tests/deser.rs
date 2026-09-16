@@ -23,6 +23,123 @@ use spider_cloud_agent::response::SearchResults;
 use spider_cloud_agent::{Credits, Usd};
 
 #[test]
+fn requested_payloads_survive_both_status_planes() {
+    use spider_cloud_agent::client::{RateLimit, Reply};
+    use spider_cloud_agent::policy::engine::Reached;
+    use spider_cloud_agent::policy::Observed;
+    let Reached::Api(status) = Observed::seen(200, None).api else {
+        panic!("api status")
+    };
+    for code in [200, 403] {
+        let mut value: serde_json::Value =
+            serde_json::from_str(&fixture("response_fields.json")).unwrap();
+        value["status"] = code.into();
+        let reply = Reply {
+            status,
+            rate_limit: RateLimit::default(),
+            retry_after: None,
+            elapsed: std::time::Duration::from_millis(900),
+            content_type: Some("application/json".into()),
+            body: bytes::Bytes::from(serde_json::to_vec(&value).unwrap()),
+        };
+        let pages = reply
+            .read(&url::Url::parse("https://example.com").unwrap(), None)
+            .unwrap();
+        let (
+            body,
+            meta,
+            costs,
+            duration,
+            elapsed,
+            error,
+            data,
+            requests,
+            responses,
+            trace,
+            headers,
+            cookies,
+            links,
+        ) = match &pages.0[0] {
+            spider_cloud_agent::response::PageResult::Ok(p) => (
+                &p.body,
+                &p.metadata,
+                &p.costs,
+                p.duration_elasped_ms,
+                p.call_elapsed,
+                &p.error,
+                &p.json_data,
+                &p.request_map,
+                &p.response_map,
+                &p.trace,
+                &p.headers,
+                &p.cookies,
+                &p.links,
+            ),
+            spider_cloud_agent::response::PageResult::Failed(p) => (
+                &p.body,
+                &p.metadata,
+                &p.costs,
+                p.duration_elasped_ms,
+                p.call_elapsed,
+                &p.error,
+                &p.json_data,
+                &p.request_map,
+                &p.response_map,
+                &p.trace,
+                &p.headers,
+                &p.cookies,
+                &p.links,
+            ),
+        };
+        assert!(body.as_str().unwrap().contains("Access refused"));
+        assert_eq!(body.fields().unwrap()["heading"][0], "Access refused");
+        let meta = meta.as_ref().unwrap();
+        assert_eq!(
+            meta.original_url.as_deref(),
+            Some("https://example.com/start")
+        );
+        assert_eq!(meta.final_url.as_deref(), Some("https://example.com/final"));
+        assert_eq!(meta.crawl_id.as_deref(), Some("example-crawl"));
+        assert_eq!(meta.embedding.as_deref(), Some(&[0.25, 0.5][..]));
+        assert_eq!(meta.extra["markdown"]["title"], "Markdown title");
+        assert_eq!(meta.extra["raw"]["title"], "HTML title");
+        assert!(meta.extra.contains_key("yt_transcript"));
+        assert!(meta.extra.contains_key("maps_place"));
+        let vendor = costs.vendor.as_ref().unwrap();
+        assert_eq!(vendor.provider.as_deref(), Some("example"));
+        assert_eq!(vendor.billed_cost, Some(Usd::new(0.002)));
+        assert!(costs.total() > costs.sum_of_parts());
+        assert_eq!(duration, Some(12.5));
+        assert_eq!(elapsed.as_millis(), 900);
+        assert!(
+            error.is_some()
+                && data.is_some()
+                && requests.is_some()
+                && responses.is_some()
+                && trace.is_some()
+        );
+        assert!(headers.is_some() && cookies.is_some() && links.is_some());
+    }
+}
+
+#[test]
+fn cache_controls_round_trip_both_shapes_and_unknown_controls() {
+    use spider_cloud_agent::params::{Cache, RequestParams};
+    for value in [
+        serde_json::json!(true),
+        serde_json::json!(false),
+        serde_json::json!({"max_age": 60, "stale_while_revalidate": 30, "future_control": true}),
+    ] {
+        let cache: Cache = serde_json::from_value(value.clone()).unwrap();
+        let params = RequestParams {
+            cache: Some(cache),
+            ..RequestParams::default()
+        };
+        assert_eq!(serde_json::to_value(params).unwrap()["cache"], value);
+    }
+}
+
+#[test]
 fn f1_cookie_map_fixture_decodes_as_a_page() {
     use spider_cloud_agent::client::{RateLimit, Reply};
     use spider_cloud_agent::policy::engine::Reached;

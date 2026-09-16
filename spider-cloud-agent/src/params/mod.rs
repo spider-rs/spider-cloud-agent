@@ -237,7 +237,7 @@ pub struct RequestParams {
     pub text: Option<String>,
     /// Serve a stored copy when there is one, rather than fetching again.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub cache: Option<bool>,
+    pub cache: Option<Cache>,
     /// Where to send progress, and which events to send.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub webhooks: Option<WebhookSettings>,
@@ -386,6 +386,32 @@ impl std::fmt::Debug for RedactedProxy<'_> {
             _ => f.write_str("<redacted>"),
         }
     }
+}
+
+/// Cache selection in the backend's boolean or control object form.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(untagged)]
+pub enum Cache {
+    /// Enable or disable cached responses.
+    Enabled(bool),
+    /// Freshness and staleness controls.
+    Control(CacheControl),
+    /// Escape hatch for additional backend shapes.
+    Other(serde_json::Value),
+}
+
+/// Cache ages in seconds. Additional controls round trip without loss.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+pub struct CacheControl {
+    /// Maximum fresh response age.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_age: Option<u64>,
+    /// How long stale content may be served while refreshing.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub stale_while_revalidate: Option<u64>,
+    /// Additional backend controls.
+    #[serde(default, flatten)]
+    pub extra: serde_json::Map<String, serde_json::Value>,
 }
 
 impl RequestParams {
