@@ -23,9 +23,10 @@
 //! so a test can assert where the call went and what it asked for as well as
 //! what came back.
 
-use spider_cloud_agent::error::BudgetKind;
+use spider_cloud_agent::error::{AuthCause, BudgetKind, Recovery};
 use spider_cloud_agent::ops::transform::Document;
 use spider_cloud_agent::params::ReturnFormat;
+use spider_cloud_agent::policy::StopReason;
 use spider_cloud_agent::{Body, Budget, Credits, Error, Spider};
 use std::io::{BufRead, BufReader, Read, Write};
 use std::net::{TcpListener, TcpStream};
@@ -889,4 +890,159 @@ async fn an_escalation_never_argues_with_a_mode_the_caller_named() {
             "attempt {step} went out as {request}"
         );
     }
+}
+
+/// A key the service refused, with no page in the answer, is the call error
+/// itself: one request, and the caller sees the auth failure and not a walk
+/// that ran out. The cause says the service refused it, which is what tells
+/// an agent that signing in again is the move.
+#[tokio::test]
+async fn a_refused_key_with_no_page_is_an_auth_error_after_one_request() {
+    let stub = serve_answers(&[Answer::with(401, "", r#"{"error":"invalid api key"}"#)]);
+    let spider = client(&stub);
+
+    let failed = spider
+        .scrape("https://example.com")
+        .send()
+        .await
+        .expect_err("a refused key");
+
+    match &failed {
+        Error::Auth { cause, message } => {
+            assert_eq!(*cause, AuthCause::Refused);
+            assert_eq!(message, "invalid api key");
+        }
+        other => panic!("expected the auth error itself, got {other:?}"),
+    }
+    assert!(
+        failed
+            .to_string()
+            .starts_with("authentication: invalid api key"),
+        "{failed}"
+    );
+    assert_eq!(failed.recovery(), Recovery::Reauthenticate);
+    assert_eq!(stub.sent().len(), 1, "the refused key was sent again");
+}
+
+/// A page that came back blank sends the walk up a step, and the service then
+/// rate limits every retry. The walk reached the site, so what the caller gets
+/// is an exhausted walk carrying the rate limit as its source, and the recovery
+/// reads the wait the service asked for straight off it.
+#[tokio::test]
+async fn a_rate_limit_that_runs_out_after_a_page_is_an_exhausted_walk() {
+    use spider_cloud_agent::policy::Backoff;
+    use spider_cloud_agent::Policy;
+
+    let blank = r#"[{"url":"https://example.com/","status":200,"content":"",
+        "costs":{"total_cost":0.0001}}]"#;
+    let limited = Answer::with(429, "retry-after: 1\r\n", r#"{"error":"slow down"}"#);
+    let stub = serve_answers(&[
+        Answer::ok(blank),
+        limited.clone(),
+        limited.clone(),
+        limited.clone(),
+        limited,
+    ]);
+    let spider = Spider::builder()
+        .key("not-a-real-key")
+        .base_url(stub.base.clone())
+        .budget(Budget::default().with_attempts(10))
+        .policy(
+            Policy::standard()
+                .with_max_attempts(10)
+                .with_backoff(Backoff {
+                    cap: Duration::from_millis(50),
+                    ..Backoff::default()
+                }),
+        )
+        .build()
+        .expect("a client");
+
+    let failed = tokio::time::timeout(
+        Duration::from_secs(5),
+        spider.scrape("https://example.com").send(),
+    )
+    .await
+    .expect("the retries waited on the header rather than the ceiling")
+    .expect_err("a walk the rate limit stopped");
+
+    match &failed {
+        Error::Exhausted {
+            reason,
+            source,
+            attempts,
+            ..
+        } => {
+            assert_eq!(*reason, StopReason::RetriesExhausted);
+            match source.as_deref() {
+                Some(Error::Api { status, .. }) => assert_eq!(status.code(), 429),
+                other => panic!("the source is not the rate limit: {other:?}"),
+            }
+            assert_eq!(attempts.len(), stub.sent().len(), "{attempts:?}");
+            assert!(attempts.len() >= 4, "{attempts:?}");
+        }
+        other => panic!("expected an exhausted walk, got {other:?}"),
+    }
+    assert_eq!(
+        failed.recovery(),
+        Recovery::Wait(Some(Duration::from_secs(1)))
+    );
+    assert!(
+        failed.to_string().contains("api status 429"),
+        "the error does not say what stopped it: {failed}"
+    );
+}
+
+/// A site that refuses every attempt walks the whole ladder and ends in an
+/// exhausted walk whose reason is the policy's own, and never the reason for
+/// an attempt no rule matched.
+#[tokio::test]
+async fn a_site_that_refuses_every_attempt_ends_with_the_policy_reason() {
+    use spider_cloud_agent::Policy;
+
+    let refused = r#"[{"url":"https://example.com/","status":403,"content":"",
+        "costs":{"total_cost":0.0001}}]"#;
+    let stub = serve(&[refused]);
+    let spider = Spider::builder()
+        .key("not-a-real-key")
+        .base_url(stub.base.clone())
+        .budget(Budget::default().with_attempts(20))
+        .policy(Policy::standard().with_max_attempts(20))
+        .build()
+        .expect("a client");
+
+    let failed = tokio::time::timeout(
+        Duration::from_secs(10),
+        spider.scrape("https://example.com").send(),
+    )
+    .await
+    .expect("the walk hung")
+    .expect_err("a site that refused every attempt");
+
+    match &failed {
+        Error::Exhausted {
+            reason,
+            source,
+            last,
+            attempts,
+            ..
+        } => {
+            assert!(
+                matches!(
+                    reason,
+                    StopReason::LadderExhausted | StopReason::Rejected { .. }
+                ),
+                "{reason:?}"
+            );
+            assert!(source.is_none(), "{source:?}");
+            let last = last.as_ref().expect("the last refused page");
+            assert_eq!(last.status.code(), 403);
+            assert!(attempts.len() > 1, "nothing escalated: {attempts:?}");
+        }
+        other => panic!("expected an exhausted walk, got {other:?}"),
+    }
+    assert!(
+        failed.to_string().starts_with("no usable page after"),
+        "{failed}"
+    );
 }

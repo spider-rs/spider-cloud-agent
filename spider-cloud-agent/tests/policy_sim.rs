@@ -1128,3 +1128,31 @@ fn the_session_step_answers_a_login_wall_and_nothing_else() {
         );
     }
 }
+
+#[test]
+fn a_gateway_failure_on_the_call_retries_like_a_drain_and_never_climbs() {
+    // 502 and 504 come from a gateway in front of the service and 408 from a request
+    // it gave up reading. None of them says anything about the page, so each waits
+    // what the service asked and sends the same request again.
+    let wait = Duration::from_secs(3);
+    for code in [502, 504, 408] {
+        let gateway = Scripted::seen(code, None).retry_after(wait);
+        let run = run(
+            &Policy::standard().with_max_attempts(u8::MAX),
+            Budget::unlimited(),
+            &[gateway; 4],
+        );
+        assert_eq!(
+            run.moves,
+            [
+                Move::Retry(wait),
+                Move::Retry(wait),
+                Move::Retry(wait),
+                Move::Stop(StopReason::RetriesExhausted),
+            ],
+            "api {code}"
+        );
+        assert_eq!(run.attempts, 4, "api {code}");
+        assert_eq!(run.params.request, None, "api {code} climbed the ladder");
+    }
+}

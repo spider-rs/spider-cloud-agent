@@ -32,7 +32,7 @@ mod transport;
 
 pub use client::{Spider, SpiderBuilder, Transport};
 pub use credits::{Credits, Usd, WholeCredits, CREDITS_PER_USD};
-pub use error::{BudgetKind, Error};
+pub use error::{AuthCause, BudgetKind, Error, Recovery};
 pub use memory::SiteMemoryStore;
 pub use params::{
     Country, ProxyPool, RequestMode, RequestParams, ReturnFormat, SearchParams, WaitFor,

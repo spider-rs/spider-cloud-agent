@@ -33,7 +33,7 @@ use crate::error::{BudgetKind, Error};
 use crate::params::{RequestParams, ReturnFormat, ReturnFormatHandling};
 use crate::policy::engine::Reached;
 use crate::policy::{AttemptState, Budget, Next, Observed, Policy, Step, StopReason};
-use crate::response::{Attempt, Body, Outcome, Page, PageResult, Pages};
+use crate::response::{Attempt, Body, FailedPage, Hint, Outcome, Page, PageResult, Pages};
 use crate::routing;
 use crate::status::{ApiStatus, PageStatus};
 use crate::thrift::plan::Endpoint;
@@ -250,6 +250,12 @@ impl<'a> Call<'a> {
         let mut routed_attempt = true;
         let mut attempts: Vec<Attempt> = Vec::new();
         let mut pages = Pages::default();
+        // Whether any attempt got a page back, and the last failed page it got.
+        // Both outlive `pages`, which describes the last attempt only, because
+        // a call that failed after a page came back is still a walk that
+        // reached the site, and the error has to say so.
+        let mut pages_came_back = false;
+        let mut last_failed: Option<FailedPage> = None;
         let mut call_error: Option<Error>;
         let current = endpoint_for(&plan, route);
         let mut wire_bytes = 0usize;
@@ -296,6 +302,12 @@ impl<'a> Call<'a> {
                     if reply.is_success() || reply.is_mirrored_page_status() {
                         call_error = None;
                         pages = reply.read(&target, format)?;
+                        if !pages.is_empty() {
+                            pages_came_back = true;
+                        }
+                        if let Some(failed) = pages.failed().next() {
+                            last_failed = Some(failed.clone());
+                        }
                         let mut observed =
                             Observed::seen(status.code(), representative(&pages).map(|s| s.code()))
                                 .costing(pages.total_cost())
@@ -393,7 +405,13 @@ impl<'a> Call<'a> {
                     escalate(&step, &mut self.params, &plan, &caller);
                 }
                 Next::Stop(reason) => {
-                    return Err(stopped(reason, attempts, &pages, call_error));
+                    return Err(stopped(
+                        reason,
+                        attempts,
+                        pages_came_back,
+                        last_failed,
+                        call_error,
+                    ));
                 }
             }
         }
@@ -661,28 +679,43 @@ fn nothing_came_back(pages: &Pages) -> bool {
 }
 
 /// Turn the policy's reason for stopping into the error the caller sees.
+///
+/// When no page ever came back, the caller sees the call error itself, an
+/// [`Error::Api`], [`Error::Auth`] or [`Error::Transport`], because what
+/// stopped the walk is a fact about the call rather than about a page. Only
+/// when pages came back and the walk then stopped is it [`Error::Exhausted`],
+/// carrying the policy's reason and, when a call was what stopped it, that
+/// call's error as the source. A rate limit that runs out after a page came
+/// back is therefore an exhausted walk and not a bare rate limit.
 fn stopped(
     reason: StopReason,
     attempts: Vec<Attempt>,
-    pages: &Pages,
+    pages_came_back: bool,
+    last_failed: Option<FailedPage>,
     call_error: Option<Error>,
 ) -> Error {
     match reason {
         StopReason::OutOfCredits => Error::InsufficientCredits,
         StopReason::Budget(kind) => Error::BudgetExceeded { kind, attempts },
-        // Nothing reached a site, so what stopped it is a fact about the call
-        // rather than about a page.
         _ => match call_error {
-            Some(error) if pages.is_empty() => error,
-            _ => Error::Exhausted {
+            Some(error) if !pages_came_back => error,
+            source => Error::Exhausted {
                 attempts,
-                last: pages.failed().next().cloned().map(Box::new),
+                last: last_failed.map(Box::new),
+                reason,
+                source: source.map(Box::new),
             },
         },
     }
 }
 
 /// Take the one page that worked, or say what stopped it.
+///
+/// The walk has already ended in [`Error::Exhausted`] with the policy's own
+/// reason when the site refused every attempt, so the only way to get here
+/// with no served page is a policy that accepted a failed page as the answer.
+/// That is the site's answer settling, and the reason says so, with the hint
+/// off the page it settled on.
 pub(crate) fn first_page(outcome: Outcome<Pages>) -> Result<Outcome<Page>> {
     let Outcome {
         value,
@@ -702,7 +735,11 @@ pub(crate) fn first_page(outcome: Outcome<Pages>) -> Result<Outcome<Page>> {
         }),
         None => Err(Error::Exhausted {
             attempts,
+            reason: StopReason::Rejected {
+                hint: last.as_ref().map_or(Hint::Permanent, |failed| failed.hint),
+            },
             last: last.map(Box::new),
+            source: None,
         }),
     }
 }

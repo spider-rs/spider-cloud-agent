@@ -223,6 +223,47 @@ mod tests {
     }
 
     #[test]
+    fn every_transient_api_status_has_a_retry_rule_the_caller_agrees_with() {
+        use crate::status::api::TRANSIENT;
+        use crate::status::ApiStatus;
+
+        let rules = default_rules();
+        for code in TRANSIENT {
+            let status = ApiStatus::new(code);
+            let index = position(&rules, &Trigger::Api(status.class()));
+            assert!(
+                matches!(rules[index].then, Decision::RetrySame { .. }),
+                "api {code} is transient but its rule does not retry"
+            );
+            let error = crate::Error::Api {
+                status,
+                message: None,
+                retry_after: None,
+            };
+            assert!(
+                error.is_retryable(),
+                "api {code} is retried but not retryable"
+            );
+        }
+
+        // The other direction: a status the table retries is one the caller is told
+        // to retry, and nothing else is.
+        for code in 100..=599u16 {
+            let status = ApiStatus::new(code);
+            let retried = rules.iter().any(|rule| {
+                rule.when == Trigger::Api(status.class())
+                    && matches!(rule.then, Decision::RetrySame { .. })
+            });
+            let error = crate::Error::Api {
+                status,
+                message: None,
+                retry_after: None,
+            };
+            assert_eq!(error.is_retryable(), retried, "api {code}");
+        }
+    }
+
+    #[test]
     fn only_the_accounts_own_limits_stop_instead_of_climbing() {
         assert!(Trigger::Api(ApiClass::RateLimited { retry_after: None }).retry_only());
         assert!(Trigger::Api(ApiClass::Draining { retry_after: None }).retry_only());

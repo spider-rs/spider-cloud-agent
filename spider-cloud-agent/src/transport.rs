@@ -32,7 +32,7 @@ use serde::de::DeserializeOwned;
 use serde::Serialize;
 use url::Url;
 
-use crate::error::Error;
+use crate::error::{AuthCause, Error};
 use crate::params::ReturnFormat;
 use crate::response::content::MultiBody;
 use crate::response::costs::Costs;
@@ -668,9 +668,10 @@ impl Reply {
         let message = self.message();
         Some(match self.status.code() {
             402 => Error::InsufficientCredits,
-            401 => Error::Auth(
-                message.unwrap_or_else(|| "the key was missing or rejected".to_string()),
-            ),
+            401 => Error::Auth {
+                cause: AuthCause::Refused,
+                message: message.unwrap_or_else(|| "the key was missing or rejected".to_string()),
+            },
             _ => Error::Api {
                 status: self.status,
                 message,
@@ -1130,7 +1131,10 @@ mod tests {
             .as_error()
             .expect("an error");
         match error {
-            Error::Auth(message) => assert_eq!(message, "invalid api key"),
+            Error::Auth { cause, message } => {
+                assert_eq!(cause, AuthCause::Refused);
+                assert_eq!(message, "invalid api key");
+            }
             other => panic!("expected an auth error, got {other:?}"),
         }
     }

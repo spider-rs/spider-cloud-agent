@@ -40,7 +40,7 @@ use sha2::{Digest, Sha256};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::{TcpListener, TcpStream};
 
-use crate::error::Error;
+use crate::error::{AuthCause, Error};
 use crate::Result;
 
 /// The environment variable that points the flow at another deployment.
@@ -122,10 +122,10 @@ pub async fn login() -> Result<String> {
     // be one a local process could sit on before the flow starts.
     let listener = TcpListener::bind(loopback())
         .await
-        .map_err(|e| Error::Auth(format!("could not open a loopback listener: {e}")))?;
+        .map_err(|e| sign_in_failed(format!("could not open a loopback listener: {e}")))?;
     let address = listener
         .local_addr()
-        .map_err(|e| Error::Auth(format!("the loopback listener has no address: {e}")))?;
+        .map_err(|e| sign_in_failed(format!("the loopback listener has no address: {e}")))?;
     let redirect_uri = format!("http://{address}/callback");
 
     let client_id = register(&http, &auth.registration_endpoint, &redirect_uri).await?;
@@ -166,7 +166,7 @@ pub async fn login() -> Result<String> {
         .get("spider_api_key")
         .and_then(Value::as_str)
         .map(str::to_string)
-        .ok_or_else(|| Error::Auth("the authorization server returned no api key".to_string()))
+        .ok_or_else(|| sign_in_failed("the authorization server returned no api key".to_string()))
 }
 
 /// An authorization code, wrapped so it cannot fall into a log line.
@@ -210,7 +210,7 @@ async fn discover(http: &reqwest::Client, server: &str) -> Result<AuthServer> {
         .get("authorization_servers")
         .and_then(|servers| servers.get(0))
         .and_then(Value::as_str)
-        .ok_or_else(|| Error::Auth("no authorization server advertised".to_string()))?
+        .ok_or_else(|| sign_in_failed("no authorization server advertised".to_string()))?
         .to_string();
 
     let meta: Value = http
@@ -307,7 +307,7 @@ async fn wait_for_code(
         let left = deadline
             .checked_sub(started.elapsed())
             .filter(|left| !left.is_zero())
-            .ok_or_else(|| Error::Auth(timed_out(deadline)))?;
+            .ok_or_else(|| sign_in_failed(timed_out(deadline)))?;
 
         tokio::select! {
             accepted = listener.accept(), if open.len() < MAX_OPEN_CONNECTIONS => {
@@ -339,7 +339,7 @@ async fn wait_for_code(
                 match finished {
                     Ok(Callback::Code(code)) => return Ok(code),
                     Ok(Callback::Denied(reason)) => {
-                        return Err(Error::Auth(format!("authorization denied: {reason}")))
+                        return Err(sign_in_failed(format!("authorization denied: {reason}")))
                     }
                     Ok(Callback::StateMismatch) => {
                         log::warn!("a callback arrived with the wrong state and was refused");
@@ -348,7 +348,7 @@ async fn wait_for_code(
                     Err(e) => log::debug!("a callback connection ended early: {e}"),
                 }
             }
-            () = tokio::time::sleep(left) => return Err(Error::Auth(timed_out(deadline))),
+            () = tokio::time::sleep(left) => return Err(sign_in_failed(timed_out(deadline))),
         }
     }
 }
@@ -402,6 +402,15 @@ async fn serve(mut stream: TcpStream, state: &str, budget: Duration) -> Callback
         log::debug!("a callback connection never read its answer");
     }
     outcome
+}
+
+/// The flow itself failed: the browser step, the token exchange or a bad
+/// state. Signing in again is the answer, and the cause says so.
+fn sign_in_failed(message: String) -> Error {
+    Error::Auth {
+        cause: AuthCause::SignInFailed,
+        message,
+    }
 }
 
 fn timed_out(deadline: Duration) -> String {
@@ -549,7 +558,7 @@ fn field(value: &Value, key: &str) -> Result<String> {
         .get(key)
         .and_then(Value::as_str)
         .map(str::to_string)
-        .ok_or_else(|| Error::Auth(format!("the response carried no `{key}`")))
+        .ok_or_else(|| sign_in_failed(format!("the response carried no `{key}`")))
 }
 
 /// The query of a request target, decoded.
@@ -588,7 +597,10 @@ fn origin_of(url: &str) -> Result<String> {
     let (scheme, rest) = url
         .split_once("://")
         .filter(|(scheme, _)| *scheme == "http" || *scheme == "https")
-        .ok_or_else(|| Error::Auth(format!("{MCP_SERVER_ENV} must be an http or https url")))?;
+        .ok_or_else(|| Error::Auth {
+            cause: AuthCause::Local,
+            message: format!("{MCP_SERVER_ENV} must be an http or https url"),
+        })?;
     Ok(format!(
         "{scheme}://{}",
         rest.split('/').next().unwrap_or(rest)
@@ -598,8 +610,10 @@ fn origin_of(url: &str) -> Result<String> {
 /// 32 bytes from the operating system, base64url encoded.
 fn random_token() -> Result<String> {
     let mut bytes = [0u8; 32];
-    getrandom::fill(&mut bytes)
-        .map_err(|e| Error::Auth(format!("the operating system random source failed: {e}")))?;
+    getrandom::fill(&mut bytes).map_err(|e| Error::Auth {
+        cause: AuthCause::Local,
+        message: format!("the operating system random source failed: {e}"),
+    })?;
     Ok(URL_SAFE_NO_PAD.encode(bytes))
 }
 
@@ -898,7 +912,8 @@ mod tests {
         .await;
 
         match failed {
-            Err(Error::Auth(message)) => {
+            Err(Error::Auth { cause, message }) => {
+                assert_eq!(cause, AuthCause::SignInFailed);
                 assert!(message.contains("did not come back"), "{message}")
             }
             other => panic!("{other:?}"),
@@ -1120,7 +1135,16 @@ mod tests {
             Duration::from_secs(1),
         )
         .await;
-        assert!(matches!(failed, Err(Error::Auth(_))), "{failed:?}");
+        assert!(
+            matches!(
+                failed,
+                Err(Error::Auth {
+                    cause: AuthCause::SignInFailed,
+                    ..
+                })
+            ),
+            "{failed:?}"
+        );
         flood.abort();
     }
 

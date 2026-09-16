@@ -47,8 +47,13 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 println!("  {n}: {} in {:?}", attempt.api, attempt.elapsed);
             }
         }
-        Err(Error::Exhausted { attempts, last }) => {
-            println!("no page after {} call(s)", attempts.len());
+        Err(Error::Exhausted {
+            attempts,
+            last,
+            reason,
+            ..
+        }) => {
+            println!("no page after {} call(s): {reason}", attempts.len());
             for (n, attempt) in attempts.iter().enumerate() {
                 match attempt.page {
                     Some(status) => println!("  {n}: {status}, {} credits", attempt.cost),

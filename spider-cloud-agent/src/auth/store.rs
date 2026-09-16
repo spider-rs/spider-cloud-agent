@@ -15,7 +15,7 @@ use std::fmt;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 
-use crate::error::Error;
+use crate::error::{AuthCause, Error};
 use crate::Result;
 
 /// The environment variable read first when no key was passed in.
@@ -175,17 +175,17 @@ impl Credentials {
     pub fn store(key: &str) -> Result<Stored> {
         let key = key.trim();
         if key.is_empty() {
-            return Err(Error::Auth(
-                "refusing to store an empty api key".to_string(),
-            ));
+            return Err(Error::Auth {
+                cause: AuthCause::EmptyKey,
+                message: "refusing to store an empty api key".to_string(),
+            });
         }
         if keyring_write(key) {
             return Ok(Stored::Keyring);
         }
-        let home =
-            home_dir().ok_or_else(|| Error::Auth("no home directory to write to".to_string()))?;
+        let home = home_dir().ok_or_else(|| local("no home directory to write to".to_string()))?;
         let path = write_key_file(&home, key)
-            .map_err(|e| Error::Auth(format!("could not write ~/{CREDENTIALS_PATH}: {e}")))?;
+            .map_err(|e| local(format!("could not write ~/{CREDENTIALS_PATH}: {e}")))?;
         Ok(Stored::File(path))
     }
 
@@ -201,10 +201,19 @@ impl Credentials {
     /// On Windows, files use the default ACL, with no permission warning or
     /// tightening; storage tries the keyring first when that feature is enabled.
     pub fn tighten_file_permissions() -> Result<Option<PathBuf>> {
-        let home =
-            home_dir().ok_or_else(|| Error::Auth("no home directory to read".to_string()))?;
+        let home = home_dir().ok_or_else(|| local("no home directory to read".to_string()))?;
         let path = home.join(CREDENTIALS_PATH);
-        tighten(&path).map_err(|e| Error::Auth(format!("could not change the mode: {e}")))
+        tighten(&path).map_err(|e| local(format!("could not change the mode: {e}")))
+    }
+}
+
+/// A problem on this machine rather than with the key: no home directory, or
+/// a file that could not be written or narrowed. Signing in again does not fix
+/// a path, so the cause says so.
+fn local(message: String) -> Error {
+    Error::Auth {
+        cause: AuthCause::Local,
+        message,
     }
 }
 
@@ -696,7 +705,13 @@ mod tests {
 
     #[test]
     fn storing_an_empty_key_is_refused() {
-        assert!(matches!(Credentials::store("   "), Err(Error::Auth(_))));
+        assert!(matches!(
+            Credentials::store("   "),
+            Err(Error::Auth {
+                cause: AuthCause::EmptyKey,
+                ..
+            })
+        ));
     }
 
     #[cfg(unix)]
