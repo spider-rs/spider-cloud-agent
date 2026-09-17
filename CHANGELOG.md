@@ -7,6 +7,18 @@ error.
 
 ## 0.6.0 (2026-09-16)
 
+- New `auth::router` module: a `StoredRouter` (the `router` parameter and
+  `provider_options`) kept in `~/.spider/router.json`, written owner only through
+  the same path as the credentials file, read under a 64 KiB cap, and checked by
+  `StoredRouter::validate`. `Debug` prints no token, credential value or option
+  value, and no error names a value.
+- `SpiderBuilder::stored_router(true)` reads that file at build, and
+  `SpiderBuilder::provider_router` sets one directly. The method is not called
+  `router`, because that name already takes the local router. Off by default.
+  Every page operation then sends the stored `router` when the caller set none,
+  and the stored `provider_options` when the caller set none. A caller's own
+  `router` always wins, `mode: off` included. Nothing changes for a client built
+  without it.
 - Add version one optimizer artifacts, bounded FP32 MLP and GBDT inference,
   calibration, support cells, and synthetic parity fixtures.
 

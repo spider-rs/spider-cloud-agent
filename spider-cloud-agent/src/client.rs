@@ -29,11 +29,10 @@
 use std::fmt;
 use std::sync::Arc;
 
+use spider_route::{HeuristicRouter, Router};
 use url::Url;
 
-use spider_route::{HeuristicRouter, Router};
-
-use crate::auth::Credentials;
+use crate::auth::{router::StoredRouter, Credentials};
 use crate::credits::Credits;
 use crate::error::{AuthCause, Error};
 use crate::memory::SiteMemoryStore;
@@ -117,6 +116,7 @@ pub struct Spider {
     recorder: Option<Arc<dyn Recorder>>,
     explorer: Explorer,
     memory: Arc<SiteMemoryStore>,
+    provider_router: Option<Arc<StoredRouter>>,
     #[cfg(feature = "optimize")]
     pub(crate) optimize: crate::optimize::Hooks,
 }
@@ -126,6 +126,7 @@ impl fmt::Debug for Spider {
     /// placeholder, which is the whole reason this is written out rather than
     /// derived.
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let provider_router = PolicyPresence(self.provider_router.is_some());
         let mut out = f.debug_struct("Spider");
         out.field("base", &self.transport.base_url().as_str())
             .field("key", &REDACTED)
@@ -133,20 +134,11 @@ impl fmt::Debug for Spider {
             .field("policy", &PolicyPresence(self.policy.is_some()))
             .field("router", &self.router.version())
             .field("recorder", &PolicyPresence(self.recorder.is_some()))
-            .field("explore", &self.explorer.rate);
+            .field("explore", &self.explorer.rate)
+            .field("provider_router", &provider_router);
         #[cfg(feature = "optimize")]
         out.field("optimize", &self.optimize);
         out.finish()
-    }
-}
-
-/// Says whether a policy was set without printing it, so `Debug` on a client
-/// stays one line.
-struct PolicyPresence(bool);
-
-impl fmt::Debug for PolicyPresence {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.write_str(if self.0 { "set" } else { "default" })
     }
 }
 
@@ -190,6 +182,7 @@ impl Spider {
             recorder: None,
             explorer: Explorer::default(),
             memory: Arc::new(SiteMemoryStore::default()),
+            provider_router: None,
             #[cfg(feature = "optimize")]
             optimize: crate::optimize::Hooks::default(),
         })
@@ -344,6 +337,12 @@ impl Spider {
     /// bounded: see [`crate::memory`].
     pub fn site_memory(&self) -> &SiteMemoryStore {
         &self.memory
+    }
+
+    /// The provider fallback page operations fill in when the caller set no
+    /// `router` of their own. See [`crate::auth::router`].
+    pub fn provider_router(&self) -> Option<&StoredRouter> {
+        self.provider_router.as_deref()
     }
 }
 
@@ -552,6 +551,8 @@ pub struct SpiderBuilder {
     allow_insecure_http: bool,
     without_read_wall: bool,
     response_limit: Option<usize>,
+    provider_router: Option<StoredRouter>,
+    stored_router: bool,
     #[cfg(feature = "optimize")]
     pub(crate) optimize: crate::optimize::Hooks,
 }
@@ -566,10 +567,22 @@ impl fmt::Debug for SpiderBuilder {
             .field("http_client", &self.http_client.as_ref().map(|_| "set"))
             .field("router", &PolicyPresence(self.router.is_some()))
             .field("recorder", &PolicyPresence(self.recorder.is_some()))
-            .field("explore", &self.explorer.rate);
+            .field("explore", &self.explorer.rate)
+            .field("provider_router", &self.provider_router)
+            .field("stored_router", &self.stored_router);
         #[cfg(feature = "optimize")]
         out.field("optimize", &self.optimize);
         out.finish()
+    }
+}
+
+/// Says whether a policy was set without printing it, so `Debug` on a client
+/// stays one line.
+struct PolicyPresence(bool);
+
+impl fmt::Debug for PolicyPresence {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(if self.0 { "set" } else { "default" })
     }
 }
 
@@ -733,6 +746,38 @@ impl SpiderBuilder {
         self
     }
 
+    /// A provider fallback for every page operation that sets no `router`.
+    ///
+    /// Named `provider_router` because [`Self::router`] already takes the
+    /// local router that picks a first attempt. An operation's own `router`
+    /// wins whenever it has one, `mode: off` included, and so do its own
+    /// `provider_options`. Checked at build, and wins over
+    /// [`Self::stored_router`]. See [`crate::auth::router`].
+    pub fn provider_router(mut self, router: StoredRouter) -> SpiderBuilder {
+        self.provider_router = Some(router);
+        self
+    }
+
+    /// Read the provider fallback in `~/.spider/router.json` at build.
+    ///
+    /// Off unless you turn it on. No file means no fallback. A file that
+    /// cannot be read or does not validate fails the build, rather than
+    /// sending requests without the fallback the file promised.
+    ///
+    /// ```no_run
+    /// # fn run() -> spider_cloud_agent::Result<()> {
+    /// use spider_cloud_agent::Spider;
+    ///
+    /// let spider = Spider::builder().stored_router(true).build()?;
+    /// # let _ = spider;
+    /// # Ok(())
+    /// # }
+    /// ```
+    pub fn stored_router(mut self, on: bool) -> SpiderBuilder {
+        self.stored_router = on;
+        self
+    }
+
     /// Build the client.
     ///
     /// Fails when no key can be found or the base address does not meet the TLS policy.
@@ -761,6 +806,14 @@ impl SpiderBuilder {
             Some(capacity) => SiteMemoryStore::new(capacity),
             None => SiteMemoryStore::default(),
         };
+        let provider_router = match self.provider_router {
+            Some(router) => Some(router),
+            None if self.stored_router => crate::auth::router::load()?,
+            None => None,
+        };
+        if let Some(router) = &provider_router {
+            router.validate()?;
+        }
 
         Ok(Spider {
             transport: Arc::new(transport),
@@ -786,6 +839,7 @@ impl SpiderBuilder {
             recorder: self.recorder,
             explorer: self.explorer,
             memory: Arc::new(memory),
+            provider_router: provider_router.map(Arc::new),
             #[cfg(feature = "optimize")]
             optimize: self.optimize,
         })
@@ -879,59 +933,6 @@ mod tests {
         assert_eq!(
             spider.raw().base_url().as_str(),
             "https://spider.cloud/api/"
-        );
-    }
-
-    #[test]
-    fn a_budget_set_on_the_builder_reaches_the_client() {
-        let spider = SpiderBuilder::new()
-            .key(SECRET)
-            .budget(Budget::default().with_attempts(2))
-            .build()
-            .expect("a client");
-        assert_eq!(spider.budget().attempts, 2);
-    }
-
-    #[test]
-    fn f1_response_cap_is_off_unless_asked() {
-        let builder = || Spider::builder().key(SECRET);
-        assert_eq!(builder().build().unwrap().response_limit, None);
-        assert_eq!(
-            builder()
-                .max_response_bytes(4096)
-                .build()
-                .unwrap()
-                .response_limit,
-            Some(4096)
-        );
-    }
-
-    #[test]
-    fn f1_account_read_wall_requires_an_explicit_opt_out() {
-        let builder = || Spider::builder().key(SECRET);
-        let minute = Some(std::time::Duration::from_secs(60));
-        for budget in [Budget::unlimited(), Budget::default().with_attempts(1)] {
-            assert_eq!(builder().budget(budget).build().unwrap().read_wall, minute);
-        }
-        assert_eq!(builder().build().unwrap().read_wall, minute);
-        assert_eq!(builder().without_wall().build().unwrap().read_wall, None);
-        let short = std::time::Duration::from_millis(20);
-        assert_eq!(
-            builder()
-                .budget(Budget::default().with_wall(short))
-                .build()
-                .unwrap()
-                .read_wall,
-            Some(short)
-        );
-        assert_eq!(
-            builder()
-                .without_wall()
-                .budget(Budget::default())
-                .build()
-                .unwrap()
-                .read_wall,
-            minute
         );
     }
 
@@ -1056,6 +1057,163 @@ mod tests {
             assert!(!debug.contains(SECRET), "key in Debug: {debug}");
             assert!(!display.contains(SECRET), "key in Display: {display}");
             assert!(!debug.contains("Bearer"), "authorization header in {debug}");
+        }
+    }
+
+    #[test]
+    fn a_budget_set_on_the_builder_reaches_the_client() {
+        let spider = SpiderBuilder::new()
+            .key(SECRET)
+            .budget(Budget::default().with_attempts(2))
+            .build()
+            .expect("a client");
+        assert_eq!(spider.budget().attempts, 2);
+    }
+
+    #[test]
+    fn f1_response_cap_is_off_unless_asked() {
+        let builder = || Spider::builder().key(SECRET);
+        assert_eq!(builder().build().unwrap().response_limit, None);
+        assert_eq!(
+            builder()
+                .max_response_bytes(4096)
+                .build()
+                .unwrap()
+                .response_limit,
+            Some(4096)
+        );
+    }
+
+    #[test]
+    fn f1_account_read_wall_requires_an_explicit_opt_out() {
+        let builder = || Spider::builder().key(SECRET);
+        let minute = Some(std::time::Duration::from_secs(60));
+        for budget in [Budget::unlimited(), Budget::default().with_attempts(1)] {
+            assert_eq!(builder().budget(budget).build().unwrap().read_wall, minute);
+        }
+        assert_eq!(builder().build().unwrap().read_wall, minute);
+        assert_eq!(builder().without_wall().build().unwrap().read_wall, None);
+        let short = std::time::Duration::from_millis(20);
+        assert_eq!(
+            builder()
+                .budget(Budget::default().with_wall(short))
+                .build()
+                .unwrap()
+                .read_wall,
+            Some(short)
+        );
+        assert_eq!(
+            builder()
+                .without_wall()
+                .budget(Budget::default())
+                .build()
+                .unwrap()
+                .read_wall,
+            minute
+        );
+    }
+
+    #[test]
+    fn a_stored_router_reaches_the_client_only_when_asked_for() {
+        use crate::params::Router as RouterParam;
+
+        let plain = SpiderBuilder::new().key(SECRET).build().expect("a client");
+        assert!(plain.provider_router().is_none());
+
+        let stored = StoredRouter {
+            router: RouterParam {
+                mode: Some("fallback".to_string()),
+                ..RouterParam::default()
+            },
+            provider_options: None,
+        };
+        let spider = SpiderBuilder::new()
+            .key(SECRET)
+            .provider_router(stored.clone())
+            .build()
+            .expect("a client");
+        assert_eq!(spider.provider_router(), Some(&stored));
+        assert!(format!("{spider:?}").contains("provider_router: set"));
+
+        let mut sideways = stored;
+        sideways.router.mode = Some("sideways".to_string());
+        let refused = SpiderBuilder::new()
+            .key(SECRET)
+            .provider_router(sideways)
+            .build();
+        assert!(matches!(refused, Err(Error::Config(_))), "{refused:?}");
+    }
+
+    /// A stored router holds provider keys, and it reaches a client, a builder,
+    /// every request and every error its module makes. None of them may print
+    /// one.
+    #[test]
+    fn no_error_or_debug_output_carries_a_provider_token() {
+        use crate::params::{RequestParams, Router as RouterParam};
+        use std::collections::BTreeMap;
+
+        const TOKEN: &str = "synthetic-provider-token";
+        const PASSWORD: &str = "synthetic-provider-password";
+        let stored = StoredRouter {
+            router: RouterParam {
+                mode: Some("first".to_string()),
+                provider: Some("oxylabs".to_string()),
+                token: Some(TOKEN.to_string()),
+                credentials: Some(BTreeMap::from([
+                    ("oxylabs_username".to_string(), "synthetic-name".to_string()),
+                    ("oxylabs_password".to_string(), PASSWORD.to_string()),
+                ])),
+                funding: Some("own".to_string()),
+            },
+            provider_options: Some(BTreeMap::from([(
+                "oxylabs".to_string(),
+                serde_json::json!({ "geo_location": TOKEN }),
+            )])),
+        };
+        let builder = SpiderBuilder::new()
+            .key(SECRET)
+            .provider_router(stored.clone());
+        let mut printed = vec![
+            format!("{stored:?}"),
+            format!("{stored:#?}"),
+            format!("{builder:?}"),
+        ];
+        let spider = builder.build().expect("a client");
+        let mut params = RequestParams::url("https://example.com");
+        let caller = params.clone();
+        crate::ops::apply_stored_router(spider.provider_router(), &mut params, &caller);
+        assert_eq!(params.router.as_ref(), Some(&stored.router));
+        printed.push(format!("{spider:?}"));
+        printed.push(format!("{params:?}"));
+        printed.push(format!("{:?}", spider.provider_router()));
+        printed.push(format!("{:?}", spider.scrape("https://example.com")));
+
+        let dir = std::env::temp_dir().join(format!(
+            "spider-client-router-{}-{}",
+            std::process::id(),
+            client_seed()
+        ));
+        std::fs::create_dir_all(&dir).expect("a directory");
+        let mut errors = crate::auth::router::tests::every_error(&dir);
+        let mut blank = stored.clone();
+        blank.router.token = Some(" ".to_string());
+        errors.extend(
+            SpiderBuilder::new()
+                .key(SECRET)
+                .provider_router(blank)
+                .build()
+                .err(),
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+        // A loop over an empty list passes and proves nothing.
+        assert_eq!(errors.len(), 19, "an error path stopped being covered");
+        for error in &errors {
+            printed.push(format!("{error:?}"));
+            printed.push(format!("{error}"));
+        }
+        for one in printed {
+            assert!(!one.contains(TOKEN), "provider token in {one}");
+            assert!(!one.contains(PASSWORD), "provider credential in {one}");
         }
     }
 

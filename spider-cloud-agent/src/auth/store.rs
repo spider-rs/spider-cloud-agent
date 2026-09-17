@@ -281,14 +281,15 @@ fn read_key_file(path: &Path) -> Option<String> {
     }
     let contents = String::from_utf8(bytes).ok()?;
     if let Some(mode) = wide_permissions(path) {
-        warn_wide_permissions(path, mode, &WARNED_ABOUT_PERMISSIONS);
+        let fix = "call Credentials::tighten_file_permissions";
+        warn_wide_permissions(path, mode, &WARNED_ABOUT_PERMISSIONS, fix);
     }
     Some(contents)
 }
 
 /// The mode of a credentials file that anyone but its owner can reach, or
 /// `None` when the file is owner only or the platform has no such notion.
-fn wide_permissions(path: &Path) -> Option<u32> {
+pub(super) fn wide_permissions(path: &Path) -> Option<u32> {
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;
@@ -304,14 +305,13 @@ fn wide_permissions(path: &Path) -> Option<u32> {
 
 /// Say it once. The flag is a parameter so a test can watch the gate work
 /// instead of racing the process wide one.
-fn warn_wide_permissions(path: &Path, mode: u32, once: &AtomicBool) {
+pub(super) fn warn_wide_permissions(path: &Path, mode: u32, once: &AtomicBool, fix: &str) {
     if once.swap(true, Ordering::Relaxed) {
         return;
     }
     log::warn!(
-        "{} is readable by more than its owner (mode {mode:o}). The api key in it has been \
-         readable for as long as the file has existed. Narrow it with chmod 600, or call \
-         Credentials::tighten_file_permissions.",
+        "{} is readable by more than its owner (mode {mode:o}). The keys in it have been \
+         readable for as long as the file has existed. Narrow it with chmod 600, or {fix}.",
         path.display()
     );
 }
@@ -927,8 +927,8 @@ mod tests {
         let before = WARNINGS.load(Ordering::Relaxed);
         let flag = AtomicBool::new(false);
         install_counting_logger();
-        warn_wide_permissions(&path, 0o644, &flag);
-        warn_wide_permissions(&path, 0o644, &flag);
+        warn_wide_permissions(&path, 0o644, &flag, "narrow it");
+        warn_wide_permissions(&path, 0o644, &flag, "narrow it");
         let warned = WARNINGS.load(Ordering::Relaxed) - before;
         assert_eq!(warned, 1, "warned {warned} times, wanted once");
 
