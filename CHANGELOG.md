@@ -26,6 +26,21 @@ error.
 - Fix: `SearchEngine` went out as `"Google"`, `"Brave"` and `"All"`, names the
   service does not accept. It now sends `google`, `brave` and `generic`, and
   still reads `all`. `SearchEngine` is also re-exported from `params`.
+- New crate `spider-optimize`, the core of a second decision layer that runs
+  after the router and the plan. It lists valid edits to the learnable request
+  fields (`request`, `proxy`, an idle network wait, `disable_intercept`,
+  `full_resources`, the three blocking switches and `network_blacklist`
+  appends), scores them through a `Scorer`, and applies at most one set that
+  clears validation and a `Gate`. With `NoModel`, the only scorer shipped, every
+  request is kept. Nothing uses it yet: the client does not call it, so no
+  request changes. A field the caller set is never edited, nothing heavier is
+  proposed under a rate limit, and a blacklist edit needs `disable_hints`.
+- `spider-optimize` also writes comparison rows by hand, with no url, host or
+  body in them, and ships the label helpers `shingle_jaccard`, `byte_ratio`
+  and `fields_ok`. `training/fixtures/schema-v1.json` mirrors its key table
+  and feature layout for the trainer, and a test fails when the two differ.
+- `scripts/verify.sh` gains the optimize boundary gate, its allocation
+  baselines and its packaging dry run.
 
 ## 0.5.0 (2026-09-16)
 

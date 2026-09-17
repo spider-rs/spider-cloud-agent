@@ -51,6 +51,9 @@ step "route boundary"
 python3 scripts/check-rust-boundary.py || fail "boundary scanner self-tests"
 scripts/check-route-boundary.sh || fail "route boundary"
 
+step "optimize boundary"
+scripts/check-optimize-boundary.sh || fail "optimize boundary"
+
 step "policy purity"
 scripts/check-policy-purity.sh || fail "policy purity"
 
@@ -85,6 +88,8 @@ cargo bench --locked -p spider-cloud-agent --bench allocations -- --test \
   || fail "client allocation baselines"
 cargo bench --locked -p spider-route --bench route -- --test \
   || fail "route allocation baselines"
+cargo bench --locked -p spider-optimize --bench optimize -- --test \
+  || fail "optimize allocation baselines"
 
 step "docs"
 RUSTDOCFLAGS="-D warnings" cargo doc --locked --no-deps --all-features \
@@ -105,8 +110,9 @@ fi
 
 step "package"
 # Publish dependencies first: the CLI depends on both libraries at the workspace
-# version (spider-route through spider-cloud-agent).
-cargo publish --locked --dry-run -p spider-route -p spider-cloud-agent -p spider-agent-cli \
+# version (spider-route through spider-cloud-agent), and spider-optimize depends
+# on spider-route.
+cargo publish --locked --dry-run -p spider-route -p spider-optimize -p spider-cloud-agent -p spider-agent-cli \
   || fail "packaging, the crates would not publish"
 
 printf '\nall gates passed\n'
