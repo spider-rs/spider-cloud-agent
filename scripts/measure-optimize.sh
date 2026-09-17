@@ -8,10 +8,11 @@
 #
 #   - the bytes of every model in spider-optimize/assets,
 #   - the stripped release size of spider-agent without and with
-#     spider-cloud-agent/optimize and spider-optimize/embedded-model, each built in
-#     its own CARGO_TARGET_DIR so neither build reuses the other's artifacts,
-#   - peak RSS and wall time of `spider-agent route https://example.com` for both
-#     binaries, 20 runs each, min and median,
+#     spider-cloud-agent/optimize (compiled in, never called, so the linker may
+#     drop it), and of two spider-optimize examples that make one scoring call,
+#     one through the bundled artifact and one through NoModel, each build in
+#     its own CARGO_TARGET_DIR so no build reuses another's artifacts,
+#   - peak RSS and wall time of those two examples, 20 runs each, min and median,
 #   - the criterion means from the spider-optimize bench.
 #
 # The only model in assets is the synthetic fixture, and every table says so.
@@ -21,7 +22,7 @@ set -euo pipefail
 cd "$(dirname "$0")/.."
 
 RUNS=20
-FEATURES="spider-cloud-agent/optimize,spider-optimize/embedded-model"
+FEATURES="spider-cloud-agent/optimize"
 OUT_DIR=target/measure-optimize
 STAMP="$(date -u +%Y%m%dT%H%M%SZ)"
 REPORT="$OUT_DIR/$STAMP.md"
@@ -43,8 +44,8 @@ HEADING="synthetic fixture model, not a trained one"
 measure_once() {
   local binary="$1" log
   log="$(mktemp)"
-  SPIDER_AGENT_NO_UPDATE=1 /usr/bin/time "$TIME_FLAG" "$binary" route https://example.com \
-    >/dev/null 2>"$log" || { cat "$log" >&2; rm -f "$log"; fail "$binary route failed"; }
+  /usr/bin/time "$TIME_FLAG" "$binary" \
+    >/dev/null 2>"$log" || { cat "$log" >&2; rm -f "$log"; fail "$binary failed"; }
   python3 - "$log" <<'PY'
 import re, sys
 text = open(sys.argv[1]).read()
@@ -87,23 +88,35 @@ print(min(rss), int(statistics.median(rss)), min(wall), statistics.median(wall))
 
 build() {
   local dir="$1"; shift
-  printf '== building spider-agent in %s %s\n' "$dir" "$*" >&2
-  CARGO_TARGET_DIR="$dir" cargo build --locked --release -p spider-agent-cli "$@" >&2 \
+  printf '== building in %s: %s\n' "$dir" "$*" >&2
+  CARGO_TARGET_DIR="$dir" cargo build --locked --release "$@" >&2 \
     || fail "release build in $dir"
 }
 
+# The command line tool, with and without the client feature. The tool never
+# constructs an optimizer, so this measures what compiling the feature in adds
+# before the linker drops what nothing calls, and can come out at zero.
 BASE_DIR="$OUT_DIR/build-base"
 OPT_DIR="$OUT_DIR/build-optimize"
-build "$BASE_DIR"
-build "$OPT_DIR" --features "$FEATURES"
+build "$BASE_DIR" -p spider-agent-cli
+build "$OPT_DIR" -p spider-agent-cli --features "$FEATURES"
 BASE_BIN="$BASE_DIR/release/spider-agent"
 OPT_BIN="$OPT_DIR/release/spider-agent"
 
-printf '== running spider-agent route, %s runs each\n' "$RUNS" >&2
-measure "$BASE_BIN" "$OUT_DIR/route-base.txt"
-measure "$OPT_BIN" "$OUT_DIR/route-optimize.txt"
-read -r BASE_RSS_MIN BASE_RSS_MED BASE_WALL_MIN BASE_WALL_MED <"$OUT_DIR/route-base.txt"
-read -r OPT_RSS_MIN OPT_RSS_MED OPT_WALL_MIN OPT_WALL_MED <"$OUT_DIR/route-optimize.txt"
+# Two programs that make the same one scoring call, one through the bundled
+# artifact and the reader, one through NoModel. Their difference is what the
+# reader and the artifact cost to carry, run and start.
+EX_DIR="$OUT_DIR/build-examples"
+build "$EX_DIR" -p spider-optimize --example keep_no_model
+build "$EX_DIR" -p spider-optimize --features embedded-model --example score_embedded
+KEEP_BIN="$EX_DIR/release/examples/keep_no_model"
+SCORE_BIN="$EX_DIR/release/examples/score_embedded"
+
+printf '== running the two scoring examples, %s runs each\n' "$RUNS" >&2
+measure "$KEEP_BIN" "$OUT_DIR/run-keep.txt"
+measure "$SCORE_BIN" "$OUT_DIR/run-score.txt"
+read -r BASE_RSS_MIN BASE_RSS_MED BASE_WALL_MIN BASE_WALL_MED <"$OUT_DIR/run-keep.txt"
+read -r OPT_RSS_MIN OPT_RSS_MED OPT_WALL_MIN OPT_WALL_MED <"$OUT_DIR/run-score.txt"
 
 printf '== cargo bench -p spider-optimize --bench optimize\n' >&2
 cargo bench --locked -p spider-optimize --bench optimize >&2 || fail "optimize bench"
@@ -121,20 +134,25 @@ CRITERION="${CARGO_TARGET_DIR:-target}/criterion/optimize"
     printf '| `%s` | %s |\n' "$(basename "$asset")" "$(size_of "$asset")"
   done
 
-  printf '\n## Stripped release binary, %s\n\n' "$HEADING"
-  printf '| spider-agent | Bytes |\n|---|---:|\n'
+  printf '\n## Stripped release binaries, %s\n\n' "$HEADING"
+  printf '| Binary | Bytes |\n|---|---:|\n'
   BASE_SIZE="$(size_of "$BASE_BIN")"
   OPT_SIZE="$(size_of "$OPT_BIN")"
-  printf '| without the optimizer | %s |\n' "$BASE_SIZE"
-  printf '| with `%s` | %s |\n' "$FEATURES" "$OPT_SIZE"
-  printf '| difference | %s |\n' "$((OPT_SIZE - BASE_SIZE))"
+  KEEP_SIZE="$(size_of "$KEEP_BIN")"
+  SCORE_SIZE="$(size_of "$SCORE_BIN")"
+  printf '| spider-agent, without the feature | %s |\n' "$BASE_SIZE"
+  printf '| spider-agent, with `%s` (compiled, not called) | %s |\n' "$FEATURES" "$OPT_SIZE"
+  printf '| spider-agent difference | %s |\n' "$((OPT_SIZE - BASE_SIZE))"
+  printf '| `keep_no_model` example | %s |\n' "$KEEP_SIZE"
+  printf '| `score_embedded` example, reader and artifact linked | %s |\n' "$SCORE_SIZE"
+  printf '| example difference | %s |\n' "$((SCORE_SIZE - KEEP_SIZE))"
 
-  printf '\n## `spider-agent route https://example.com`, %s runs each, %s\n\n' "$RUNS" "$HEADING"
-  printf '| spider-agent | Peak RSS min (bytes) | Peak RSS median (bytes) | Wall min (s) | Wall median (s) |\n'
+  printf '\n## One scoring call from a cold start, %s runs each, %s\n\n' "$RUNS" "$HEADING"
+  printf '| Program | Peak RSS min (bytes) | Peak RSS median (bytes) | Wall min (s) | Wall median (s) |\n'
   printf '|---|---:|---:|---:|---:|\n'
-  printf '| without the optimizer | %s | %s | %s | %s |\n' \
+  printf '| `keep_no_model` | %s | %s | %s | %s |\n' \
     "$BASE_RSS_MIN" "$BASE_RSS_MED" "$BASE_WALL_MIN" "$BASE_WALL_MED"
-  printf '| with the optimizer | %s | %s | %s | %s |\n' \
+  printf '| `score_embedded` | %s | %s | %s | %s |\n' \
     "$OPT_RSS_MIN" "$OPT_RSS_MED" "$OPT_WALL_MIN" "$OPT_WALL_MED"
 
   printf '\n## Criterion means, `cargo bench -p spider-optimize --bench optimize`, %s\n\n' "$HEADING"
