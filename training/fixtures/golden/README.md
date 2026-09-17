@@ -58,6 +58,17 @@ git and nothing under it is committed.
 for both kinds (756 calibrate rows, 378 of them candidates, under the 500 isotonic
 needs).
 
+That tau was read from the repeat pairs of the whole corpus. Since 2026-09-17 `train`
+reads it from the train, tune and calibrate rows only, so the test window shapes no
+label; on this corpus that gives tau 0.8610 and moves one train label, and the sequence
+above writes different bytes (`synth-mlp.bin` sha256
+`b51910d8501e6e307a622790526224e500c68e3330cc1a32fc658012b37d706f`, `synth-gbdt.bin`
+`f1d59d4d3895170f22151bfde45666d0e234134e9f1972f274bea9b06dfe0b7a` on this machine).
+The committed files were kept as they are: they are still valid format fixtures, the
+parity tests read them, and replacing them means replacing the crate's four copies in
+the same change. Do that regeneration as the section below describes; until then
+`evals/run.sh` reports the drift.
+
 The floors are relaxed on purpose. At the defaults (`--min-covered 200 --r-max 0.01
 --min-sites 50`) this corpus abstains on every edit code, and an artifact whose floors
 are all NaN would leave the floor comparison in the golden cases untested. With the
