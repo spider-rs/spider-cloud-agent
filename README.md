@@ -138,6 +138,13 @@ shape, and keeps no name.
 
 To route another way, implement the `Router` trait.
 
+## Learning cheaper settings
+
+The parameter optimizer is off by default, behind the `optimize` feature. Start
+in shadow mode: it scores edits while sending the baseline request unchanged.
+The caller's settings always win. See the [optimizer architecture](docs/optimizer/architecture.md)
+for the gates and the evidence needed before applying edits.
+
 ## License
 
 MIT. See [LICENSE](LICENSE).

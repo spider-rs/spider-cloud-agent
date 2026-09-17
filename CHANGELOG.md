@@ -7,6 +7,9 @@ error.
 
 ## 0.6.0 (2026-09-16)
 
+- Document optimizer boundaries, parameter coverage, paired datasets, evidence gates
+  and staged rollout; add principle 20 for gated edits and caller precedence.
+
 - Add version one optimizer artifacts, bounded FP32 MLP and GBDT inference,
   calibration, support cells, and synthetic parity fixtures.
 - The optimizer's bundled artifact and both parity fixtures now come from the
