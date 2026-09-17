@@ -3,7 +3,10 @@
 A floors file names, per model kind, the smallest `auroc` and `pr_auc` and the largest
 `ece_after`, `brier_after`, `mae_credits` and `mae_millis` the run may show on the
 chronological test window, the exact number of edits the gated policy must apply
-there, and the gate status it must land on. On a synthetic corpus it also names the
+there, and the gate status it must land on. It may also bound the policy against the
+heuristic baseline as `compare.py` reads it: the smallest coverage, the largest harmful
+override rate (checked on its bootstrap upper bound, so a policy with no override
+cannot meet it) and the smallest harmful count. On a synthetic corpus it also names the
 smallest predicted uplift the model must show for each planted effect. Every check is
 a comparison with a number the run measured; nothing here says a floor is good, only
 that the run did not fall through it.
@@ -11,6 +14,9 @@ that the run did not fall through it.
     {
       "expect_applied": 0,
       "expect_gate_status": "insufficient",
+      "min_coverage": 0.05,
+      "max_harmful_rate": 0.01,
+      "min_harmful": 1,
       "min_planted_uplift": 0.25,
       "min_planted_rows": 20,
       "kinds": {
@@ -37,8 +43,8 @@ from pathlib import Path
 
 import numpy as np
 
+from . import compare, report, synth
 from . import gates as gt
-from . import report, synth
 from . import schema as sch
 from . import thresholds as th
 
@@ -52,6 +58,9 @@ class Floors:
     kinds: dict[str, dict[str, float]]
     expect_applied: int | None = None
     expect_gate_status: str | None = None
+    min_coverage: float | None = None
+    max_harmful_rate: float | None = None
+    min_harmful: int | None = None
     min_planted_uplift: float | None = None
     min_planted_rows: int = DEFAULT_MIN_PLANTED_ROWS
 
@@ -70,6 +79,9 @@ class Floors:
             kinds={k: {n: float(v) for n, v in f.items()} for k, f in kinds.items()},
             expect_applied=doc.get("expect_applied"),
             expect_gate_status=doc.get("expect_gate_status"),
+            min_coverage=doc.get("min_coverage"),
+            max_harmful_rate=doc.get("max_harmful_rate"),
+            min_harmful=doc.get("min_harmful"),
             min_planted_uplift=doc.get("min_planted_uplift"),
             min_planted_rows=int(doc.get("min_planted_rows", DEFAULT_MIN_PLANTED_ROWS)),
         )
@@ -89,6 +101,7 @@ class KindResult:
     kind: str
     checks: list[Check] = field(default_factory=list)
     planted: list[Check] = field(default_factory=list)
+    comparison: compare.Comparison | None = None
 
     def failed(self) -> list[Check]:
         return [c for c in self.checks + self.planted if c.passed is False]
@@ -119,6 +132,31 @@ def gate_checks(result: gt.GateResult, floors: Floors) -> list[Check]:
     return out
 
 
+def comparison_checks(c: compare.Comparison, floors: Floors) -> list[Check]:
+    """The policy against the baseline, where the floors file bounds it. The harmful
+    rate is checked on its bootstrap upper bound, which is NaN without an override, so
+    a policy that abstained everywhere misses `max_harmful_rate` as well as
+    `min_coverage`."""
+    out = []
+    if floors.min_coverage is not None:
+        least = float(floors.min_coverage)
+        out.append(Check("coverage", c.coverage, f">= {report.fmt(least)}",
+                         math.isfinite(c.coverage) and c.coverage >= least,
+                         f"{c.overrides} overrides on {c.pairs} pairs"))
+    if floors.max_harmful_rate is not None:
+        most = float(floors.max_harmful_rate)
+        out.append(Check("harmful override rate", c.harmful_rate_ucb,
+                         f"<= {report.fmt(most)}",
+                         math.isfinite(c.harmful_rate_ucb) and c.harmful_rate_ucb <= most,
+                         f"95 percent upper bound; point {report.fmt(c.harmful_rate)}, "
+                         f"{c.harmful} of {c.overrides} overrides"))
+    if floors.min_harmful is not None:
+        least_n = int(floors.min_harmful)
+        out.append(Check("harmful overrides", c.harmful, f">= {least_n}",
+                         c.harmful >= least_n, f"of {c.overrides} overrides"))
+    return out
+
+
 @dataclass
 class Effect:
     """Which test rows a planted effect applies to, and what the plant did to the
@@ -129,6 +167,7 @@ class Effect:
     planted: float  # planted change in the success chance, negative for a break
     note: str = ""
     by_day: bool = False  # the plant depends on the day, so a window may hold no row
+    gated: bool = True  # False reports the prediction beside the plant and checks nothing
 
 
 def _status_of(rows: list[dict]) -> list[str]:
@@ -172,9 +211,13 @@ def planted_effects(planted: dict, scored: th.Scored) -> list[Effect]:
         out.append(Effect("residential proxy on a blocked site, before the flip",
                           on & ~flipped, res["success_to"] - res["success_from"],
                           "the chronological test window may lie past the flip", by_day=True))
+        # No floor can say what a model should predict about a change that no row it
+        # was fitted on carried, so the flipped days are reported beside the plant and
+        # never gated; the gate on the test window is what rejects the artifact.
         out.append(Effect("residential proxy on a blocked site, after the flip",
                           on & flipped, res["success_when_flipped"] - res["success_from"],
-                          "the plant removes the uplift on these days; reported, not gated"))
+                          "the plant changes the effect on these days; reported, not gated",
+                          by_day=True, gated=False))
 
     style = planted.get("stylesheets")
     if style:
@@ -207,7 +250,7 @@ def planted_checks(planted: dict, scored: th.Scored, floors: Floors) -> list[Che
     out = []
     for effect in planted_effects(planted, scored):
         n = int(effect.mask.sum())
-        gated = effect.planted != 0.0
+        gated = effect.gated and effect.planted != 0.0
         if n < floors.min_planted_rows:
             note = f"{n} rows, fewer than {floors.min_planted_rows}"
             if effect.by_day:
@@ -248,6 +291,8 @@ def render(results: list[KindResult], synthetic: bool, floors_path: str,
                        "applies to:\n\n")
             rows = [[c.name, c.value, c.rule, _verdict(c.passed), c.note] for c in r.planted]
             out.append(report.table(["effect", "predicted", "floor", "pass", "rows"], rows))
+        if r.comparison is not None:
+            out.append("\n" + compare.render(r.comparison, synthetic, r.kind))
     failed = [c for r in results for c in r.failed()]
     out.append(f"\n{len(failed)} floor(s) missed.\n" if failed else "\nEvery floor met.\n")
     return "".join(out)
