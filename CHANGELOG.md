@@ -57,6 +57,13 @@ error.
   walk, the requested and returned field counts, and a site key salted by
   `JsonlComparisonRecorder::with_salt`. A row carries no url, host or body.
   Without the feature, the client builds and exports exactly what it did.
+- New `training/` uv project, `spider-optimize-train`, which ships in no crate.
+  It validates a corpus of comparison rows, trains a LightGBM and a numpy MLP
+  scorer on the same split, calibrates success, sweeps a per-edit success floor
+  with a pair bootstrap risk bound, runs paired regression gates, and exports
+  the artifact the crate will read, with a Python reference reader and golden
+  cases. Only a synthetic corpus with planted effects exists, so every number it
+  prints is labelled FIXTURE-ONLY. It sends no request.
 
 ## 0.5.0 (2026-09-16)
 

@@ -1,0 +1,129 @@
+{
+  "artifact_version": 1,
+  "bytes": 284958,
+  "calibration": {
+    "brier_after": 0.14704967430988544,
+    "brier_before": 0.14800117556973869,
+    "candidate_rows": 386,
+    "ece_after": 0.07963618489571764,
+    "ece_before": 0.08150683498741172,
+    "method": "platt",
+    "rows": 772
+  },
+  "edit_feature_version": 1,
+  "feature_version": 1,
+  "kind": "gbdt",
+  "pairs": 4000,
+  "pooled_threshold": 0.5,
+  "rows": 8000,
+  "schema_version": 1,
+  "sha256": "706de980dc3f4e66038a466cc7198491704116066712b341f8f8334c2bdbc5fb",
+  "split": "chronological: train days 0..35, tune days 36..44, calibrate days 45..50, test days 51..59",
+  "support_cells": 14,
+  "sweeps": {
+    "block_ads": {
+      "min_covered": 30,
+      "r_max": 0.05,
+      "rows": 14,
+      "threshold": null
+    },
+    "block_analytics": {
+      "min_covered": 30,
+      "r_max": 0.05,
+      "rows": 8,
+      "threshold": null
+    },
+    "block_stylesheets": {
+      "min_covered": 30,
+      "r_max": 0.05,
+      "rows": 50,
+      "threshold": null
+    },
+    "disable_intercept": {
+      "min_covered": 30,
+      "r_max": 0.05,
+      "rows": 21,
+      "threshold": null
+    },
+    "full_resources": {
+      "min_covered": 30,
+      "r_max": 0.05,
+      "rows": 13,
+      "threshold": null
+    },
+    "network_blacklist": {
+      "min_covered": 30,
+      "r_max": 0.05,
+      "rows": 77,
+      "threshold": null
+    },
+    "pooled": {
+      "min_covered": 30,
+      "r_max": 0.05,
+      "rows": 366,
+      "threshold": 0.5
+    },
+    "proxy": {
+      "min_covered": 30,
+      "r_max": 0.05,
+      "rows": 52,
+      "threshold": 0.5
+    },
+    "request": {
+      "min_covered": 30,
+      "r_max": 0.05,
+      "rows": 51,
+      "threshold": null
+    },
+    "wait_for": {
+      "min_covered": 30,
+      "r_max": 0.05,
+      "rows": 80,
+      "threshold": 0.5
+    }
+  },
+  "synthetic": true,
+  "tau": 0.8656590000000001,
+  "thresholds": [
+    null,
+    null,
+    0.5,
+    0.5,
+    null,
+    null,
+    null,
+    null,
+    null,
+    null
+  ],
+  "windows": {
+    "calibrate": {
+      "days": [
+        45,
+        50
+      ],
+      "rows": 772
+    },
+    "test": {
+      "days": [
+        51,
+        59
+      ],
+      "rows": 1248
+    },
+    "train": {
+      "days": [
+        0,
+        35
+      ],
+      "rows": 4736
+    },
+    "tune": {
+      "days": [
+        36,
+        44
+      ],
+      "rows": 1244
+    }
+  }
+}
