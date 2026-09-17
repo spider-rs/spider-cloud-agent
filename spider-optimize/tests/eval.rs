@@ -168,6 +168,12 @@ impl XorShift {
         &from[self.below(from.len())]
     }
 
+    // Spelled out for text because rustc 1.88, the floor, infers the slice's
+    // element as `str` from `push_str` when the generic form is used.
+    fn word(&mut self, from: &[&'static str]) -> &'static str {
+        from[self.below(from.len())]
+    }
+
     fn coin(&mut self) -> bool {
         self.below(2) == 0
     }
@@ -251,15 +257,15 @@ fn random_url(rng: &mut XorShift) -> Url {
     ];
 
     let mut raw = String::new();
-    raw.push_str(*rng.pick(&SCHEMES[..]));
-    raw.push_str(*rng.pick(&HOSTS[..]));
+    raw.push_str(rng.word(&SCHEMES));
+    raw.push_str(rng.word(&HOSTS));
     for _ in 0..rng.below(4) {
         raw.push('/');
-        raw.push_str(*rng.pick(&SEGMENTS[..]));
+        raw.push_str(rng.word(&SEGMENTS));
     }
     raw.push('/');
-    raw.push_str(*rng.pick(&LEAVES[..]));
-    raw.push_str(*rng.pick(&QUERIES[..]));
+    raw.push_str(rng.word(&LEAVES));
+    raw.push_str(rng.word(&QUERIES));
     if rng.below(8) == 0 {
         raw.push_str("#top");
     }
