@@ -7,6 +7,14 @@ error.
 
 ## 0.6.0 (2026-09-16)
 
+- New `spider_optimize::Monitor`, a lock free ring of the last `window` settled
+  outcomes that trips when the edited requests succeed less often than the kept ones
+  by more than `max_drop`, with `z` standard errors of the unpaired difference taken
+  off. `Optimizer::with_monitor` feeds it every settled outcome; once it trips, every
+  `Apply` decision is shadowed, `DecisionLog.fallback` is set, the row carries
+  `"fallback":true`, one warning is logged, and nothing is applied again until
+  `Monitor::reset`. Detection costs up to `min_applied` degraded outcomes plus what
+  the window hides; the tests print the measured delay and losses.
 - Trainer: the cost gate is paired (policy minus baseline credits per correct result,
   resampled by pair, upper bound at or under zero) and a policy that applied no edit is
   `insufficient` rather than a cost failure; new `eval` subcommand checks a run against a

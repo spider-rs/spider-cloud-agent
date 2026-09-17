@@ -23,8 +23,8 @@ use std::sync::mpsc::{channel, Receiver, Sender};
 use std::time::Duration;
 
 use spider_cloud_agent::optimize::{
-    summarize, ApplyMode, ComparisonRecorder, Gate, NoModel, Optimizer, ResourceSource,
-    ResourceSummary, Scorer,
+    summarize, ApplyMode, ComparisonRecorder, Gate, Monitor, MonitorConfig, NoModel, Optimizer,
+    ResourceSource, ResourceSummary, Scorer,
 };
 use spider_cloud_agent::policy::{Budget, ASSUMED_MINIMUM_COST};
 use spider_cloud_agent::{Credits, Explorer, Need, ProxyPool, RequestMode, Spider};
@@ -40,10 +40,15 @@ const SERVED: &str = r#"[{"url":"https://example.com/a","status":200,"content":"
 /// A page the site refused, billed one credit.
 const REFUSED: &str = r#"[{"url":"https://example.com/a","status":403,"content":"denied","costs":{"total_cost":0.0001}}]"#;
 
+/// A page that is not there, billed one credit. The policy stops on it at
+/// once, so a walk that gets this is one attempt long.
+const MISSING: &str = r#"[{"url":"https://example.com/a","status":404,"content":"gone","costs":{"total_cost":0.0001}}]"#;
+
 /// The third party group a resource source reports.
 const TRACKER: &str = "tracker-alpha.example";
 
-/// A stub of the service that answers from a script, repeating the last answer.
+/// A stub of the service that answers from a script, repeating the last
+/// answer, or by reading each body.
 struct Stub {
     base: Url,
     seen: Receiver<String>,
@@ -51,9 +56,26 @@ struct Stub {
 
 impl Stub {
     fn serve(script: &[&str]) -> Stub {
+        let script: Vec<String> = script.iter().map(|body| body.to_string()).collect();
+        Stub::answering(move |answered, _| {
+            script
+                .get(answered)
+                .unwrap_or_else(|| script.last().unwrap())
+                .clone()
+        })
+    }
+
+    /// A stub whose answer depends on the body it was sent.
+    fn judging(judge: impl Fn(&serde_json::Value) -> &'static str + Send + 'static) -> Stub {
+        Stub::answering(move |_, body| {
+            let body: serde_json::Value = serde_json::from_str(body).expect("a JSON body");
+            judge(&body).to_string()
+        })
+    }
+
+    fn answering(reply: impl Fn(usize, &str) -> String + Send + 'static) -> Stub {
         let listener = TcpListener::bind((Ipv4Addr::new(127, 0, 0, 1), 0)).expect("a port");
         let address = listener.local_addr().expect("an address");
-        let script: Vec<String> = script.iter().map(|body| body.to_string()).collect();
         let (sender, seen) = channel();
         std::thread::spawn(move || {
             for (answered, stream) in listener.incoming().enumerate() {
@@ -61,12 +83,10 @@ impl Stub {
                 let Some(body) = read_body(&mut stream) else {
                     break;
                 };
+                let reply = reply(answered, &body);
                 if sender.send(body).is_err() {
                     break;
                 }
-                let reply = script
-                    .get(answered)
-                    .unwrap_or_else(|| script.last().unwrap());
                 let head = format!(
                     "HTTP/1.1 200 Scripted\r\ncontent-type: application/json\r\ncontent-length: {}\r\nconnection: close\r\n\r\n",
                     reply.len()
@@ -521,4 +541,120 @@ fn optimizer_multipliers_match_the_explorer_arms() {
             "{arm:?} is cheaper than {multiplier}"
         );
     }
+}
+
+/// A stylesheet switch alone, off.
+fn stylesheets_off(input: &Input) -> u8 {
+    u8::from(keys(input) == 1 && touches(input, Key::BlockStylesheets) && bucket(input, 0))
+}
+
+#[tokio::test]
+async fn a_tripped_monitor_falls_back_to_shadow() {
+    const MIN: u32 = 8;
+    const WINDOW: usize = 64;
+    const REQUESTS: usize = 48;
+
+    // The site is fine unless the request carries the edit, and every kept
+    // request is one where the caller set the switch, so the edit had nothing
+    // to write.
+    let stub = Stub::judging(|body| {
+        if body.get("block_stylesheets") == Some(&serde_json::Value::Bool(false)) {
+            MISSING
+        } else {
+            SERVED
+        }
+    });
+    let (recorder, written) = rows();
+    let spider = client(&stub)
+        .optimizer(
+            Optimizer::new(Favour(stylesheets_off), Gate::default(), ApplyMode::Apply)
+                .with_monitor(Monitor::new(MonitorConfig {
+                    window: WINDOW,
+                    min_applied: MIN,
+                    min_kept: MIN,
+                    max_drop: 0.02,
+                    z: 1.645,
+                })),
+        )
+        .comparison_recorder(recorder)
+        .build()
+        .unwrap();
+    let monitor = spider.optimizer().unwrap().monitor().unwrap();
+
+    let mut tripped_at = None;
+    let mut failed_edited_before_trip = 0u32;
+    for n in 0..REQUESTS {
+        // A fresh site every time, so memory never changes what the router
+        // and the gate do from one request to the next.
+        let mut call = spider
+            .scrape(format!("https://site-{n}.example/a"))
+            .need(Need::Markdown);
+        if n % 2 == 0 {
+            call.params_mut().block_stylesheets = Some(true);
+        }
+        let outcome = tokio::time::timeout(Duration::from_secs(10), call.send())
+            .await
+            .expect("the walk hung");
+        let bodies = stub.bodies();
+        assert_eq!(bodies.len(), 1, "one attempt per request: {bodies:?}");
+        let body = &bodies[0];
+        let row: serde_json::Value = serde_json::from_str(&written.try_recv().unwrap()).unwrap();
+        assert!(written.try_recv().is_err(), "one row per operation");
+        let edited = body.get("block_stylesheets") == Some(&serde_json::Value::Bool(false));
+
+        if tripped_at.is_some() {
+            assert!(!edited, "request {n} was edited after the trip: {body}");
+            assert!(outcome.is_ok(), "request {n} failed after the trip");
+            assert_eq!(row["arm"], "shadow", "request {n}: {row}");
+            assert_eq!(row["fallback"], true, "request {n}: {row}");
+            assert_eq!(row["success"], true, "request {n}: {row}");
+            continue;
+        }
+
+        assert_eq!(row["fallback"], false, "request {n}: {row}");
+        if n % 2 == 0 {
+            assert!(!edited, "the caller's switch was edited: {body}");
+            assert_eq!(row["arm"], "baseline", "request {n}: {row}");
+            assert!(outcome.is_ok());
+        } else {
+            assert!(edited, "request {n} was not edited: {body}");
+            assert_eq!(row["arm"], "candidate", "request {n}: {row}");
+            assert_eq!(row["success"], false, "request {n}: {row}");
+            assert!(outcome.is_err());
+            failed_edited_before_trip += 1;
+        }
+        if monitor.tripped() {
+            tripped_at = Some(n);
+        }
+    }
+
+    let tripped_at = tripped_at.expect("the monitor tripped");
+    assert!(
+        tripped_at + 1 < REQUESTS,
+        "no request was sent after the trip"
+    );
+    assert!(monitor.tripped());
+    println!(
+        "monitor: tripped on request {tripped_at}, after {failed_edited_before_trip} edited \
+         requests failed; the bound is {}",
+        MIN as usize + WINDOW
+    );
+    assert!(failed_edited_before_trip as usize <= MIN as usize + WINDOW);
+    // Every edit failed and every kept request succeeded, so the trip could
+    // come no sooner than the minimum and came exactly then.
+    assert_eq!(failed_edited_before_trip, MIN);
+
+    // Reset opens the latch, and the next open request is edited again.
+    monitor.reset();
+    let call = spider
+        .scrape("https://site-reset.example/a")
+        .need(Need::Markdown);
+    let _ = tokio::time::timeout(Duration::from_secs(10), call.send())
+        .await
+        .expect("the walk hung");
+    let body = &stub.bodies()[0];
+    assert_eq!(body["block_stylesheets"], false, "{body}");
+    let row: serde_json::Value = serde_json::from_str(&written.try_recv().unwrap()).unwrap();
+    assert_eq!(row["arm"], "candidate");
+    assert_eq!(row["fallback"], false);
 }

@@ -22,6 +22,7 @@ not proof that the original measurement was finite.
 | `edit_feat_v` | `u16` | Edit feature version, currently 1 |
 | `pair` | `u64` | Collector-assigned trial ID shared by its arms |
 | `arm` | Fixed string | `baseline`, `candidate` or `shadow` |
+| `fallback` | Boolean | Whether a tripped `Monitor` shadowed a pick the client would otherwise have applied; the arm is then `shadow`. Absent in rows written before the monitor existed, which read as false |
 | `day` | `u32` | Day count supplied by the caller's `Clock`; zero without one |
 | `dk` | `u64` | Salted site grouping key, never an input feature |
 | `need` | Fixed string | `text`, `markdown`, `html`, `links`, `metadata`, `fields`, `screenshot`, `raw`; writer fallback `other` |

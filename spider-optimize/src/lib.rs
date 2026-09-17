@@ -37,6 +37,7 @@ pub mod features;
 pub mod gate;
 pub mod labels;
 pub mod model;
+pub mod monitor;
 pub mod observe;
 pub mod params;
 pub mod row;
@@ -52,6 +53,7 @@ pub use features::{featurize_edit, EditFeatures, Input, EDIT_DIM, EDIT_FEATURE_V
 pub use gate::{choose, Choice, Gate, Reason};
 pub use labels::{byte_ratio, fields_ok, shingle_jaccard};
 pub use model::{ModelVersion, NoModel, Score, Scorer};
+pub use monitor::{Estimate, Monitor, MonitorConfig, Verdict};
 pub use observe::{summarize, Identifier, Observation, ResourceSummary, MAX_IDENTIFIERS};
 pub use params::Params;
 pub use row::{

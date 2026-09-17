@@ -47,12 +47,14 @@ def production(text):
     return code
 
 
-def scan(directory, policy=False, extra_roots=frozenset(), extra_macros=frozenset()):
+def scan(directory, policy=False, extra_roots=frozenset(), extra_macros=frozenset(),
+         extra_std=frozenset()):
     """Scan one source tree.
 
-    extra_roots and extra_macros widen the allowlists for a tree that has its
-    own modules or its own reviewed dependencies. Both default to empty, which
-    leaves every existing scan exactly as it was.
+    extra_roots, extra_macros and extra_std widen the allowlists for a tree that
+    has its own modules, its own reviewed dependencies or a reviewed corner of
+    std. All three default to empty, which leaves every existing scan exactly
+    as it was.
     """
     files = sorted(Path(directory).rglob('*.rs'))
     errors = []
@@ -64,6 +66,7 @@ def scan(directory, policy=False, extra_roots=frozenset(), extra_macros=frozense
         'str', 'FromStr', 'ops', 'Deref', 'convert', 'TryFrom', 'cmp', 'Ordering',
         'f32', 'consts', 'TAU',
     }
+    allowed_std |= set(extra_std)
     allowed_roots = {'crate', 'self', 'super', 'url', 'std'}
     if policy:
         allowed_roots |= {'backoff', 'budget', 'engine', 'ladder', 'rule'}
@@ -177,6 +180,10 @@ fn after_tests() {}
             ('const W: &[u8] = include_bytes!("w.bin");', {'extra_macros': {'include_bytes'}}, False),
             ('use std::fs::read; fn io() {}', {'extra_roots': {'spider_route'}}, True),
             ('fn io() { env!("X"); }', {'extra_macros': {'include_bytes'}}, True),
+            ('use std::sync::atomic::AtomicU8; fn pure() {}', {}, True),
+            ('use std::sync::atomic::AtomicU8; fn pure() {}', {'extra_std': {'atomic', 'AtomicU8'}}, False),
+            ('fn pure() { let _ = std::sync::atomic::AtomicBool::new(false); }', {'extra_std': {'atomic', 'AtomicU8'}}, True),
+            ('use std::thread::spawn; fn io() {}', {'extra_std': {'atomic', 'AtomicU8'}}, True),
         ]
         for code, extra, should_fail in extra_cases:
             target.write_text(code)
