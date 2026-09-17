@@ -117,6 +117,8 @@ pub struct Spider {
     recorder: Option<Arc<dyn Recorder>>,
     explorer: Explorer,
     memory: Arc<SiteMemoryStore>,
+    #[cfg(feature = "optimize")]
+    pub(crate) optimize: crate::optimize::Hooks,
 }
 
 impl fmt::Debug for Spider {
@@ -124,15 +126,17 @@ impl fmt::Debug for Spider {
     /// placeholder, which is the whole reason this is written out rather than
     /// derived.
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.debug_struct("Spider")
-            .field("base", &self.transport.base_url().as_str())
+        let mut out = f.debug_struct("Spider");
+        out.field("base", &self.transport.base_url().as_str())
             .field("key", &REDACTED)
             .field("budget", &self.budget)
             .field("policy", &PolicyPresence(self.policy.is_some()))
             .field("router", &self.router.version())
             .field("recorder", &PolicyPresence(self.recorder.is_some()))
-            .field("explore", &self.explorer.rate)
-            .finish()
+            .field("explore", &self.explorer.rate);
+        #[cfg(feature = "optimize")]
+        out.field("optimize", &self.optimize);
+        out.finish()
     }
 }
 
@@ -186,6 +190,8 @@ impl Spider {
             recorder: None,
             explorer: Explorer::default(),
             memory: Arc::new(SiteMemoryStore::default()),
+            #[cfg(feature = "optimize")]
+            optimize: crate::optimize::Hooks::default(),
         })
     }
 
@@ -527,13 +533,6 @@ fn atomic_add(value: &std::sync::atomic::AtomicU64, amount: f64) {
     });
 }
 
-fn client_seed() -> u64 {
-    use std::hash::{BuildHasher, Hasher};
-    std::collections::hash_map::RandomState::new()
-        .build_hasher()
-        .finish()
-}
-
 /// Settings for a client, applied at [`SpiderBuilder::build`].
 ///
 /// `Debug` redacts the key.
@@ -553,20 +552,24 @@ pub struct SpiderBuilder {
     allow_insecure_http: bool,
     without_read_wall: bool,
     response_limit: Option<usize>,
+    #[cfg(feature = "optimize")]
+    pub(crate) optimize: crate::optimize::Hooks,
 }
 
 impl fmt::Debug for SpiderBuilder {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.debug_struct("SpiderBuilder")
-            .field("key", &self.key.as_ref().map(|_| REDACTED))
+        let mut out = f.debug_struct("SpiderBuilder");
+        out.field("key", &self.key.as_ref().map(|_| REDACTED))
             .field("base_url", &self.base_url.as_ref().map(Url::as_str))
             .field("budget", &self.budget)
             .field("policy", &PolicyPresence(self.policy.is_some()))
             .field("http_client", &self.http_client.as_ref().map(|_| "set"))
             .field("router", &PolicyPresence(self.router.is_some()))
             .field("recorder", &PolicyPresence(self.recorder.is_some()))
-            .field("explore", &self.explorer.rate)
-            .finish()
+            .field("explore", &self.explorer.rate);
+        #[cfg(feature = "optimize")]
+        out.field("optimize", &self.optimize);
+        out.finish()
     }
 }
 
@@ -783,8 +786,17 @@ impl SpiderBuilder {
             recorder: self.recorder,
             explorer: self.explorer,
             memory: Arc::new(memory),
+            #[cfg(feature = "optimize")]
+            optimize: self.optimize,
         })
     }
+}
+
+fn client_seed() -> u64 {
+    use std::hash::{BuildHasher, Hasher};
+    std::collections::hash_map::RandomState::new()
+        .build_hasher()
+        .finish()
 }
 
 /// The key, from wherever this machine keeps one. See [`crate::auth::store`]
@@ -840,18 +852,6 @@ mod tests {
         let printed = format!("{builder:?}");
         assert!(!printed.contains(SECRET), "{printed}");
         assert!(printed.contains(REDACTED));
-    }
-
-    #[test]
-    fn an_empty_key_is_refused_before_a_call_is_made() {
-        let built = SpiderBuilder::new().key("   ").build();
-        assert!(matches!(
-            built,
-            Err(Error::Auth {
-                cause: AuthCause::EmptyKey,
-                ..
-            })
-        ));
     }
 
     #[test]
@@ -1179,5 +1179,17 @@ mod tests {
         assert!((&url).into_url().is_ok());
         assert!(url.into_url().is_ok());
         assert!("not a url".into_url().is_err());
+    }
+
+    #[test]
+    fn an_empty_key_is_refused_before_a_call_is_made() {
+        let built = SpiderBuilder::new().key("   ").build();
+        assert!(matches!(
+            built,
+            Err(Error::Auth {
+                cause: AuthCause::EmptyKey,
+                ..
+            })
+        ));
     }
 }

@@ -41,6 +41,19 @@ error.
   and feature layout for the trainer, and a test fails when the two differ.
 - `scripts/verify.sh` gains the optimize boundary gate, its allocation
   baselines and its packaging dry run.
+- New `optimize` feature on `spider-cloud-agent`, off by default and not in
+  `full`. `SpiderBuilder::optimizer` runs an `Optimizer` on the first attempt
+  of every operation, after the router and the plan. `ApplyMode::Shadow` sends
+  the request unchanged; `ApplyMode::Apply` writes the pick onto the fields the
+  caller left unset. A request that fixes the mode, the pool or the country is
+  never passed to it, the escalation ladder is untouched, and `event_tracker`
+  is never set on the caller's behalf. A blacklist edit reads its resource
+  summary from a `ResourceSource` the caller supplies.
+- `SpiderBuilder::comparison_recorder` writes one comparison row per optimized
+  operation when its walk settles, with the credits and attempts of the whole
+  walk, the requested and returned field counts, and a site key salted by
+  `JsonlComparisonRecorder::with_salt`. A row carries no url, host or body.
+  Without the feature, the client builds and exports exactly what it did.
 
 ## 0.5.0 (2026-09-16)
 

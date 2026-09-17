@@ -26,6 +26,7 @@ maintenance = { status = "actively-developed" }
 
 [dependencies]
 spider-route = { workspace = true }
+spider-optimize = { workspace = true, optional = true }
 reqwest = { workspace = true }
 tokio = { workspace = true }
 serde = { workspace = true }
@@ -48,6 +49,9 @@ oauth = ["dep:sha2", "dep:base64", "dep:percent-encoding", "dep:getrandom", "tok
 # Store the key in the operating system keychain instead of a file.
 keyring = ["dep:keyring"]
 full = ["oauth", "keyring"]
+# The gated parameter optimizer on the first attempt of each operation. Off by
+# default, and with `NoModel`, the only scorer shipped, it keeps every request.
+optimize = ["dep:spider-optimize"]
 
 [dev-dependencies]
 criterion = { version = "0.7", features = ["html_reports"] }
