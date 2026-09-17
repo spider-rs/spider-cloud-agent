@@ -1,0 +1,26 @@
+{
+  "_fixture_only": "Floors for the synthetic stable scenario, seed 7, 20000 pairs: the control a passing run must clear with edits applied, not by abstaining. Set from one measured run with a margin; see evals/README.md. Nothing here is evidence about real requests.",
+  "expect_gate_status": "pass",
+  "min_coverage": 0.05,
+  "max_harmful_rate": 0.01,
+  "min_planted_uplift": 0.1,
+  "min_planted_rows": 20,
+  "kinds": {
+    "mlp": {
+      "min_auroc": 0.801,
+      "min_pr_auc": 0.797,
+      "max_ece_after": 0.049,
+      "max_brier_after": 0.182,
+      "max_mae_credits": 0.2,
+      "max_mae_millis": 570
+    },
+    "gbdt": {
+      "min_auroc": 0.801,
+      "min_pr_auc": 0.789,
+      "max_ece_after": 0.05,
+      "max_brier_after": 0.181,
+      "max_mae_credits": 0.347,
+      "max_mae_millis": 670
+    }
+  }
+}

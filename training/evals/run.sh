@@ -9,6 +9,11 @@
 #   training/evals/run.sh --quick  the 1500 pair corpus and synth-quick-floors.json; exports
 #                                  but does not compare, since the fixtures are the full corpus
 #
+# Both modes then run the two regression scenarios on 20000 pairs each: `stable`, whose
+# gate must pass with edits applied (synth-stable-floors.json), and `reversal`, whose
+# residential edit turns harmful inside the test window and whose gate must fail
+# (synth-reversal-floors.json). Each ends with a `tradeoff` table under its run directory.
+#
 # EVAL_SCRATCH names the scratch directory (default training/data/eval-scratch, which git
 # ignores). EVAL_ALLOW_DRIFT=1 turns an export digest mismatch into a warning with both
 # digests and a zero exit, for a machine whose LightGBM or numpy build moves the last bits
@@ -101,6 +106,40 @@ for kind in mlp gbdt; do
   train export "$corpus" --run "$golden_run" --kind "$kind" --seed 7 \
     --out "$out/synth-$kind.bin" --golden "$out/golden-$kind.json" || fail "export $kind"
 done
+
+scenario_pairs=20000
+
+scenario() {
+  local name=$1 expect_gates=$2 corpus run code
+  corpus=$scratch/$mode/$name/corpus
+  run=$scratch/$mode/$name/run
+  mkdir -p "$corpus" "$run"
+  step "synth: $name scenario, seed 7, $scenario_pairs pairs"
+  train synth --out "$corpus" --seed 7 --pairs "$scenario_pairs" --scenario "$name" \
+    || fail "synth $name"
+  train validate "$corpus" || fail "validate $name"
+  step "train and thresholds: $name, default sweep settings"
+  train train "$corpus" --out "$run" --seed 7 || fail "train $name"
+  train thresholds "$corpus" --run "$run" --seed 7 || fail "thresholds $name"
+  step "gates: $name, expected to exit $expect_gates"
+  set +e
+  train gates "$corpus" --run "$run" --seed 7
+  code=$?
+  set -e
+  [ "$code" = "$expect_gates" ] || fail "gates on $name exited $code, expected $expect_gates"
+  grep -q "^## Policy against the heuristic baseline" "$run/regression-report.md" \
+    || fail "gates on $name: the report has no comparison with the baseline"
+  step "eval: $name against synth-$name-floors.json"
+  train eval "$corpus" --run "$run" --floors "$here/synth-$name-floors.json" --seed 7 \
+    || fail "eval on $name: a floor was missed"
+  step "tradeoff: $name"
+  train tradeoff "$corpus" --run "$run" --seed 7 || fail "tradeoff on $name"
+  grep -q "^> \*\*FIXTURE-ONLY\.\*\*" "$run/tradeoff.md" \
+    || fail "tradeoff on $name: the table has no banner"
+}
+
+scenario stable 0
+scenario reversal 1
 
 if [ "$quick" = 1 ]; then
   echo "quick mode: the export is not compared with fixtures/golden (they are the 4000 pair corpus)"

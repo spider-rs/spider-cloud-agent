@@ -16,6 +16,12 @@ fail; none of these did.
 | Fewer than 300 pairs is insufficient | `gates.MIN_PAIRS = 0` | `test_gates_report_insufficient_below_min_pairs` |
 | An unsupported cell is never applied | `thresholds.applies` ORs the support mask with `True` | `test_an_unsupported_cell_is_never_applied` |
 | A CRC mismatch is refused | the CRC comparison in `predict.read` is short-circuited with `False and` | `test_crc_mismatch_is_refused` |
+| A residential effect that flips inside the test window is rejected | `synth._scenario_planted` keeps `success_when_flipped` at 0.90 in the reversal scenario, so nothing flips | `test_reversal_in_the_test_window_is_rejected` (`gates` exits 0) |
+| The stable control needs overrides applied | `thresholds.applies` is ANDed with `False`, so the policy abstains on every row | `test_stable_control_passes_with_overrides_applied` (coverage 0.0 fails first) |
+| A floors file's `min_coverage` is checked | `floors.comparison_checks` skips the coverage check | `test_abstaining_everything_does_not_pass_the_control` (no coverage line is printed) |
+| The tradeoff sweep chooses floors the way `thresholds` does | `tradeoff.sweep` passes `min_covered` 0 to `thresholds.choose` | `test_tradeoff_coverage_is_monotone_in_r_max` (1335 overrides against the run's 1059) |
+| Nothing before the gate reads the test window | `models.train` chooses tau from every row again | `test_the_test_window_is_never_read_before_the_gate` (tau 0.8657 against 0.8685 on the rewritten window) |
+| A broken content override is harmful | `compare.from_outcomes` counts only a lost success as harmful | `test_comparison_counts_every_pair_the_way_it_was_built` |
 
 Two notes from the runs. With the printable run guard removed, the artifacts the synth
 models export fail the size and run test, so the run breaker in `export.serialize` is
