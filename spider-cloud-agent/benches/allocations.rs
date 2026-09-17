@@ -202,6 +202,63 @@ fn allocations(c: &mut Criterion) {
     }
 
     group.finish();
+
+    #[cfg(feature = "optimize")]
+    optimize_allocations(c);
+}
+
+/// What the optimizer's decision allocated when this number was taken.
+///
+/// Not zero, and not meant to be: listing the candidates builds a vector of
+/// edit sets, each holding its own edits. The number is pinned so that growth
+/// in it is read rather than discovered.
+#[cfg(feature = "optimize")]
+const OPTIMIZE_EXPECTED: &[(&str, usize)] = &[("optimize_decide_shadow", 36)];
+
+/// The decision the send loop makes on a first attempt, in shadow mode, for a
+/// rendered fetch with hints off and nothing known about the site.
+#[cfg(feature = "optimize")]
+fn optimize_allocations(c: &mut Criterion) {
+    use spider_cloud_agent::optimize::{NoModel, Optimizer};
+    use spider_cloud_agent::{DeclaredNeed, RequestMode, RequestParams, RouteDecision};
+    use spider_optimize::{Context, Observation};
+
+    let optimizer = Optimizer::shadow(NoModel);
+    let url = url::Url::parse("https://example.com/articles/one").unwrap();
+    let current = RequestParams {
+        request: Some(RequestMode::Smart),
+        disable_hints: Some(true),
+        ..RequestParams::default()
+    };
+    let caller = RequestParams::default();
+    let routed = RouteDecision::default();
+    let observation = Observation::cold();
+    let ctx = Context {
+        url: &url,
+        need: DeclaredNeed::Markdown,
+        current: &current,
+        caller: &caller,
+        routed: &routed,
+        observation: &observation,
+        multiplier_cap: 8.0,
+    };
+
+    let name = "optimize_decide_shadow";
+    let (allocations, bytes) = measure(|| drop(black_box(optimizer.decide(black_box(&ctx)))));
+    println!("{name:<24} {allocations:>6} {bytes:>8}");
+    let expected = OPTIMIZE_EXPECTED
+        .iter()
+        .find(|(case, _)| *case == name)
+        .map(|(_, count)| *count)
+        .expect("the optimizer case has a recorded allocation count");
+    assert_eq!(
+        allocations, expected,
+        "{name} allocated {allocations} times, and it was recorded at {expected}."
+    );
+
+    c.bench_function(name, |b| {
+        b.iter(|| black_box(optimizer.decide(black_box(&ctx))))
+    });
 }
 
 criterion_group!(benches, allocations);
