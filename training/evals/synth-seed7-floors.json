@@ -1,0 +1,25 @@
+{
+  "_fixture_only": "Floors for the synthetic seed 7, 4000 pair corpus. Set from one measured run with a margin; see evals/README.md for the measured values. Nothing here is evidence about real requests.",
+  "expect_applied": 0,
+  "expect_gate_status": "insufficient",
+  "min_planted_uplift": 0.2,
+  "min_planted_rows": 20,
+  "kinds": {
+    "mlp": {
+      "min_auroc": 0.833,
+      "min_pr_auc": 0.829,
+      "max_ece_after": 0.078,
+      "max_brier_after": 0.168,
+      "max_mae_credits": 0.221,
+      "max_mae_millis": 629
+    },
+    "gbdt": {
+      "min_auroc": 0.841,
+      "min_pr_auc": 0.837,
+      "max_ece_after": 0.076,
+      "max_brier_after": 0.165,
+      "max_mae_credits": 0.357,
+      "max_mae_millis": 717
+    }
+  }
+}

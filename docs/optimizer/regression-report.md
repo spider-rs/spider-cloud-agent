@@ -33,24 +33,36 @@ minimum. A pilot of about 200 pairs cannot qualify an artifact for rollout.
 For every test pair, compare the policy's selected arm with its own baseline;
 when the policy abstains, its selected arm is the baseline itself.
 
+A policy that applied no edit on the window is also `insufficient` and fails.
+Its arm is the baseline on every pair, so there is nothing to compare, and the
+report says so in place of the check table. A run whose floors all abstain, which
+is what the synthetic corpus gives at the default sweep settings, lands here.
+
 ## The three gates
 
 | Gate | Point estimate | Bound | Pass rule | Result |
 | --- | --- | --- | --- | --- |
 | Success and content | Fill success delta and content_ok delta | Fill both 95 percent lower bounds | Each lower bound at least -0.005 | Fill |
-| Credits per correct result | Fill policy and baseline values | Fill policy 95 percent upper bound | Upper bound at or below baseline point estimate | Fill |
+| Credits per correct result | Fill policy minus baseline | Fill the 95 percent upper bound of that difference | Upper bound at or below zero | Fill |
 | Latency | Fill baseline and policy p50 and p90 millis | Point quantiles, not bootstrap bounds | p50 at most 1.10 times baseline; p90 at most 1.20 times baseline | Fill |
 
 `gates.py` uses 2,000 bootstrap resamples of pairs, keeping the arms together.
 It takes the 2.5th percentile for the lower bounds and the 97.5th for the credit
 upper bound. Success delta is policy success minus baseline success.
+The credit check is paired: on each resample the statistic is the policy's
+credits per correct result minus the baseline's over the same drawn pairs, and
+the check passes when the 97.5th percentile of that difference is at or below
+zero. A policy that matches the baseline on every pair has a difference of
+exactly zero on every resample and passes. Comparing the policy's own ratio
+against the baseline point estimate is not paired: that identical policy would
+fail it about half the time from resampling noise alone.
 The content gate uses the share not broken minus one: its per-pair content flag
 is false only when an applied, successful arm has `content_ok == False`.
 It is not a difference between two independently measured absolute content scores.
 
 Policy credits per correct result is total policy credits divided by successful
 policy arms whose content flag is not broken. The baseline denominator is baseline
-success count. Report missing content judgments alongside these numbers: the
+success count. Both ratios are recomputed inside every resample. Report missing content judgments alongside these numbers: the
 implemented gate does not treat unknown content as broken. Report both model
 kinds; the command fails unless every evaluated kind passes.
 

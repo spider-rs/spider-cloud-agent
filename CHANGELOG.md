@@ -7,6 +7,13 @@ error.
 
 ## 0.6.0 (2026-09-16)
 
+- Trainer: the cost gate is paired (policy minus baseline credits per correct result,
+  resampled by pair, upper bound at or under zero) and a policy that applied no edit is
+  `insufficient` rather than a cost failure; new `eval` subcommand checks a run against a
+  JSON floors file, with planted effect recovery on a synthetic corpus;
+  `training/evals/run.sh` reruns the seed 7 pipeline and compares the export with the
+  committed fixtures byte for byte. All of it fixture-only.
+
 - Document optimizer boundaries, parameter coverage, paired datasets, evidence gates
   and staged rollout; add principle 20 for gated edits and caller precedence.
 

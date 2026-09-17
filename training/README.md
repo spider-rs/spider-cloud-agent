@@ -56,10 +56,20 @@ uv run spider-optimize-train evaluate /tmp/opt/corpus --run /tmp/opt/run --quant
 # exit 1 unless every kind passes.
 uv run spider-optimize-train gates /tmp/opt/corpus --run /tmp/opt/run
 
+# Check the run against a floors file: metric floors per kind on the test window, the
+# applied count and gate status, and planted effect recovery on a synthetic corpus;
+# write eval-report.md and exit 1 on any miss.
+uv run spider-optimize-train eval /tmp/opt/corpus --run /tmp/opt/run \
+  --floors evals/synth-seed7-floors.json
+
 # The artifact, its sidecar, and 64 golden cases.
 uv run spider-optimize-train export /tmp/opt/corpus --run /tmp/opt/run --kind mlp \
   --out /tmp/opt/out/synth-mlp.bin --golden /tmp/opt/out/golden-mlp.json --quantize int8
 ```
+
+`evals/run.sh` runs that whole sequence on the seed 7 corpus and compares the export
+with `fixtures/golden` byte for byte; `evals/README.md` lists the floors, the measured
+reference values and how to refresh them.
 
 `train` refuses a corpus the validator refuses. `train --model lightgbm` or `--model mlp`
 fits one kind; `--split domain` holds out sites by `dk % 5` instead of days, and `gates`
@@ -91,9 +101,16 @@ abstains. A cell `need << 24 | ext << 16 | mem << 8 | edit_code` is supported wh
 saw it on `--min-sites` (50) distinct sites.
 
 `gates` compares, pair by pair, the arm the gated policy would have run with the
-baseline arm: the success and content lower bounds at -0.005, the credits per correct
-result upper bound at or under the baseline point estimate, p50 within 10 percent and
-p90 within 20 percent. Fewer than 300 pairs is `insufficient`, which fails.
+baseline arm: the success and content lower bounds at -0.005, the 95 percent upper
+bound of the policy's credits per correct result minus the baseline's, resampled by
+pair, at or under zero, p50 within 10 percent and p90 within 20 percent. Fewer than 300
+pairs is `insufficient`, which fails, and so is a policy that applied no edit on the
+window: its arm is the baseline on every pair and there is nothing to compare.
+
+`eval` reads a JSON floors file and checks, per kind, the test window metrics against
+it, the number of applied edits and the gate status against exact expectations, and on
+a synthetic corpus the model's predicted uplift on each planted effect the row data can
+locate. `evals/README.md` has the file format and the effects it reaches.
 
 A pair counts as regressed (`labels.regressed`) when the baseline succeeded and the
 candidate did not, or when the candidate succeeded and its content was judged broken.

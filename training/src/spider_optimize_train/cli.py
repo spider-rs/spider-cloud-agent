@@ -1,4 +1,4 @@
-"""`spider-optimize-train synth|validate|train|evaluate|thresholds|gates|export`."""
+"""`spider-optimize-train synth|validate|train|evaluate|thresholds|gates|eval|export`."""
 
 from __future__ import annotations
 
@@ -13,6 +13,7 @@ import numpy as np
 from . import evaluate as ev
 from . import export as ex
 from . import features as feat
+from . import floors as fl
 from . import gates as gt
 from . import report, splits, synth
 from . import thresholds as th
@@ -164,10 +165,50 @@ def cmd_gates(args) -> int:
                             doc["tau"])
         result = gt.run(pairs, args.resamples, args.seed)
         texts.append(gt.render(result, manifest.synthetic, kind))
-        _out(f"{kind}: gate {result.status} on {result.pairs} pairs, applied {result.applied}",
-             manifest.synthetic)
+        why = f" ({result.reason})" if result.reason else ""
+        _out(f"{kind}: gate {result.status} on {result.pairs} pairs, applied "
+             f"{result.applied}{why}", manifest.synthetic)
         failed |= not result.passed
     (run / "regression-report.md").write_text("\n".join(texts))
+    return 1 if failed else 0
+
+
+def cmd_eval(args) -> int:
+    corpus, run = Path(args.corpus), Path(args.run)
+    floors = fl.Floors.read(Path(args.floors))
+    manifest, doc, models, cals, windows = _corpus(corpus, run)
+    if doc["split_name"] != "chronological":
+        print("eval reads the chronological test window; train with --split chronological")
+        return 1
+    missing = sorted(set(floors.kinds) - set(models))
+    if missing:
+        print(f"the floors name {', '.join(missing)}, which the run did not train")
+        return 1
+    test = windows["test"]
+    results = []
+    for kind, model in models.items():
+        if kind not in floors.kinds:
+            continue
+        thresholds = _thresholds(run, kind)
+        metrics = ev.evaluate(model, cals[kind], test, thresholds, doc["tau"])["success"]
+        pairs = _gate_pairs(model, cals[kind], test, thresholds, doc["tau"])
+        gate = gt.run(pairs, args.resamples, args.seed)
+        result = fl.KindResult(kind, fl.metric_checks(kind, metrics, floors)
+                               + fl.gate_checks(gate, floors))
+        if manifest.synthetic and manifest.planted:
+            scored = th.score(model, cals[kind], test, doc["tau"])
+            result.planted = fl.planted_checks(manifest.planted, scored, floors)
+        results.append(result)
+    (run / "eval-report.md").write_text(
+        fl.render(results, manifest.synthetic, args.floors, len(test))
+    )
+    failed = fl.failed_lines(results)
+    for line in failed:
+        _out(line, manifest.synthetic)
+    for r in results:
+        gated = [c for c in r.checks + r.planted if c.passed is not None]
+        bad = len(r.failed())
+        _out(f"{r.kind}: {len(gated) - bad} of {len(gated)} floors met", manifest.synthetic)
     return 1 if failed else 0
 
 
@@ -263,6 +304,14 @@ def parser() -> argparse.ArgumentParser:
     s.add_argument("--resamples", type=int, default=gt.RESAMPLES)
     s.add_argument("--seed", type=int, default=0)
     s.set_defaults(func=cmd_gates)
+
+    s = sub.add_parser("eval", help="check the run against a floors file; exit 1 on any miss")
+    s.add_argument("corpus")
+    s.add_argument("--run", required=True)
+    s.add_argument("--floors", required=True)
+    s.add_argument("--resamples", type=int, default=gt.RESAMPLES)
+    s.add_argument("--seed", type=int, default=0)
+    s.set_defaults(func=cmd_eval)
 
     s = sub.add_parser("export", help="write the artifact, its sidecar and golden cases")
     s.add_argument("corpus")
