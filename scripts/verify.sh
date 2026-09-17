@@ -1,0 +1,152 @@
+#!/usr/bin/env bash
+# Every gate this project ships behind, run from a developer machine.
+#
+# There is no hosted CI. The checks live here so they can be read, and so a
+# green run means the same thing on any machine that can build the workspace.
+#
+#   scripts/verify.sh              the gates that need no secret
+#   SPIDER_LEAKCHECK_WORDS=<path> scripts/verify.sh --release
+#
+# Exits non zero on the first failure, naming the gate that failed.
+set -euo pipefail
+
+cd "$(dirname "$0")/.."
+
+step() { printf '\n== %s\n' "$1"; }
+fail() { printf '\nFAILED: %s\n' "$1" >&2; exit 1; }
+
+release=false
+private_args=""
+case "${1:-}" in
+  "") [ "$#" -eq 0 ] || fail "usage: scripts/verify.sh [--release]" ;;
+  --release)
+    [ "$#" -eq 1 ] || fail "usage: scripts/verify.sh [--release]"
+    release=true
+    private_args=--require-private
+    step "release private denylist"
+    cargo run --locked -q -p xtask -- leakcheck --tree --require-private \
+      || fail "release requires a readable, non-empty private denylist"
+    ;;
+  *) fail "usage: scripts/verify.sh [--release]" ;;
+esac
+
+step "dependency audit"
+if cargo deny --version >/dev/null 2>&1; then
+  if "$release"; then
+    cargo deny --locked check advisories licenses bans || fail "dependency audit"
+  else
+    # Use cached advisories and registry data. An ordinary run adds no audit network calls.
+    cargo deny --locked --offline check advisories licenses bans || fail "dependency audit (refresh the cache with cargo deny fetch)"
+  fi
+elif "$release"; then
+  fail "release requires cargo-deny; install it with cargo install cargo-deny --locked"
+else
+  printf '  skipped dependency audit: cargo-deny is not installed\n'
+fi
+
+step "principle anchors"
+scripts/check-anchors.sh || fail "principle anchors"
+
+step "route boundary"
+python3 scripts/check-rust-boundary.py || fail "boundary scanner self-tests"
+scripts/check-route-boundary.sh || fail "route boundary"
+
+step "optimize boundary"
+scripts/check-optimize-boundary.sh || fail "optimize boundary"
+
+step "policy purity"
+scripts/check-policy-purity.sh || fail "policy purity"
+
+step "install script"
+TEST_SHELL=sh sh scripts/test-install.sh || fail "install script under sh"
+if command -v dash >/dev/null 2>&1; then
+  TEST_SHELL=dash dash scripts/test-install.sh || fail "install script under dash"
+else
+  printf '  skipped the dash run: dash is not installed\n'
+fi
+
+step "format"
+cargo fmt --all --check || fail "format, run cargo fmt --all"
+
+step "clippy, all features"
+cargo clippy --locked --workspace --all-targets --all-features -- -D warnings \
+  || fail "clippy"
+
+step "tests, all features"
+cargo test --locked --workspace --all-features || fail "tests with all features"
+
+step "tests, no default features"
+# What a consumer gets who takes none of the optional surface. The library has
+# to work with no model compiled in, and that path has to keep working.
+cargo test --locked --workspace --no-default-features || fail "tests with no default features"
+
+step "minimum supported rust"
+# The workspace declares rust-version 1.88, and a newer compiler on the
+# developer's machine infers more than that one does. Checking every target
+# under the floor is what caught a test that only built on 1.97. Skipped with
+# a reason when the toolchain is absent; required on a release run.
+MSRV="$(sed -n 's/^rust-version = "\(.*\)"/\1/p' Cargo.toml | head -n 1)"
+[ -n "$MSRV" ] || fail "no rust-version in Cargo.toml"
+# rustup names an installed toolchain by its full version, so 1.88 has to be
+# matched against 1.88.x in the list.
+MSRV_TOOLCHAIN="$(rustup toolchain list 2>/dev/null \
+  | sed -n "s/^\($MSRV\(\.[0-9][0-9]*\)\{0,1\}\)-.*/\1/p" | head -n 1)"
+if [ -n "$MSRV_TOOLCHAIN" ]; then
+  rustup run "$MSRV_TOOLCHAIN" cargo check --locked --workspace --all-targets --all-features \
+    || fail "minimum supported rust ($MSRV_TOOLCHAIN)"
+elif "$release"; then
+  fail "release requires the $MSRV toolchain: rustup toolchain install $MSRV --profile minimal"
+else
+  printf '  skipped minimum supported rust: toolchain %s is not installed\n' "$MSRV"
+fi
+
+step "training evals"
+# The trainer's own tests and its fixture-only evals: metric floors on the
+# seeded synthetic corpus, the paired gates failing closed with nothing
+# applied, and the exporter reproducing the committed artifacts. uv is not
+# a requirement of the Rust build, so its absence skips the step and says so;
+# a release run requires it.
+if uv --version >/dev/null 2>&1; then
+  training/evals/run.sh --quick || fail "training evals"
+elif "$release"; then
+  fail "release requires uv for the training evals; install it from https://docs.astral.sh/uv/"
+else
+  printf '  skipped training evals: uv is not installed\n'
+fi
+
+step "live gate self-tests"
+python3 -B scripts/test_verify_live.py || fail "live gate self-tests"
+
+step "allocation baselines"
+cargo bench --locked -p spider-cloud-agent --all-features --bench allocations -- --test \
+  || fail "client allocation baselines"
+cargo bench --locked -p spider-route --bench route -- --test \
+  || fail "route allocation baselines"
+cargo bench --locked -p spider-optimize --bench optimize -- --test \
+  || fail "optimize allocation baselines"
+
+step "docs"
+RUSTDOCFLAGS="-D warnings" cargo doc --locked --no-deps --all-features \
+  || fail "docs, a warning here is a broken link on docs.rs"
+
+step "leak check, packaged set"
+cargo run --locked -q -p xtask -- leakcheck ${private_args:+"$private_args"} || fail "leak check on what would publish"
+
+step "leak check, working tree"
+cargo run --locked -q -p xtask -- leakcheck ${private_args:+"$private_args"} --tree || fail "leak check on what the repo shows"
+
+if [ -n "${SPIDER_LEAKCHECK_WORDS:-}" ]; then
+  printf '  checked against the private denylist at %s\n' "$SPIDER_LEAKCHECK_WORDS"
+else
+  printf '  note: the private denylist was not supplied, so this run checked the\n'
+  printf '  short public list only. Set SPIDER_LEAKCHECK_WORDS before a release.\n'
+fi
+
+step "package"
+# Publish dependencies first: the CLI depends on both libraries at the workspace
+# version (spider-route through spider-cloud-agent), and spider-optimize depends
+# on spider-route.
+cargo publish --locked --dry-run -p spider-route -p spider-optimize -p spider-cloud-agent -p spider-agent-cli \
+  || fail "packaging, the crates would not publish"
+
+printf '\nall gates passed\n'

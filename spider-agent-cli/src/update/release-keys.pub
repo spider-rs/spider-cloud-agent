@@ -1,0 +1,9 @@
+# The minisign public keys that may sign a release's SHA256SUMS.txt.minisig.
+# A release build trusts these keys and no others, and nothing at run time
+# can add one.
+#
+# To rotate: add the new key here and ship that release signed with the old
+# key. Installs that update to it then trust both, so the release after can be
+# signed with the new key. Remove the old key once it signs nothing.
+untrusted comment: minisign public key 43EBB605B452BC13
+RWQTvFK0BbbrQ5Fi5QICN6wkM5EsCGlfeLsTSiY9hTMdZpUjGaAg5t13

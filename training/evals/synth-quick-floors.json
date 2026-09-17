@@ -1,0 +1,25 @@
+{
+  "_fixture_only": "Floors for the synthetic seed 7, 1500 pair corpus that run.sh --quick and the test suite use. Set from one measured run with a margin; see evals/README.md for the measured values. Nothing here is evidence about real requests.",
+  "expect_applied": 0,
+  "expect_gate_status": "insufficient",
+  "min_planted_uplift": 0.1,
+  "min_planted_rows": 12,
+  "kinds": {
+    "mlp": {
+      "min_auroc": 0.802,
+      "min_pr_auc": 0.790,
+      "max_ece_after": 0.078,
+      "max_brier_after": 0.186,
+      "max_mae_credits": 0.324,
+      "max_mae_millis": 812
+    },
+    "gbdt": {
+      "min_auroc": 0.806,
+      "min_pr_auc": 0.784,
+      "max_ece_after": 0.095,
+      "max_brier_after": 0.184,
+      "max_mae_credits": 0.41,
+      "max_mae_millis": 827
+    }
+  }
+}

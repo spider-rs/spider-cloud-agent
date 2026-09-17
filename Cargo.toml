@@ -1,0 +1,78 @@
+[workspace]
+members = ["optimize-collect", "spider-agent-cli", "spider-cloud-agent", "spider-optimize", "spider-route", "xtask"]
+resolver = "2"
+
+[workspace.package]
+version = "0.7.0"
+edition = "2021"
+# Cargo metadata for the locked graph declares Rust 1.88 for icu_collections,
+# icu_locale_core, icu_normalizer{,_data}, icu_properties{,_data} and icu_provider.
+# url -> idna -> idna_adapter pulls these into every workspace build. No locked
+# dependency declares a higher floor, so 1.87 cannot build this graph.
+# This also covers lockfile v4 (1.78) and correct Windows home_dir behavior (1.85).
+# Keep this floor tied to Cargo.lock when updating dependencies.
+rust-version = "1.88"
+authors = ["j-mendez <jeff@spider.cloud>"]
+license = "MIT"
+repository = "https://github.com/spider-rs/spider-cloud-agent"
+homepage = "https://spider.cloud"
+
+[workspace.dependencies]
+spider-cloud-agent = { version = "0.7.0", path = "spider-cloud-agent", default-features = false }
+spider-route = { version = "0.7.0", path = "spider-route" }
+spider-optimize = { version = "0.7.0", path = "spider-optimize" }
+reqwest = { version = "0.13", default-features = false, features = ["json", "rustls", "rustls-native-certs"] }
+tokio = { version = "1", default-features = false, features = ["rt", "time", "macros"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+thiserror = "2"
+url = "2"
+bytes = { version = "1", features = ["serde"] }
+log = "0.4"
+
+# Enforced, not aspirational: this crate runs inside someone else's process and
+# someone else's async runtime. A panic takes their program down, and a lock
+# can stall a task they never wrote. Tests opt out individually where a panic
+# is the point of the test.
+[workspace.lints.clippy]
+unwrap_used = "deny"
+expect_used = "deny"
+panic = "deny"
+unreachable = "deny"
+todo = "deny"
+unimplemented = "deny"
+exit = "deny"
+mem_forget = "deny"
+disallowed_types = "deny"
+disallowed_methods = "deny"
+indexing_slicing = "warn"
+string_slice = "warn"
+missing_panics_doc = "warn"
+
+[workspace.lints.rust]
+unsafe_code = "deny"
+
+# Tuned for the binary rather than for the build. A command line tool is built
+# once and run by someone who is waiting, so the trade is compile time for
+# size. Measured here on 2026-09-15, aarch64 macOS: the stripped binary goes
+# from 6,389,704 bytes to 2,378,976, and the build from 43 s to 157 s, which is
+# the price. Startup did not move: `spider-agent --help` reads 5.3 to 6.0 ms
+# mean over 600 runs either way, and repeated runs of the same binary vary by
+# as much, so there is no saying it improved.
+#
+# This changes nothing for a program that depends on the library crates. A
+# dependency is compiled under the profile of the workspace that consumes it,
+# and this profile only applies to builds run from this one.
+[profile.release]
+opt-level = "z"
+lto = "fat"
+codegen-units = 1
+panic = "abort"
+strip = "symbols"
+
+# The benches measure the library, not the binary, and size is not what they
+# are for. This keeps them on the settings they were recorded under.
+[profile.bench]
+opt-level = 3
+lto = false
+codegen-units = 16

@@ -1,0 +1,15 @@
+{
+  "body": {
+    "error": "slow down"
+  },
+  "headers": {
+    "content-type": "application/json",
+    "ratelimit-limit": "100",
+    "ratelimit-remaining": "0",
+    "ratelimit-reset": "2",
+    "retry-after": "1",
+    "set-cookie": "REDACTED"
+  },
+  "http_status": 429,
+  "route": "/scrape"
+}

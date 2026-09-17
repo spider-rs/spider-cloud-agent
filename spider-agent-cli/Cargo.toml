@@ -1,0 +1,77 @@
+[package]
+name = "spider-agent-cli"
+description = "The spider-agent command line tool, built to be called by an agent: fetch, crawl, search and extract as JSON or NDJSON, with local routing, status-aware escalation and a budget."
+readme = "README.md"
+documentation = "https://docs.rs/spider-agent-cli"
+keywords = ["cli", "crawler", "web-scraper", "spider", "agent"]
+categories = ["command-line-utilities", "web-programming"]
+include = ["src/**/*.rs", "src/update/release-keys.pub", "Cargo.toml", "README.md", "LICENSE"]
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+
+[lints]
+workspace = true
+
+[badges]
+maintenance = { status = "actively-developed" }
+
+# The binary is named for what you type, not for the crate it ships in.
+[[bin]]
+name = "spider-agent"
+path = "src/main.rs"
+
+[dependencies]
+spider-cloud-agent = { workspace = true }
+# The weights the optimizer scores with are read here, from the file the
+# caller named, and handed to the client. Optional: a binary built without the
+# optimize feature never loads any.
+spider-optimize = { workspace = true, optional = true }
+# No colour and no suggestion engine: this tool writes no escape codes, and a
+# caller that mistypes a subcommand gets the command list rather than a guess.
+clap = { version = "4", default-features = false, features = [
+    "std",
+    "derive",
+    "help",
+    "usage",
+    "error-context",
+] }
+serde = { workspace = true }
+serde_json = { workspace = true }
+tokio = { workspace = true }
+url = { workspace = true }
+# Self update. reqwest is the client the library already builds with rustls,
+# used here on its own so a release check needs no key and spends nothing.
+# flate2 opens the release archive with its pure Rust backend; the tar layer on
+# top is read by hand, because the one entry it needs does not justify the tar
+# crate and the filesystem dependencies it carries.
+reqwest = { workspace = true }
+sha2 = "0.10"
+flate2 = { version = "1", default-features = false, features = ["rust_backend"] }
+# Verifies the minisign signature on a release's SHA256SUMS.txt. No
+# dependencies of its own.
+minisign-verify = "0.2"
+
+[features]
+# Signing in through a browser is on by default here, because a command line
+# tool is where a person signs in, and so is the optimizer, which does nothing
+# until a run asks for it. Build with --no-default-features for a binary that
+# only ever reads a key from the environment and never loads weights.
+default = ["oauth", "optimize"]
+oauth = ["spider-cloud-agent/oauth"]
+keyring = ["spider-cloud-agent/keyring"]
+# The gated parameter optimizer, reachable through --optimize and the stored
+# settings. Inert until a run asks for shadow or apply.
+optimize = ["dep:spider-optimize", "spider-cloud-agent/optimize"]
+full = ["oauth", "keyring", "optimize"]
+
+[dev-dependencies]
+serde_json = { workspace = true }
+# The update tests sign their own releases with a throwaway key. Both crates
+# are already in the lockfile through rustls and the oauth feature.
+ring = "0.17"
+base64 = "0.22"

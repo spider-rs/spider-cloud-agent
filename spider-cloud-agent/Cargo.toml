@@ -1,0 +1,75 @@
+[package]
+name = "spider-cloud-agent"
+description = "An agent other agents call: the Spider Cloud API with local routing, status-aware escalation, and minimal machine-readable responses."
+readme = "README.md"
+documentation = "https://docs.rs/spider-cloud-agent"
+keywords = ["crawler", "web-scraper", "spider", "agent", "llm"]
+categories = ["web-programming", "api-bindings"]
+include = ["src/**/*.rs", "examples/**/*.rs", "Cargo.toml", "README.md", "LICENSE"]
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+
+[lints]
+workspace = true
+
+[package.metadata.docs.rs]
+all-features = true
+rustdoc-args = ["--cfg", "docsrs"]
+
+[badges]
+maintenance = { status = "actively-developed" }
+
+[dependencies]
+spider-route = { workspace = true }
+spider-optimize = { workspace = true, optional = true }
+reqwest = { workspace = true }
+tokio = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+thiserror = { workspace = true }
+url = { workspace = true }
+bytes = { workspace = true }
+log = { workspace = true }
+sha2 = { version = "0.10", optional = true }
+base64 = { version = "0.22", optional = true }
+percent-encoding = { version = "2", optional = true }
+getrandom = { version = "0.3", optional = true }
+keyring = { version = "3", features = ["apple-native", "windows-native", "sync-secret-service"], optional = true }
+
+[features]
+default = ["optimize"]
+# The browser sign in flow. Off by default: a library that only ever uses a key
+# from the environment should not carry a crypto stack or open a socket.
+oauth = ["dep:sha2", "dep:base64", "dep:percent-encoding", "dep:getrandom", "tokio/net", "tokio/io-util"]
+# Store the key in the operating system keychain instead of a file.
+keyring = ["dep:keyring"]
+full = ["oauth", "keyring", "optimize"]
+# The gated parameter optimizer on the first attempt of each operation. On by
+# default but inert: nothing runs until a caller passes `SpiderBuilder::optimizer`,
+# and with `NoModel`, the only scorer shipped, it keeps every request.
+optimize = ["dep:spider-optimize"]
+
+[dev-dependencies]
+criterion = { version = "0.7", features = ["html_reports"] }
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "test-util"] }
+
+[[bench]]
+name = "decide"
+harness = false
+
+[[bench]]
+name = "allocations"
+harness = false
+
+[[bench]]
+name = "serialize"
+harness = false
+
+[[bench]]
+name = "decode"
+harness = false

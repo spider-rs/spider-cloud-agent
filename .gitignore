@@ -1,0 +1,23 @@
+/target
+/target-*/
+.DS_Store
+graphify-out/
+training/data/
+training/.venv/
+__pycache__/
+.pytest_cache/
+.ruff_cache/
+
+# Recording byproducts. The GIFs, MP4s and stills under media/out are committed.
+media/out/frames/
+media/out/*.exit
+media/out/*.ndjson
+media/out/*.txt
+media/out/*.stdout
+media/out/*.started
+media/out/*.finished
+media/out/render.log
+
+# Takes that did not win, and their frames.
+media/out/takes/
+media/out/*.summary.json

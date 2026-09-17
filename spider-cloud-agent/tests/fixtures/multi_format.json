@@ -1,0 +1,15 @@
+[
+  {
+    "url": "https://httpbin.org/html",
+    "status": 200,
+    "content": {
+      "raw": "<html><body><p>Herman Melville</p></body></html>",
+      "markdown": "Herman Melville",
+      "text": "Herman Melville"
+    },
+    "headers": { "content-type": "text/html; charset=utf-8" },
+    "cookies": "session=abc; Path=/",
+    "costs": { "compute_cost": 0.2, "total_cost": 0.2 },
+    "error": null
+  }
+]

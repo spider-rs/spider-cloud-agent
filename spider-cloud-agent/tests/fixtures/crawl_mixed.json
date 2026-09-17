@@ -1,0 +1,24 @@
+[
+  {
+    "url": "https://example.org/",
+    "status": 200,
+    "content": { "raw": "<html><body><h1>Home</h1></body></html>" },
+    "links": ["https://example.org/about", "/contact"],
+    "costs": { "compute_cost": 0.4, "total_cost": 0.4 },
+    "error": null
+  },
+  {
+    "url": "https://example.org/about",
+    "status": 403,
+    "content": null,
+    "costs": { "compute_cost": 0.4, "total_cost": 0.4 },
+    "error": "the site refused the fetch"
+  },
+  {
+    "url": "https://example.org/contact",
+    "status": 200,
+    "content": { "raw": "" },
+    "costs": { "compute_cost": 0.4, "total_cost": 0.4 },
+    "error": null
+  }
+]

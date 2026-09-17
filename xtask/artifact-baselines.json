@@ -1,0 +1,9 @@
+{
+  "_note": "Largest size in bytes each shipped model artifact may reach. Raise an entry in the same commit that grows the file, so an unexplained jump in the weights is a review comment rather than a surprise.",
+  "spider-route/assets/spider-route-v1.bin": {
+    "max_bytes": 1572864
+  },
+  "spider-optimize/assets/spider-optimize-v1.bin": {
+    "max_bytes": 2097152
+  }
+}
