@@ -1474,6 +1474,7 @@ dependencies = [
  "serde",
  "serde_json",
  "sha2",
+ "spider-optimize",
  "spider-route",
  "thiserror 2.0.20",
  "tokio",

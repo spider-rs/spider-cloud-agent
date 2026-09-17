@@ -102,14 +102,6 @@ where
     }
 }
 
-/// The error for a call the wall ended before the service answered.
-pub(crate) fn out_of_time(attempts: Vec<Attempt>) -> Error {
-    Error::BudgetExceeded {
-        kind: BudgetKind::Time,
-        attempts,
-    }
-}
-
 /// The state every builder carries, and the one place a call is made.
 pub(crate) struct Call<'a> {
     pub(crate) spider: &'a Spider,
@@ -353,6 +345,12 @@ impl<'a> Call<'a> {
 
         routing::apply_decision(&decision, &mut self.params, &caller);
         plan.apply_over(&mut self.params, &caller);
+        // The optimizer reads the request as it is about to go out, and like the
+        // explorer it is never asked about a request the caller pinned. Only the
+        // first attempt is edited: every rung after it writes over the mode, the
+        // pool and the wait, and leaves a blacklist edit where it was.
+        #[cfg(feature = "optimize")]
+        let optimized = crate::optimize::decide(self, &input, &caller, &decision);
         let format = self.format();
 
         let mut state = AttemptState::new(self.budget);
@@ -594,6 +592,9 @@ impl<'a> Call<'a> {
                 self.spider.site_memory().observe(&target, &result);
             }
             self.spider.router().observe(&input, &result);
+            // One comparison row per operation, written when the walk settles.
+            #[cfg(feature = "optimize")]
+            crate::optimize::compare(self, optimized.as_ref(), &next, &result, &attempts, &pages);
 
             // Only the first attempt was routed. Every one after it was chosen
             // by the ladder, so a row for it would describe a decision the
@@ -1042,6 +1043,14 @@ fn nothing_came_back(pages: &Pages) -> bool {
     served.peek().is_some() && pages.ok().all(Page::is_blank)
 }
 
+/// The error for a call the wall ended before the service answered.
+pub(crate) fn out_of_time(attempts: Vec<Attempt>) -> Error {
+    Error::BudgetExceeded {
+        kind: BudgetKind::Time,
+        attempts,
+    }
+}
+
 /// Turn the policy's reason for stopping into the error the caller sees.
 ///
 /// When no page ever came back, [`Error::Accounted`] keeps the call error, an
@@ -1297,17 +1306,6 @@ mod tests {
     use crate::thrift::Need;
 
     #[test]
-    fn f2_a_malformed_breakdown_does_not_erase_a_readable_total() {
-        let body = serde_json::json!({
-            "costs": { "total_cost": 0.0002, "compute_cost": {} },
-            "status": "not a status"
-        });
-        assert!(has_charge(&body));
-        assert_eq!(charged(&body), Credits(2.0));
-        assert!(!has_charge(&serde_json::json!({"costs": {}})));
-    }
-
-    #[test]
     fn f1_default_wall_reaches_page_and_search_calls() {
         let spider = Spider::builder()
             .key("not-a-real-key")
@@ -1377,6 +1375,17 @@ mod tests {
                 "{name} needs a line in docs/action-vocabulary.md"
             );
         }
+    }
+
+    #[test]
+    fn f2_a_malformed_breakdown_does_not_erase_a_readable_total() {
+        let body = serde_json::json!({
+            "costs": { "total_cost": 0.0002, "compute_cost": {} },
+            "status": "not a status"
+        });
+        assert!(has_charge(&body));
+        assert_eq!(charged(&body), Credits(2.0));
+        assert!(!has_charge(&serde_json::json!({"costs": {}})));
     }
 
     #[test]
