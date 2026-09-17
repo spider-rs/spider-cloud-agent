@@ -7,8 +7,10 @@ Version 1, little endian throughout:
         u16 max_width, u8 reserved
     u16 edit_codes, f32 threshold[edit_codes]         NaN abstains; index = edit code
     u32 support_len, u32 cell[support_len]            sorted ascending
-    3 x calibration: u16 kind, u16 knots, f32 ...     0 identity; 1 Platt, one (a, b);
-                                                      2 isotonic, knots x (x, y)
+    3 x calibration: u16 kind, u16 knots, f32 ...     (0, 0) identity; (1, 0) Platt, one
+                                                      (a, b); (2, knots >= 2) isotonic,
+                                                      knots x (x, y), x strictly rising,
+                                                      y never falling
     MLP, 3 x net: u16 layers, then per layer u16 rows, u16 cols, u8 activation,
         f32 weight[rows * cols] row-major, f32 bias[rows]
     GBDT, 3 x head: u32 trees, f32 base_score, then per tree u16 nodes, then per node
@@ -16,12 +18,16 @@ Version 1, little endian throughout:
         u16 left, u16 right, f32 value               leaf when left == right == 0xFFFF
     u32 crc32 of every byte before it
 
-The heads are success (a logit), log1p millis and log1p credits, in that order.
+The heads are success (a logit), log1p millis and log1p credits, in that order. Every
+float but a threshold must be finite; a threshold is NaN or in [0, 1]. The success head
+never carries an identity calibration, because the reader would pass its logit through
+as a probability.
 
 No run of printable ASCII after the header may be longer than 8 bytes, and none may look
 like a host. A float's lowest byte is the only one this writer changes to break a run,
 which moves a weight by at most 48 units in its last place; `predict` reads the bytes
-that were written, so the golden cases carry the change.
+that were written, so the golden cases carry the change. Calibration floats are never
+changed, since a nudged knot could break the order the reader requires.
 """
 
 from __future__ import annotations
@@ -73,6 +79,8 @@ def calibration_entry(cal: calibrate.Calibration) -> tuple[int, list[float]]:
     if cal.kind == calibrate.PLATT:
         return calibrate.PLATT, [float(v) for v in cal.params]
     if cal.kind == calibrate.ISOTONIC:
+        if len(cal.knots) < 2:
+            raise ValueError("an isotonic calibration needs at least two knots")
         return calibrate.ISOTONIC, [float(v) for knot in cal.knots for v in knot]
     return calibrate.IDENTITY, []
 
@@ -86,6 +94,13 @@ def fold_pinned_mlp(layers, edit_dim: int):
     return folded + [(W.copy(), b.copy(), act) for W, b, act in layers[1:]]
 
 
+# The reader requires finite thresholds. Every input slot lies in [-1, 1], so a split on
+# slot 0 at 2.0 always goes left and one at -2.0 always goes right; the missing bit is
+# set to match, so a non-finite slot goes the same way.
+ALWAYS_LEFT = 2.0
+ALWAYS_RIGHT = -2.0
+
+
 def fold_pinned_tree(nodes, edit_dim: int):
     """Resolve every split on a pinned bucket column as zero pins would: bucket 0 reads
     1, the others 0. The split becomes one that always goes the same way."""
@@ -95,7 +110,7 @@ def fold_pinned_tree(nodes, edit_dim: int):
         if left != LEAF and feature >= first:
             x = 1.0 if feature == first else 0.0
             goes_left = x <= threshold
-            threshold = math.inf if goes_left else -math.inf
+            threshold = ALWAYS_LEFT if goes_left else ALWAYS_RIGHT
             feature, default_left = 0, goes_left
         out.append((feature, default_left, threshold, left, right, value))
     return out
@@ -104,6 +119,11 @@ def fold_pinned_tree(nodes, edit_dim: int):
 def tables_for(model, cal: calibrate.Calibration, thresholds: list[float],
                support: list[int]) -> Tables:
     schema = sch.load()
+    if cal.kind == calibrate.IDENTITY:
+        raise ValueError(
+            "the success head needs a Platt or isotonic calibration; the reader passes an "
+            "identity-calibrated logit through as the probability"
+        )
     cals = [calibration_entry(cal), (calibrate.IDENTITY, []), (calibrate.IDENTITY, [])]
     common = dict(
         thresholds=[float(t) for t in thresholds],
@@ -138,10 +158,12 @@ class _Writer:
         self.floats.append(len(self.buf))
         self.buf += struct.pack("<f", np.float32(v))
 
-    def f32s(self, values):
+    def f32s(self, values, adjustable: bool = True):
+        """Append floats. Only `adjustable` ones may have a byte moved to break a run."""
         values = np.asarray(values, dtype="<f4").ravel()
         start = len(self.buf)
-        self.floats.extend(range(start, start + 4 * len(values), 4))
+        if adjustable:
+            self.floats.extend(range(start, start + 4 * len(values), 4))
         self.buf += values.tobytes()
 
 
@@ -170,8 +192,8 @@ def _body(t: Tables) -> _Writer:
         w.u32(cell)
     for kind, values in t.calibrations:
         w.u16(kind)
-        w.u16({calibrate.IDENTITY: 0, calibrate.PLATT: 1}.get(kind, len(values) // 2))
-        w.f32s(values)
+        w.u16(len(values) // 2 if kind == calibrate.ISOTONIC else 0)
+        w.f32s(values, adjustable=False)
 
     if t.kind == KIND_MLP:
         for layers in t.mlp:
@@ -243,8 +265,11 @@ def serialize(t: Tables) -> bytes:
 
 
 def audit(blob: bytes) -> None:
-    """Refuse a blob that would fail the repository's artifact leak check or the
-    reader's size limit."""
+    """Refuse a blob that would fail the repository's artifact leak check, or that the
+    reader would refuse: its size limit, and every structural rule, read from the final
+    bytes after any run was broken."""
+    from . import predict
+
     for at, length in ascii_runs(blob, MAX_ASCII_RUN + 1):
         raise ValueError(f"printable run of {length} bytes at byte {at}")
     for at, length in ascii_runs(blob, 4):
@@ -252,6 +277,7 @@ def audit(blob: bytes) -> None:
             raise ValueError(f"domain-like string at byte {at}")
     if len(blob) > MAX_BYTES:
         raise ValueError(f"artifact is {len(blob)} bytes, over {MAX_BYTES}")
+    predict.read(blob)
 
 
 def artifact_size(model, thresholds: int = 10, support: int = 0, knots: int = 0) -> int:
@@ -289,9 +315,11 @@ def write_sidecar(path: Path, blob: bytes, t: Tables, info: dict) -> None:
 
 
 GOLDEN_CASES = 64
-# JSON has no infinity. 1e39 is past the float32 range, so a reader that parses it into
-# an f32 gets infinity, which is the non-finite slot the case is for.
-NON_FINITE = 1e39
+# JSON has no infinity or NaN. A non-finite input slot is written as `null`, as the Rust
+# parity test reads it. The reader also takes 1e39, past the float32 range, which older
+# golden files used.
+NON_FINITE = None
+LEGACY_NON_FINITE = 1e39
 
 
 def golden_cases(blob: bytes, window: feat.Arrays | None = None, seed: int = 0) -> list[dict]:
@@ -347,8 +375,8 @@ def golden_cases(blob: bytes, window: feat.Arrays | None = None, seed: int = 0) 
             return None if math.isnan(v) else v
 
         cases.append({
-            "base": [NON_FINITE if not np.isfinite(v) else float(v) for v in base],
-            "edit": [NON_FINITE if not np.isfinite(v) else float(v) for v in edit],
+            "base": [float(v) if np.isfinite(v) else NON_FINITE for v in base],
+            "edit": [float(v) if np.isfinite(v) else NON_FINITE for v in edit],
             "cell": int(cell),
             "expect": {
                 "p_success": num(got.p_success[0]),
@@ -367,6 +395,14 @@ def golden_json(cases: list[dict]) -> str:
 def read_golden(text: str) -> list[dict]:
     doc = json.loads(text)
     return doc["cases"] if isinstance(doc, dict) else doc
+
+
+def golden_slots(values) -> np.ndarray:
+    """A golden input vector as float32: `null` is NaN, and a number past the float32
+    range, such as the legacy 1e39, overflows to infinity. Both are non-finite."""
+    out = np.array([np.nan if v is None else v for v in values], dtype=np.float64)
+    with np.errstate(over="ignore"):
+        return out.astype(np.float32)
 
 
 # Quantisation, Python only. The Rust reader stays FP32.

@@ -9,7 +9,8 @@ to a few hundred rows mostly memorises them.
 Both work on the raw logit, which is what the artifact's success head emits. The
 artifact layout is: kind 1 (Platt) with one (a, b) pair, `p = sigmoid(a * z + b)`, or
 kind 2 (isotonic) with knots (x, y), `p` read by linear interpolation and held flat
-past either end.
+past either end. The artifact needs at least two isotonic knots, so a fit that pools
+into a single block falls back to Platt.
 """
 
 from __future__ import annotations
@@ -161,8 +162,13 @@ def fit(z, y, candidate_rows: int, force: int | None = None) -> Calibration:
     kind = force if force is not None else (
         ISOTONIC if candidate_rows >= MIN_ISOTONIC_ROWS else PLATT
     )
+    knots = isotonic_knots(z, y) if kind == ISOTONIC else []
+    if kind == ISOTONIC and len(knots) < 2:
+        # One pooled block is a constant, and the artifact needs two knots for
+        # isotonic; Platt still ranks the rows.
+        kind = PLATT
     if kind == ISOTONIC:
-        cal = Calibration(ISOTONIC, knots=isotonic_knots(z, y))
+        cal = Calibration(ISOTONIC, knots=knots)
     elif kind == PLATT:
         cal = Calibration(PLATT, params=list(platt(z, y)))
     else:

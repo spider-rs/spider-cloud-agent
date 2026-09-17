@@ -86,16 +86,27 @@ def spelled(text: bytes) -> list[float]:
     return [struct.unpack("<f", text[i : i + 4])[0] for i in range(0, len(text), 4)]
 
 
+def mlp_tables(first_row=None, calibrations=None, thresholds=None) -> ex.Tables:
+    """A one-layer MLP artifact with a Platt success head, optionally with chosen weights
+    in the first head's single row."""
+    W = np.zeros((1, 248), np.float32)
+    if first_row is not None:
+        W[0, : len(first_row)] = first_row
+    zero = (np.zeros((1, 248), np.float32), np.zeros(1, np.float32), 0)
+    return ex.Tables(
+        kind=ex.KIND_MLP,
+        thresholds=[float("nan")] if thresholds is None else thresholds,
+        support=[],
+        calibrations=calibrations or [(1, [1.0, 0.0]), (0, []), (0, [])],
+        mlp=[[(W, np.zeros(1, np.float32), 0)], [zero], [zero]],
+    )
+
+
 def test_a_planted_ascii_run_or_host_is_broken_and_audited():
     # A long run, then a gap, then a run of seven bytes that reads as a host.
     host = spelled(b"\0ab.cdef\0\0\0\0")
-    tables = ex.Tables(
-        kind=ex.KIND_MLP,
-        thresholds=spelled(b"abcdefghijklmnop") + [0.0] + host,
-        support=[],
-        calibrations=[(0, []), (0, []), (0, [])],
-        mlp=[[(np.zeros((1, 248), np.float32), np.zeros(1, np.float32), 0)]] * 3,
-    )
+    planted_weights = spelled(b"abcdefghijklmnop") + [0.0] + host
+    tables = mlp_tables(first_row=planted_weights)
     raw = bytes(ex._body(tables).buf)
     assert ex.ascii_runs(raw, 9), "the plant must produce a long run"
     with pytest.raises(ValueError, match="printable run"):
@@ -112,8 +123,8 @@ def test_a_planted_ascii_run_or_host_is_broken_and_audited():
     assert all(not ex.DOMAIN_LIKE.search(blob[a : a + n]) for a, n in ex.ascii_runs(blob, 4))
     # Only the lowest byte of a float moved, by less than 0x60.
     art = predict.read(blob)
-    planted = np.array(tables.thresholds, dtype=np.float32)
-    assert np.allclose(art.thresholds, planted, rtol=1e-5)
+    planted = np.array(planted_weights, dtype=np.float32)
+    assert np.allclose(art.mlp[0][0][0][0, : len(planted)], planted, rtol=1e-5)
 
 
 def test_audit_refuses_an_oversized_blob():
@@ -153,13 +164,13 @@ def test_the_reader_refuses_bad_headers_and_truncation(trained):
 
 
 def check_golden(cases, blob):
+    """Python's reader against a golden file, with the Rust parity test's rule: within
+    1e-5 absolute, and NaN exactly where the file says `null`."""
     assert len(cases) >= 32
-    with np.errstate(over="ignore"):
-        # 1e39 stands for a non-finite slot and overflows to infinity here on purpose.
-        base = np.array([c["base"] for c in cases], dtype=np.float64).astype(np.float32)
-        edit = np.array([c["edit"] for c in cases], dtype=np.float64).astype(np.float32)
-        cells = np.array([c["cell"] for c in cases], dtype=np.int64)
-        got = predict.predict(blob, base, edit, cells)
+    base = np.array([ex.golden_slots(c["base"]) for c in cases])
+    edit = np.array([ex.golden_slots(c["edit"]) for c in cases])
+    cells = np.array([c["cell"] for c in cases], dtype=np.int64)
+    got = predict.predict(blob, base, edit, cells)
     for i, case in enumerate(cases):
         for name in ("p_success", "latency_ms", "credits", "support"):
             want = case["expect"][name]
@@ -167,8 +178,20 @@ def check_golden(cases, blob):
             if want is None:
                 assert math.isnan(have), (i, name)
             else:
-                assert have == pytest.approx(want, rel=1e-5, abs=1e-5), (i, name)
+                assert abs(have - np.float32(want)) <= 1e-5, (i, name, have, want)
     return got
+
+
+def only_numbers(value) -> bool:
+    """A golden document holds numbers, `null`, and the fixed keys, nothing else."""
+    if isinstance(value, dict):
+        return set(value) <= GOLDEN_KEYS and all(only_numbers(v) for v in value.values())
+    if isinstance(value, list):
+        return all(only_numbers(v) for v in value)
+    return value is None or (isinstance(value, (int, float)) and not isinstance(value, bool))
+
+
+GOLDEN_KEYS = {"base", "edit", "cell", "expect", "p_success", "latency_ms", "credits", "support"}
 
 
 @pytest.mark.parametrize("kind", ["mlp", "gbdt"])
@@ -187,27 +210,61 @@ def test_golden_matches_predict_reference(kind):
     assert all(v == 1 for v in cases[1]["base"] + cases[1]["edit"])
     assert all(v == -1 for v in cases[2]["base"] + cases[2]["edit"])
     assert cases[3]["expect"]["p_success"] is None
-    assert any(abs(v) > 3.5e38 for v in cases[3]["base"])
+    assert None in cases[3]["base"]
+    assert all(None not in c["base"] + c["edit"] for c in cases[:3] + cases[4:])
     assert cases[4]["expect"]["support"] == 0.0
     art = predict.read(blob)
     codes = {c["cell"] & 0xFF for c in cases}
     assert codes >= set(range(len(art.thresholds)))
     assert got.abstain.any() and not got.abstain.all()
     assert np.isfinite(art.thresholds).any() and np.isnan(art.thresholds).any()
+    assert art.calibrations[0][0] != 0, "the success head must not be identity"
+    assert only_numbers(json.loads((GOLDEN_DIR / f"golden-{kind}.json").read_text()))
 
 
-RUST_GOLDEN = REPO / "spider-optimize" / "tests" / "fixtures" / "golden-v1.json"
-RUST_ARTIFACT = REPO / "spider-optimize" / "assets" / "spider-optimize-v1.bin"
+RUST = REPO / "spider-optimize"
+# (trainer artifact, trainer golden, crate artifact, crate golden)
+RUST_FIXTURES = {
+    "mlp": ("synth-mlp.bin", "golden-mlp.json", RUST / "assets" / "spider-optimize-v1.bin",
+            RUST / "tests" / "fixtures" / "golden-v1.json"),
+    "gbdt": ("synth-gbdt.bin", "golden-gbdt.json", RUST / "tests" / "fixtures" / "gbdt-v1.bin",
+             RUST / "tests" / "fixtures" / "golden-gbdt-v1.json"),
+}
+
+
+def rust_fixture(kind: str) -> tuple[bytes, list[dict]]:
+    """The crate's fixture pair. A missing file fails: a skip here would pass a parity
+    check that never ran."""
+    _, _, artifact, golden = RUST_FIXTURES[kind]
+    for path in (artifact, golden):
+        assert path.is_file(), f"the Rust parity fixture {path} is missing"
+    return artifact.read_bytes(), ex.read_golden(golden.read_text())
 
 
 def test_python_reader_matches_rust_golden():
-    if not (RUST_GOLDEN.is_file() and RUST_ARTIFACT.is_file()):
-        pytest.skip(
-            "the Rust fixture is not on this branch yet: "
-            f"{RUST_GOLDEN.relative_to(REPO)} and {RUST_ARTIFACT.relative_to(REPO)}"
-        )
-    cases = ex.read_golden(RUST_GOLDEN.read_text())
-    check_golden(cases, RUST_ARTIFACT.read_bytes())
+    blob, cases = rust_fixture("mlp")
+    check_golden(cases, blob)
+
+
+def test_python_reader_matches_rust_gbdt_golden():
+    blob, cases = rust_fixture("gbdt")
+    check_golden(cases, blob)
+
+
+@pytest.mark.parametrize("kind", ["mlp", "gbdt"])
+def test_the_crate_ships_the_trainer_fixtures_byte_for_byte(kind):
+    trainer_blob, trainer_golden, artifact, golden = RUST_FIXTURES[kind]
+    blob, _ = rust_fixture(kind)
+    assert blob == (GOLDEN_DIR / trainer_blob).read_bytes()
+    assert golden.read_text() == (GOLDEN_DIR / trainer_golden).read_text()
+    assert only_numbers(json.loads(golden.read_text()))
+
+
+def test_a_missing_rust_fixture_fails_rather_than_skips(monkeypatch, tmp_path):
+    missing = tmp_path / "absent.bin"
+    monkeypatch.setitem(RUST_FIXTURES, "mlp", ("", "", missing, missing))
+    with pytest.raises(AssertionError, match="is missing"):
+        rust_fixture("mlp")
 
 
 @pytest.mark.parametrize("kind", ["mlp", "gbdt"])
@@ -237,11 +294,9 @@ def test_calibration_serialises_in_the_artifact_layout():
     iso = ex.calibration_entry(Calibration(2, knots=[(-1.0, 0.1), (2.0, 0.9)]))
     assert platt == (1, [0.5, -1.0])
     assert iso == (2, [-1.0, 0.1, 2.0, 0.9])
-    tables = ex.Tables(
-        kind=ex.KIND_MLP, thresholds=[], support=[], calibrations=[platt, iso, (0, [])],
-        mlp=[[(np.zeros((1, 248), np.float32), np.zeros(1, np.float32), 0)]] * 3,
-    )
-    art = predict.read(ex.serialize(tables))
+    tables = mlp_tables(calibrations=[platt, iso, (0, [])])
+    blob = ex.serialize(tables)
+    art = predict.read(blob)
     assert art.calibrations[0][0] == 1 and list(art.calibrations[0][1]) == [0.5, -1.0]
     assert art.calibrations[1][0] == 2
     assert np.allclose(art.calibrations[1][1], [-1.0, 0.1, 2.0, 0.9])
@@ -249,3 +304,112 @@ def test_calibration_serialises_in_the_artifact_layout():
     assert got.p_success[0] == pytest.approx(1 / (1 + math.exp(1.0)), rel=1e-6)
     assert got.latency_ms[0] == pytest.approx(math.expm1(0.1 + 0.8 / 3), rel=1e-6)
     assert got.credits[0] == 0.0 and got.support[0] == 1.0
+    # (kind, knots) on the wire, as `artifact.rs` accepts them: Platt and identity
+    # carry knots 0, isotonic its knot count.
+    at = ex.HEADER_BYTES + 2 + 4 + 4
+    assert struct.unpack_from("<HH", blob, at) == (1, 0)
+    assert struct.unpack_from("<HH", blob, at + 4 + 8) == (2, 2)
+    assert struct.unpack_from("<HH", blob, at + 4 + 8 + 4 + 16) == (0, 0)
+
+
+def with_crc(body: bytes) -> bytes:
+    return body + struct.pack("<I", zlib.crc32(body) & 0xFFFFFFFF)
+
+
+def test_the_reader_refuses_what_the_rust_reader_refuses():
+    blob = ex.serialize(mlp_tables())
+    body = bytearray(blob[:-4])
+    at = ex.HEADER_BYTES + 2 + 4 + 4
+    cases = {
+        "Platt with knots 1": (at + 2, struct.pack("<H", 1)),
+        "reserved byte": (15, b"\x01"),
+        "threshold outside [0, 1]": (ex.HEADER_BYTES + 2, struct.pack("<f", 1.5)),
+        "infinite weight": (at + 4 + 8 + 8 + 2 + 5, struct.pack("<f", math.inf)),
+    }
+    for name, (offset, patch) in cases.items():
+        bad = bytearray(body)
+        bad[offset : offset + len(patch)] = patch
+        with pytest.raises(predict.ArtifactError):
+            predict.read(with_crc(bytes(bad)))
+            pytest.fail(name)
+        with pytest.raises(ValueError):
+            ex.audit(with_crc(bytes(bad)))
+    one_knot = mlp_tables(calibrations=[(2, [0.0, 0.5]), (0, []), (0, [])])
+    with pytest.raises(predict.ArtifactError, match="knots"):
+        predict.read(with_crc(bytes(ex._body(one_knot).buf)))
+    falling = mlp_tables(calibrations=[(2, [0.0, 0.5, 1.0, 0.4]), (0, []), (0, [])])
+    with pytest.raises(predict.ArtifactError, match="order"):
+        predict.read(with_crc(bytes(ex._body(falling).buf)))
+    with pytest.raises(ValueError, match="two knots"):
+        ex.calibration_entry(Calibration(2, knots=[(0.0, 0.5)]))
+
+
+def test_an_identity_success_head_is_refused_and_passes_through_in_the_reader(trained):
+    with pytest.raises(ValueError, match="identity"):
+        ex.tables_for(trained.models["mlp"], Calibration(0), [float("nan")], [])
+    # The reader, like `Calibration::apply` in Rust, passes an identity head through.
+    tables = mlp_tables(calibrations=[(0, []), (0, []), (0, [])])
+    tables.mlp[0][0][1][0] = 3.0
+    art = predict.read(ex.serialize(tables))
+    got = predict.predict(art, np.zeros((1, 152)), np.zeros((1, 96)), [0])
+    assert got.p_success[0] == np.float32(3.0)
+
+
+def test_calibration_floats_are_never_nudged():
+    # Two ordered knots whose 16 bytes are all printable. The calibration header bytes
+    # on either side are not, so the run holds only knots, and the writer refuses it
+    # rather than move a knot out of order.
+    knots = spelled(b"aaaabbbbccccdddd")
+    assert knots[0] < knots[2] and knots[1] <= knots[3]
+    tables = mlp_tables(calibrations=[(2, knots), (0, []), (0, [])])
+    with pytest.raises(ValueError, match="no float to adjust"):
+        ex.serialize(tables)
+    # A run of eight is allowed, and the knots come back exactly.
+    short = spelled(b"aaaa\0\0\0\0bbbb\0\0\0\0")
+    art = predict.read(ex.serialize(mlp_tables(calibrations=[(2, short), (0, []), (0, [])])))
+    assert art.calibrations[0][1].tobytes() == np.array(short, "<f4").tobytes()
+
+
+def test_folded_pinned_splits_use_finite_sentinels():
+    first = 152 + 96
+    nodes = [
+        (first, False, 0.5, 1, 2, 0.0),      # bucket 0 reads 1: 1 > 0.5 goes right
+        (first + 1, True, 0.5, 3, 4, 0.0),   # bucket 1 reads 0: 0 <= 0.5 goes left
+        (0, False, 0.0, ex.LEAF, ex.LEAF, 1.0),
+        (0, False, 0.0, ex.LEAF, ex.LEAF, 2.0),
+        (0, False, 0.0, ex.LEAF, ex.LEAF, 3.0),
+    ]
+    folded = ex.fold_pinned_tree(nodes, 96)
+    assert folded[0][:3] == (0, False, ex.ALWAYS_RIGHT)
+    assert folded[1][:3] == (0, True, ex.ALWAYS_LEFT)
+    for x in (-1.0, 0.0, 1.0, math.nan, math.inf):
+        for node, left in ((folded[0], False), (folded[1], True)):
+            goes_left = node[1] if not math.isfinite(x) else x <= node[2]
+            assert goes_left is left
+
+
+def test_no_exported_threshold_is_non_finite(trained):
+    blob, _, _ = artifact_for(trained, "gbdt")
+    art = predict.read(blob)
+    tables = [t for _, trees in art.gbdt for t in trees]
+    assert tables
+    for table in tables:
+        assert np.all(np.isfinite(table["threshold"]))
+        assert np.all(np.isfinite(table["value"]))
+    tables = ex.tables_for(trained.models["gbdt"], trained.calibrations["gbdt"],
+                           [float("nan")], [])
+    folded = [n for _, trees in tables.gbdt for tree in trees for n in tree]
+    assert all(math.isfinite(n[2]) for n in folded)
+
+
+def test_golden_cases_write_null_for_a_non_finite_slot_and_read_both(trained):
+    blob, _, _ = artifact_for(trained, "mlp")
+    cases = ex.golden_cases(blob, seed=3)
+    assert None in cases[3]["base"]
+    assert only_numbers(json.loads(ex.golden_json(cases)))
+    legacy = json.loads(ex.golden_json(cases))
+    legacy[3]["base"] = [ex.LEGACY_NON_FINITE if v is None else v for v in legacy[3]["base"]]
+    for doc in (cases, legacy):
+        slots = ex.golden_slots(doc[3]["base"])
+        assert not np.all(np.isfinite(slots))
+        check_golden(doc, blob)

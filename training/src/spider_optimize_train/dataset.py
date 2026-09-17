@@ -130,6 +130,12 @@ def validate_rows(rows: list[dict], manifest: Manifest) -> list[str]:
             lowered = text.lower()
             if "://" in lowered or HOST_LIKE.search(lowered):
                 out.append(f"{where}: host-like string at {path}")
+        edit = row.get("edit")
+        if isinstance(edit, dict) and schema.edit_code(edit.get("key")) is None:
+            out.append(
+                f"{where}: edit key {edit.get('key')} is not learnable, so it has no edit "
+                "code or cell"
+            )
         problem = _unit_violation(row.get("base"), sch.BASE_DIM, "base")
         if problem:
             out.append(f"{where}: {problem}")
