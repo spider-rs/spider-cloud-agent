@@ -14,15 +14,17 @@
 //! What the optimizer costs on the path every request takes.
 //!
 //! `featurize_edit` runs once per candidate and `choose` once per request, so
-//! both are held to zero allocations with no model compiled in. `generate`
-//! builds the candidate list and `comparison_row` builds a line of text, and
-//! both allocate by design; their counts are pinned so a change in either
-//! direction is read before the record is updated.
+//! both are held to zero allocations with no model compiled in, and so are the
+//! monitor's `observe` and `verdict`, which run once per settled request.
+//! `generate` builds the candidate list and `comparison_row` builds a line of
+//! text, and both allocate by design; their counts are pinned so a change in
+//! either direction is read before the record is updated.
 
 use criterion::{criterion_group, criterion_main, Criterion};
 use spider_optimize::{
     choose, comparison_row, featurize_edit, generate, summarize, Arm, Compact, ComparisonRow,
-    Context, EditDescriptor, Gate, Key, MemoryState, NoModel, Observation, Params, Schema,
+    Context, EditDescriptor, Gate, Key, MemoryState, Monitor, MonitorConfig, NoModel, Observation,
+    Params, Schema,
 };
 use spider_route::{
     featurize, DeclaredNeed, ExtClass, ProxyPool, RequestMode, RouteDecision, RouteInput,
@@ -164,7 +166,8 @@ impl Params for Request {
 ///   `String` each. Nothing is built once the list is full.
 ///
 /// `row_write` makes 1: the line is written into one `String` sized for it.
-/// `featurize_edit` and `choose_no_model` must stay at zero.
+/// `featurize_edit`, `choose_no_model`, `monitor_observe` and
+/// `monitor_verdict` must stay at zero.
 const EXPECTED: &[(&str, usize)] = &[
     ("score_mlp", 0),
     ("score_gbdt", 0),
@@ -172,6 +175,8 @@ const EXPECTED: &[(&str, usize)] = &[
     ("featurize_edit", 0),
     ("choose_no_model", 0),
     ("row_write", 1),
+    ("monitor_observe", 0),
+    ("monitor_verdict", 0),
 ];
 
 fn optimize(c: &mut Criterion) {
@@ -246,6 +251,16 @@ fn optimize(c: &mut Criterion) {
         edit_feats: &feats,
     };
 
+    // A full window at the largest size, healthy, so `verdict` walks every
+    // slot and computes both rates.
+    let monitor = Monitor::new(MonitorConfig {
+        window: 8_192,
+        ..MonitorConfig::default()
+    });
+    for n in 0..8_192u32 {
+        monitor.observe(n % 2 == 0, n % 10 != 0);
+    }
+
     println!("\nallocations per optimizer call");
     println!("{:<18} {:>6}", "call", "allocs");
 
@@ -289,6 +304,18 @@ fn optimize(c: &mut Criterion) {
                 let _ = black_box(comparison_row(black_box(&row)));
             }),
         ),
+        (
+            "monitor_observe",
+            measure(|| {
+                monitor.observe(black_box(true), black_box(true));
+            }),
+        ),
+        (
+            "monitor_verdict",
+            measure(|| {
+                let _ = black_box(monitor.verdict());
+            }),
+        ),
     ];
 
     // Print every count before checking any, so one stale record does not
@@ -323,6 +350,12 @@ fn optimize(c: &mut Criterion) {
     });
     group.bench_function("row_write", |b| {
         b.iter(|| black_box(comparison_row(black_box(&row))))
+    });
+    group.bench_function("monitor_observe", |b| {
+        b.iter(|| monitor.observe(black_box(true), black_box(true)))
+    });
+    group.bench_function("monitor_verdict", |b| {
+        b.iter(|| black_box(monitor.verdict()))
     });
     group.bench_function("score_mlp", |b| {
         b.iter(|| {

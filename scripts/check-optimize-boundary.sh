@@ -11,11 +11,15 @@ sys.dont_write_bytecode = True
 sys.path.insert(0, 'scripts')
 boundary = importlib.import_module('check-rust-boundary')
 # The crate's own modules, and the router crate it is built on.
-modules = {'candidates', 'edit', 'features', 'gate', 'labels', 'model', 'observe',
-           'params', 'row', 'schema', 'validate'}
+modules = {'candidates', 'edit', 'features', 'gate', 'labels', 'model', 'monitor',
+           'observe', 'params', 'row', 'schema', 'validate'}
+# The monitor's ring, head and latch. Atomics are the one kind of shared state
+# this workspace allows; a lock is still refused by clippy.toml.
+atomics = {'atomic', 'AtomicBool', 'AtomicU8', 'AtomicUsize'}
 count, errors = boundary.scan('spider-optimize/src',
                               extra_roots=modules | {'spider_route'},
-                              extra_macros={'include_bytes'})
+                              extra_macros={'include_bytes'},
+                              extra_std=atomics)
 # The route closure, reviewed, plus the router and this crate.
 # Do not derive this allowlist from current metadata: a new dependency must fail.
 allowed = set('''displaydoc form_urlencoded icu_collections icu_locale_core

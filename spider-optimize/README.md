@@ -11,6 +11,11 @@ hold numbers only, no host, resource pattern or page body. Loading can allocate;
 scoring does no I/O, reads no clock and allocates nothing. The optional embedded
 artifact is a synthetic fixture and provides no evidence of savings on real pages.
 
+`Monitor` keeps the last `window` settled outcomes in a ring of atomics and trips
+when the edited requests' success rate falls under the kept requests' by more than
+`max_drop`, after `z` standard errors of the unpaired difference. The client stops
+applying edits once it trips, and stays that way until `Monitor::reset`.
+
 ## Numeric models
 
 `Compact::from_bytes` loads owned FP32 tables after checking the 2,000,000 byte
