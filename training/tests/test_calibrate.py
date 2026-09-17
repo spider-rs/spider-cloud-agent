@@ -71,3 +71,14 @@ def test_isotonic_needs_500_candidate_rows_else_platt():
     z, y = miscalibrated(rng, 2000)
     assert calibrate.fit(z, y, candidate_rows=500).kind == calibrate.ISOTONIC
     assert calibrate.fit(z, y, candidate_rows=499).kind == calibrate.PLATT
+
+
+def test_isotonic_below_two_knots_falls_back_to_platt():
+    # Every row at one logit with one label pools into a single knot.
+    z = np.zeros(600)
+    y = np.ones(600)
+    assert len(calibrate.isotonic_knots(z, y)) == 1
+    cal = calibrate.fit(z, y, candidate_rows=600)
+    assert cal.kind == calibrate.PLATT
+    assert cal.report["method"] == "platt"
+    assert len(cal.params) == 2

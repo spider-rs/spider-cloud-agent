@@ -1,4 +1,5 @@
-//! Numeric interchange contract for the future Python trainer.
+//! Numeric interchange contract with the Python trainer. The fixtures are the
+//! trainer's exports, copied from `training/fixtures/golden/`.
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::indexing_slicing)]
 use serde::Deserialize;
 use spider_optimize::{Compact, ModelKind};
@@ -25,6 +26,10 @@ fn parity(bytes: &[u8], golden: &str, kind: ModelKind) {
         cases.len() >= 32,
         "parity corpus must contain at least 32 cases"
     );
+    // The trainer writes a non-finite slot as null, and that case must abstain.
+    assert!(cases.iter().any(|case| {
+        case.base.iter().chain(&case.edit).any(Option::is_none) && case.expect.p_success.is_none()
+    }));
     for (i, case) in cases.iter().enumerate() {
         assert_eq!(case.base.len(), 152);
         assert_eq!(case.edit.len(), 96);
@@ -56,6 +61,25 @@ fn mlp_parity() {
         include_bytes!("../assets/spider-optimize-v1.bin"),
         include_str!("fixtures/golden-v1.json"),
         ModelKind::Mlp,
+    );
+}
+#[test]
+fn fixtures_are_the_trainer_exports_byte_for_byte() {
+    assert_eq!(
+        include_bytes!("../assets/spider-optimize-v1.bin"),
+        include_bytes!("../../training/fixtures/golden/synth-mlp.bin")
+    );
+    assert_eq!(
+        include_str!("fixtures/golden-v1.json"),
+        include_str!("../../training/fixtures/golden/golden-mlp.json")
+    );
+    assert_eq!(
+        include_bytes!("fixtures/gbdt-v1.bin"),
+        include_bytes!("../../training/fixtures/golden/synth-gbdt.bin")
+    );
+    assert_eq!(
+        include_str!("fixtures/golden-gbdt-v1.json"),
+        include_str!("../../training/fixtures/golden/golden-gbdt.json")
     );
 }
 #[test]

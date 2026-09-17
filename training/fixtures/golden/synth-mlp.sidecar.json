@@ -2,13 +2,13 @@
   "artifact_version": 1,
   "bytes": 153229,
   "calibration": {
-    "brier_after": 0.14470614302942958,
-    "brier_before": 0.14493079559073827,
-    "candidate_rows": 386,
-    "ece_after": 0.0673753283280334,
-    "ece_before": 0.0636805994267605,
+    "brier_after": 0.1597512304136817,
+    "brier_before": 0.16184147582006464,
+    "candidate_rows": 378,
+    "ece_after": 0.04717581872305179,
+    "ece_before": 0.05150065346711508,
     "method": "platt",
-    "rows": 772
+    "rows": 756
   },
   "edit_feature_version": 1,
   "feature_version": 1,
@@ -17,77 +17,77 @@
   "pooled_threshold": 0.5,
   "rows": 8000,
   "schema_version": 1,
-  "sha256": "2b9effc9c5b4b6bd23eabe3b7d75118ccea7793008012f6c490aa52f20f99b59",
+  "sha256": "7198d0615a76accda8b6e7d573cea9e3d94bfc368490dd338aadb2032d96a022",
   "split": "chronological: train days 0..35, tune days 36..44, calibrate days 45..50, test days 51..59",
   "support_cells": 14,
   "sweeps": {
     "block_ads": {
       "min_covered": 30,
       "r_max": 0.05,
-      "rows": 14,
+      "rows": 19,
       "threshold": null
     },
     "block_analytics": {
       "min_covered": 30,
       "r_max": 0.05,
-      "rows": 8,
+      "rows": 17,
       "threshold": null
     },
     "block_stylesheets": {
       "min_covered": 30,
       "r_max": 0.05,
-      "rows": 50,
+      "rows": 59,
       "threshold": null
     },
     "disable_intercept": {
       "min_covered": 30,
       "r_max": 0.05,
-      "rows": 21,
+      "rows": 19,
       "threshold": null
     },
     "full_resources": {
       "min_covered": 30,
       "r_max": 0.05,
-      "rows": 13,
+      "rows": 17,
       "threshold": null
     },
     "network_blacklist": {
       "min_covered": 30,
       "r_max": 0.05,
-      "rows": 77,
+      "rows": 64,
       "threshold": null
     },
     "pooled": {
       "min_covered": 30,
       "r_max": 0.05,
-      "rows": 366,
+      "rows": 362,
       "threshold": 0.5
     },
     "proxy": {
       "min_covered": 30,
       "r_max": 0.05,
       "rows": 52,
-      "threshold": 0.5
+      "threshold": null
     },
     "request": {
       "min_covered": 30,
       "r_max": 0.05,
-      "rows": 51,
+      "rows": 53,
       "threshold": null
     },
     "wait_for": {
       "min_covered": 30,
       "r_max": 0.05,
-      "rows": 80,
+      "rows": 62,
       "threshold": 0.5
     }
   },
   "synthetic": true,
-  "tau": 0.8656590000000001,
+  "tau": 0.8691530000000001,
   "thresholds": [
     null,
     null,
-    0.5,
+    null,
     0.5,
     null,
     null,
@@ -102,28 +102,28 @@
         45,
         50
       ],
-      "rows": 772
+      "rows": 756
     },
     "test": {
       "days": [
         51,
         59
       ],
-      "rows": 1248
+      "rows": 1222
     },
     "train": {
       "days": [
         0,
         35
       ],
-      "rows": 4736
+      "rows": 4830
     },
     "tune": {
       "days": [
         36,
         44
       ],
-      "rows": 1244
+      "rows": 1192
     }
   }
 }

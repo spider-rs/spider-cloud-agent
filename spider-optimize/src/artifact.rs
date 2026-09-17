@@ -382,7 +382,6 @@ mod tests {
     )]
     use super::*;
     use crate::{edit_code, Input, Key, Schema, Scorer, KEEP_CODE};
-    use serde_json::json;
 
     pub(crate) struct ArtifactTables {
         model: Compact,
@@ -545,65 +544,8 @@ mod tests {
             },
         }
     }
-    #[test]
-    #[ignore = "regenerates the synthetic artifacts and parity vectors"]
-    fn write_fixture_artifact() {
-        let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
-        std::fs::create_dir_all(root.join("assets")).unwrap();
-        std::fs::create_dir_all(root.join("tests/fixtures")).unwrap();
-        for (kind, artifact, golden) in [
-            (
-                ModelKind::Mlp,
-                "assets/spider-optimize-v1.bin",
-                "tests/fixtures/golden-v1.json",
-            ),
-            (
-                ModelKind::Gbdt,
-                "tests/fixtures/gbdt-v1.bin",
-                "tests/fixtures/golden-gbdt-v1.json",
-            ),
-        ] {
-            let tables = fixture(kind);
-            let bytes = write_artifact(&tables);
-            std::fs::write(root.join(artifact), bytes).unwrap();
-            let mut seed = 0x12345678;
-            let mut cases = Vec::new();
-            for i in 0..64 {
-                let mut base: Vec<f32> = (0..152)
-                    .map(|_| match i {
-                        0 => 0.0,
-                        1 => 1.0,
-                        2 => -1.0,
-                        _ => random(&mut seed),
-                    })
-                    .collect();
-                let edit: Vec<f32> = (0..96)
-                    .map(|_| match i {
-                        0 => 0.0,
-                        1 => 1.0,
-                        2 => -1.0,
-                        _ => random(&mut seed),
-                    })
-                    .collect();
-                if i == 3 {
-                    base[0] = f32::NAN;
-                }
-                let cell = if i == 4 {
-                    cell_id(255, 255, 255, 255)
-                } else {
-                    cell_id(1, 2, 0, (i % 4) as u8)
-                };
-                // Score the original tables, not their serialized/reloaded copy.
-                let score = tables.model.score_slices(&base, &edit, cell);
-                cases.push(json!({"base": base, "edit": edit, "cell": cell, "expect": {"p_success":score.p_success, "latency_ms":score.latency_ms,"credits":score.credits,"support":score.support}}));
-            }
-            std::fs::write(
-                root.join(golden),
-                serde_json::to_string(&cases).unwrap() + "\n",
-            )
-            .unwrap();
-        }
-    }
+    // The shipped artifacts and parity vectors come from the Python trainer
+    // (training/fixtures/golden/README.md); these tables only feed the guard tests.
     #[test]
     fn compact_codes_are_unique_and_ordered() {
         assert_eq!(KEEP_CODE, 0);

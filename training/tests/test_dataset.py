@@ -95,6 +95,18 @@ def test_features_outside_unit_range_or_non_finite_are_named(valid_rows, small_m
     assert any("row 2" in p and "edit_feats[2] is nan" in p for p in problems)
 
 
+def test_an_edit_key_that_is_not_learnable_is_named(valid_rows, small_manifest):
+    schema = sch.load()
+    fixed = next(k for k in schema.keys if not k["learnable"])
+    at = next(i for i, r in enumerate(valid_rows) if r["edit"] is not None)
+    valid_rows[at]["edit"]["key"] = fixed["index"]
+    problems = validate_rows(valid_rows, small_manifest)
+    assert any(
+        f"row {at + 1} " in p and f"edit key {fixed['index']} is not learnable" in p
+        for p in problems
+    )
+
+
 def test_feature_lengths_are_named(valid_rows, small_manifest):
     valid_rows[0]["base"] = valid_rows[0]["base"][:151]
     valid_rows[1]["edit_feats"].append(0)
