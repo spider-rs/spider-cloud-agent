@@ -1481,6 +1481,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "spider-optimize"
+version = "0.6.0"
+dependencies = [
+ "criterion",
+ "serde",
+ "serde_json",
+ "spider-cloud-agent",
+ "spider-route",
+ "url",
+]
+
+[[package]]
 name = "spider-route"
 version = "0.6.0"
 dependencies = [

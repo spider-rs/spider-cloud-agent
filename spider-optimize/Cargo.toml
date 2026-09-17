@@ -1,0 +1,46 @@
+[package]
+name = "spider-optimize"
+description = "Local, gated edits to Spider Cloud request parameters, scored for success, latency and credits."
+readme = "README.md"
+documentation = "https://docs.rs/spider-optimize"
+keywords = ["optimizer", "routing", "spider", "web-scraper"]
+categories = ["web-programming", "algorithms"]
+include = ["src/**/*.rs", "assets/*.bin", "Cargo.toml", "README.md", "LICENSE"]
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+
+[lints]
+workspace = true
+
+[package.metadata.docs.rs]
+all-features = true
+rustdoc-args = ["--cfg", "docsrs"]
+
+[badges]
+maintenance = { status = "actively-developed" }
+
+[dependencies]
+spider-route = { workspace = true }
+serde = { workspace = true }
+url = { workspace = true }
+
+[features]
+default = []
+# Declared for the model artifact reader, which lands in a later change.
+embedded-model = []
+
+[dev-dependencies]
+criterion = { version = "0.7", features = ["html_reports"] }
+serde_json = { workspace = true }
+# Path only, so publishing strips it. The schema test serializes the real
+# request type, and nothing outside the tests may see the client.
+spider-cloud-agent = { path = "../spider-cloud-agent", default-features = false }
+
+[[bench]]
+name = "optimize"
+harness = false
