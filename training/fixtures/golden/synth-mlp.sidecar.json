@@ -2,11 +2,11 @@
   "artifact_version": 1,
   "bytes": 153229,
   "calibration": {
-    "brier_after": 0.1597512304136817,
-    "brier_before": 0.16184147582006464,
+    "brier_after": 0.15979092795420763,
+    "brier_before": 0.16188253000875713,
     "candidate_rows": 378,
-    "ece_after": 0.04717581872305179,
-    "ece_before": 0.05150065346711508,
+    "ece_after": 0.051082039120887476,
+    "ece_before": 0.05412687187911135,
     "method": "platt",
     "rows": 756
   },
@@ -17,7 +17,7 @@
   "pooled_threshold": 0.5,
   "rows": 8000,
   "schema_version": 1,
-  "sha256": "7198d0615a76accda8b6e7d573cea9e3d94bfc368490dd338aadb2032d96a022",
+  "sha256": "b51910d8501e6e307a622790526224e500c68e3330cc1a32fc658012b37d706f",
   "split": "chronological: train days 0..35, tune days 36..44, calibrate days 45..50, test days 51..59",
   "support_cells": 14,
   "sweeps": {
@@ -83,7 +83,7 @@
     }
   },
   "synthetic": true,
-  "tau": 0.8691530000000001,
+  "tau": 0.86099,
   "thresholds": [
     null,
     null,

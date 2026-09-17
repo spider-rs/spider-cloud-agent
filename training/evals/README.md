@@ -68,7 +68,7 @@ The export was byte reproducible before this eval existed. On 2026-09-16, at com
 silicon, the `uv.lock` versions of numpy and LightGBM) wrote `synth-mlp.bin` with sha256
 `7198d0615a76accda8b6e7d573cea9e3d94bfc368490dd338aadb2032d96a022` and `synth-gbdt.bin`
 with `d20fe2163049e9f76117b881d6de3cf9f3342851026b707a5f4c990921bf1bcf`, the digests in
-the committed sidecars, and both golden files matched byte for byte. The LightGBM heads
+the sidecars committed at the time, and both golden files matched byte for byte. The LightGBM heads
 already run with `deterministic`, `num_threads` 1 and a seed per head, the MLP draws
 every weight and every minibatch order from `np.random.default_rng(seed)`, and the
 golden cases from a seeded generator, so nothing was changed to get there.
@@ -81,12 +81,13 @@ fails parity is a real bug in the exporter or the reader.
 
 Since 2026-09-17 `train` chooses tau from the train, tune and calibrate rows only, where
 it used to read the repeat pairs of the whole corpus, test window included. On the seed
-7 corpus that moves tau from 0.8692 to 0.8610 and one train label with it, so the
-sequence above no longer writes the committed bytes on any machine, and `run.sh` without
-`--quick` reports drift until the four golden files and the crate's copies are
-regenerated together as `fixtures/golden/README.md` describes. The committed files are
-still the format fixtures the parity tests read. Until the regeneration lands, run the
-full mode with `EVAL_ALLOW_DRIFT=1`.
+7 corpus that moved tau from 0.8692 to 0.8610 and one train label with it, so the four
+golden files and the crate's copies were regenerated together on 2026-09-17: the
+sequence in `fixtures/golden/README.md` now writes `synth-mlp.bin` with sha256
+`b51910d8501e6e307a622790526224e500c68e3330cc1a32fc658012b37d706f` and `synth-gbdt.bin`
+with `f1d59d4d3895170f22151bfde45666d0e234134e9f1972f274bea9b06dfe0b7a`, the digests in
+the committed sidecars, and `run.sh` in full mode compares against them with no
+allowance.
 
 ## Planted effects
 

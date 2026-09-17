@@ -60,14 +60,11 @@ needs).
 
 That tau was read from the repeat pairs of the whole corpus. Since 2026-09-17 `train`
 reads it from the train, tune and calibrate rows only, so the test window shapes no
-label; on this corpus that gives tau 0.8610 and moves one train label, and the sequence
-above writes different bytes (`synth-mlp.bin` sha256
+label; on this corpus that gives tau 0.8610 and moves one train label. The committed
+files were regenerated on 2026-09-17 with that rule (`synth-mlp.bin` sha256
 `b51910d8501e6e307a622790526224e500c68e3330cc1a32fc658012b37d706f`, `synth-gbdt.bin`
-`f1d59d4d3895170f22151bfde45666d0e234134e9f1972f274bea9b06dfe0b7a` on this machine).
-The committed files were kept as they are: they are still valid format fixtures, the
-parity tests read them, and replacing them means replacing the crate's four copies in
-the same change. Do that regeneration as the section below describes; until then
-`evals/run.sh` reports the drift.
+`f1d59d4d3895170f22151bfde45666d0e234134e9f1972f274bea9b06dfe0b7a`), and the crate's four
+copies were replaced in the same change.
 
 The floors are relaxed on purpose. At the defaults (`--min-covered 200 --r-max 0.01
 --min-sites 50`) this corpus abstains on every edit code, and an artifact whose floors
@@ -87,7 +84,7 @@ Measured on the files committed here:
 | artifact | bytes | limit |
 |---|---|---|
 | `synth-mlp.bin` (`spider-optimize-v1.bin`) | 153,229 | 2,097,152 in `xtask/artifact-baselines.json`, 2,000,000 in the reader |
-| `synth-gbdt.bin` (`gbdt-v1.bin`) | 256,702 | 1,500,000 GBDT export cap, 2,000,000 in the reader |
+| `synth-gbdt.bin` (`gbdt-v1.bin`) | 259,206 | 1,500,000 GBDT export cap, 2,000,000 in the reader |
 
 `cargo run -p xtask -- leakcheck` audits the shipped MLP artifact: under its baseline, no
 printable run over 8 bytes after the header, and no domain-like string.
