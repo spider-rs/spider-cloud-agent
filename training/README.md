@@ -91,9 +91,11 @@ abstains. A cell `need << 24 | ext << 16 | mem << 8 | edit_code` is supported wh
 saw it on `--min-sites` (50) distinct sites.
 
 `gates` compares, pair by pair, the arm the gated policy would have run with the
-baseline arm: the success and content lower bounds at -0.005, the credits per correct
-result upper bound at or under the baseline point estimate, p50 within 10 percent and
-p90 within 20 percent. Fewer than 300 pairs is `insufficient`, which fails.
+baseline arm: the success and content lower bounds at -0.005, the 95 percent upper
+bound of the policy's credits per correct result minus the baseline's, resampled by
+pair, at or under zero, p50 within 10 percent and p90 within 20 percent. Fewer than 300
+pairs is `insufficient`, which fails, and so is a policy that applied no edit on the
+window: its arm is the baseline on every pair and there is nothing to compare.
 
 A pair counts as regressed (`labels.regressed`) when the baseline succeeded and the
 candidate did not, or when the candidate succeeded and its content was judged broken.

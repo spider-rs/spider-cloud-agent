@@ -164,8 +164,9 @@ def cmd_gates(args) -> int:
                             doc["tau"])
         result = gt.run(pairs, args.resamples, args.seed)
         texts.append(gt.render(result, manifest.synthetic, kind))
-        _out(f"{kind}: gate {result.status} on {result.pairs} pairs, applied {result.applied}",
-             manifest.synthetic)
+        why = f" ({result.reason})" if result.reason else ""
+        _out(f"{kind}: gate {result.status} on {result.pairs} pairs, applied "
+             f"{result.applied}{why}", manifest.synthetic)
         failed |= not result.passed
     (run / "regression-report.md").write_text("\n".join(texts))
     return 1 if failed else 0

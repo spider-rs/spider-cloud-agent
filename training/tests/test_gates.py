@@ -67,7 +67,7 @@ def test_gates_report_insufficient_below_min_pairs():
     assert result.checks == []
     result = gates.run(clean + [outcome(gates.MIN_PAIRS, cheaper=0.5)])
     assert result.status == "pass"
-    assert "Fewer than 300 pairs" in gates.render(gates.run(clean), True, "mlp")
+    assert "fewer than 300 pairs" in gates.render(gates.run(clean), True, "mlp")
 
 
 def test_each_check_fails_on_its_own_regression():
@@ -91,3 +91,47 @@ def test_rule_of_three_bounds_zero_failures():
     clean = [outcome(i, cheaper=0.5) for i in range(n)]
     text = gates.render(gates.run(clean), True, "gbdt")
     assert f"None of the {n} applied pairs regressed" in text
+
+
+def test_zero_applied_edits_is_insufficient_not_a_cost_failure():
+    # The policy kept the request on every pair: its arm is the baseline itself.
+    same = [outcome(i) for i in range(600)]
+    assert all(not p.applied for p in same)
+    result = gates.run(same)
+    assert result.status == "insufficient" and not result.passed
+    assert result.checks == [] and result.applied == 0
+    assert "credits per correct result" not in result.failed()
+    text = gates.render(result, True, "mlp")
+    assert "applied no edit" in text and "nothing to compare" in text
+    assert "the gate fails" in text
+
+
+def test_identical_policy_passes_the_paired_cost_check():
+    # An edit applied on every pair whose outcome equals the baseline's exactly.
+    n = 600
+    same = []
+    for i in range(n):
+        millis = 1000.0 + i % 97
+        credits = 0.5 + (i % 13) / 10
+        same.append(gates.PairOutcome(
+            pair=i, base_success=i % 7 != 0, base_credits=credits, base_millis=millis,
+            arm_success=i % 7 != 0, arm_content_ok=True, arm_credits=credits,
+            arm_millis=millis, applied=True,
+        ))
+    result = gates.run(same)
+    assert result.status == "pass", result.failed()
+    cost = next(c for c in result.checks if c.name == "credits per correct result")
+    assert cost.value == 0.0 and cost.bound == 0.0 and cost.limit == 0.0
+
+
+def test_a_dearer_policy_fails_the_paired_cost_check():
+    n = 600
+    dear = [outcome(i, cheaper=1.01) for i in range(n)]
+    result = gates.run(dear)
+    assert result.failed() == ["credits per correct result"]
+    cost = next(c for c in result.checks if c.name == "credits per correct result")
+    assert cost.value == pytest.approx(0.01)
+    assert cost.bound == pytest.approx(0.01) and cost.limit == 0.0
+    # Cheaper by the same margin passes: the bound sits at -0.01.
+    cheap = gates.run([outcome(i, cheaper=0.99) for i in range(n)])
+    assert cheap.status == "pass"

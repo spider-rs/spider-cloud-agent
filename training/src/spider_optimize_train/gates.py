@@ -76,6 +76,7 @@ class GateResult:
     applied: int
     regressions: int  # applied pairs whose arm lost what the baseline got
     checks: list[Check] = field(default_factory=list)
+    reason: str = ""  # why the result is insufficient, empty otherwise
 
     @property
     def passed(self) -> bool:
@@ -94,7 +95,11 @@ def run(pairs: list[PairOutcome], resamples: int = RESAMPLES, seed: int = 0,
         for p in pairs
     )
     if n < min_pairs:
-        return GateResult("insufficient", n, applied, regressions)
+        return GateResult("insufficient", n, applied, regressions,
+                          reason=f"fewer than {min_pairs} pairs, so no check ran")
+    if applied == 0:
+        return GateResult("insufficient", n, applied, regressions,
+                          reason="the policy applied no edit, so there is nothing to compare")
 
     base_s = np.array([p.base_success for p in pairs], dtype=np.float64)
     arm_s = np.array([p.arm_success for p in pairs], dtype=np.float64)
@@ -126,12 +131,13 @@ def run(pairs: list[PairOutcome], resamples: int = RESAMPLES, seed: int = 0,
 
     correct = arm_s * arm_ok
     with np.errstate(divide="ignore", invalid="ignore"):
-        cpc_b = arm_c[idx].sum(axis=1) / correct[idx].sum(axis=1)
-    base_point = float(base_c.sum() / base_s.sum()) if base_s.sum() else float("inf")
-    arm_point = float(arm_c.sum() / correct.sum()) if correct.sum() else float("inf")
-    checks.append(Check("credits per correct result", upper(cpc_b) <= base_point, arm_point,
-                        upper(cpc_b), base_point,
-                        "95 percent upper bound at or under the baseline point estimate"))
+        cpc_diff = (arm_c[idx].sum(axis=1) / correct[idx].sum(axis=1)
+                    - base_c[idx].sum(axis=1) / base_s[idx].sum(axis=1))
+        point = float(arm_c.sum() / correct.sum() - base_c.sum() / base_s.sum())
+    bound = upper(cpc_diff)
+    checks.append(Check("credits per correct result", bool(bound <= 0.0), point, bound, 0.0,
+                        "95 percent upper bound of policy minus baseline, by pair, at or "
+                        "under zero"))
 
     for name, q, slack in (("p50 millis", 50, P50_SLACK), ("p90 millis", 90, P90_SLACK)):
         base_q = float(np.percentile(base_m, q))
@@ -169,7 +175,7 @@ def render(result: GateResult, synthetic: bool, kind: str) -> str:
         f"edit on {result.applied}.\n\n"
     )
     if result.status == "insufficient":
-        out.append(f"Fewer than {MIN_PAIRS} pairs, so no check ran and the gate fails.\n\n")
+        out.append(f"Insufficient: {result.reason}, and the gate fails.\n\n")
     else:
         rows = [[c.name, "pass" if c.passed else "fail", c.value, c.bound, c.limit, c.note]
                 for c in result.checks]
