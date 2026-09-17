@@ -7,6 +7,9 @@ error.
 
 ## 0.6.0 (2026-09-16)
 
+- Add version one optimizer artifacts, bounded FP32 MLP and GBDT inference,
+  calibration, support cells, and synthetic parity fixtures.
+
 - `RequestParams` gains the documented fields it was missing:
   `service_worker_enabled`, `preserve_host`, `delay`, `concurrency_limit`,
   `wayback`, `sitemap_only`, `sitemap_path`, `block_ads`, `block_analytics`,

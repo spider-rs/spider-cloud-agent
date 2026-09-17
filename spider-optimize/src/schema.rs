@@ -754,6 +754,18 @@ pub const fn service_default(key: Key) -> bool {
     )
 }
 
+/// The compact edit code for leaving a request unchanged.
+pub const KEEP_CODE: u8 = 0;
+
+/// One plus the rank among `Schema::v1().learnable()` in `Key::ALL` order.
+/// The trainer derives the same codes from learnable keys in schema-v1.json.
+pub fn edit_code(key: Key) -> Option<u8> {
+    Schema::v1()
+        .learnable()
+        .position(|spec| spec.key == key)
+        .map(|rank| 1 + rank as u8)
+}
+
 #[cfg(test)]
 pub(crate) mod tests {
     #![allow(
