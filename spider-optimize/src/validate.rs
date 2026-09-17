@@ -340,22 +340,18 @@ mod tests {
             Err(Rejection::Dependency(Key::BlockAds))
         );
 
-        // Intercept off and a blacklist on do not go together.
+        // The service applies the network lists whether or not first party
+        // scripts are let through, so a blacklist append beside
+        // `disable_intercept` is allowed in both directions.
         let mut observed = Fixture::observed();
         observed.current.disable_intercept = Some(true);
-        assert_eq!(
-            check(&observed, vec![append("cdn-beta.example")]),
-            Err(Rejection::Dependency(Key::NetworkBlacklist))
-        );
-        // Turning interception back on beside a blacklist is compatible: the
-        // edit switches its own field off, so nothing is left to conflict.
+        assert_eq!(check(&observed, vec![append("cdn-beta.example")]), Ok(()));
         let mut listed = Fixture::observed();
-        listed.current.disable_intercept = Some(true);
         listed.current.network_blacklist = Some(vec!["cdn-beta.example".into()]);
         assert_eq!(
             check(
                 &listed,
-                vec![Edit::set(Key::DisableIntercept, Value::Bool(false))]
+                vec![Edit::set(Key::DisableIntercept, Value::Bool(true))]
             ),
             Ok(())
         );

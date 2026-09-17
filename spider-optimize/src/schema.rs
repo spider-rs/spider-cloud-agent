@@ -496,16 +496,11 @@ pub const WAIT_BUCKETS: [u32; 4] = [0, 2_000, 5_000, 10_000];
 
 const RENDERED: &[Dependency] = &[Dependency::Rendered];
 
-// Request interception is what enforces a network blacklist, so letting the
-// page fetch everything makes a blacklist edit do nothing, and the reverse.
-const BLACKLIST_NEEDS: &[Dependency] = &[
-    Dependency::Rendered,
-    Dependency::NotWith(Key::DisableIntercept),
-];
-const INTERCEPT_NEEDS: &[Dependency] = &[
-    Dependency::Rendered,
-    Dependency::NotWith(Key::NetworkBlacklist),
-];
+// `disable_intercept` lets first party scripts through; the service keeps
+// request interception on and still applies the network lists, so the two
+// keys do not exclude each other. Checked against the service on 2026-09-16.
+const BLACKLIST_NEEDS: &[Dependency] = RENDERED;
+const INTERCEPT_NEEDS: &[Dependency] = RENDERED;
 
 const U32_MAX: i64 = 4_294_967_295;
 const I64_MAX: i64 = 9_223_372_036_854_775_807;
