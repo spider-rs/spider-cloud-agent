@@ -48,7 +48,7 @@ pub async fn run(global: &Global, args: &RunArgs, log: Log) -> Run<Code> {
     if plan.need == Need::screenshot() {
         setup::refuse_bytes_on_a_terminal(global)?;
     }
-    let spider = setup::client_with_credits(global, plan.credits)?;
+    let spider = setup::client_with_credits(global, plan.credits, log)?;
     let mut emitter = setup::emitter(global, Format::Ndjson)?;
     let mut report = Report {
         targets: plan.urls.len(),

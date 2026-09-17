@@ -11,6 +11,7 @@ use url::Url;
 // Every routing type reaches here through the client rather than through
 // spider-route itself. The client re-exports them, and one dependency cannot
 // drift out of step with another.
+use spider_cloud_agent::auth::router::StoredRouter;
 use spider_cloud_agent::response::{Body, FailedPage, Hint, Page, SearchEntry};
 use spider_cloud_agent::thrift::ThriftReport;
 use spider_cloud_agent::{Credits, RouteDecision};
@@ -306,6 +307,80 @@ pub fn route(url: &Url, decision: &RouteDecision) -> Item {
     Item::structured(value)
         .with_text(text, "txt")
         .with_url(url.clone())
+}
+
+/// Shown in place of every key and every provider setting.
+const REDACTED: &str = "<redacted>";
+
+/// The stored provider fallback, with every secret replaced.
+///
+/// Credential names and provider setting names are kept, because a caller
+/// checking what is stored needs them. Every value under them is replaced:
+/// a credential is a key, and a provider setting can be one.
+pub fn router(stored: Option<&StoredRouter>) -> Item {
+    let Some(stored) = stored else {
+        return Item::structured(json!({ "type": "router", "stored": false }));
+    };
+    let router = &stored.router;
+    let credentials: Option<Map<String, Value>> = router.credentials.as_ref().map(|held| {
+        held.keys()
+            .map(|name| (name.clone(), json!(REDACTED)))
+            .collect()
+    });
+    let options: Option<Map<String, Value>> = stored.provider_options.as_ref().map(|held| {
+        held.iter()
+            .map(|(provider, settings)| {
+                let redacted = match settings {
+                    Value::Object(map) => Value::Object(
+                        map.keys()
+                            .map(|key| (key.clone(), json!(REDACTED)))
+                            .collect(),
+                    ),
+                    _ => json!(REDACTED),
+                };
+                (provider.clone(), redacted)
+            })
+            .collect()
+    });
+
+    let mut lines = Vec::new();
+    for (name, value) in [
+        ("mode", &router.mode),
+        ("provider", &router.provider),
+        ("funding", &router.funding),
+    ] {
+        if let Some(value) = value {
+            lines.push(format!("{name}\t{value}"));
+        }
+    }
+    if router.token.is_some() {
+        lines.push(format!("token\t{REDACTED}"));
+    }
+    for name in credentials.iter().flat_map(Map::keys) {
+        lines.push(format!("credential\t{name}\t{REDACTED}"));
+    }
+    for (provider, settings) in options.iter().flatten() {
+        match settings {
+            Value::Object(map) => {
+                for key in map.keys() {
+                    lines.push(format!("option\t{provider}.{key}\t{REDACTED}"));
+                }
+            }
+            _ => lines.push(format!("option\t{provider}\t{REDACTED}")),
+        }
+    }
+
+    let value = json!({
+        "type": "router",
+        "stored": true,
+        "mode": router.mode,
+        "provider": router.provider,
+        "funding": router.funding,
+        "token": router.token.as_ref().map(|_| REDACTED),
+        "credentials": credentials,
+        "provider_options": options,
+    });
+    Item::structured(value).with_text(lines.join("\n"), "txt")
 }
 
 /// Which layer answered the routing question.

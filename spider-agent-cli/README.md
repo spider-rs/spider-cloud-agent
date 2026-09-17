@@ -102,6 +102,7 @@ spider-agent <url>            scrape, which is what you get with no command
   keys       the API keys on the account, as metadata
   profile    the account: plan limits, totals and billing caps
   login      sign in through a browser and store the key
+  router     store, show or clear a provider fallback every page request carries
   route      what transport would be chosen. Local, no call, no spend
   schema     the command tree and the record contract, as JSON
   update     install the newest release now
@@ -114,6 +115,33 @@ to pull, whether the page needs a browser, what to wait for. The first fetch on
 a path nobody has asked for yet goes away and works one out, which is slow and
 can fail while it tries, and the query string is not part of the target. Reach
 for scrape unless you want the stored config.
+
+## Provider fallback
+
+`spider-agent router set` stores the `router` request parameter and
+`provider_options` in `~/.spider/router.json`, owner only. Every command that
+fetches pages sends it unless the request names a router of its own, and says
+`using stored router: provider zyte, mode fallback, funding own` once on stderr.
+
+```bash
+printf '%s' "$ZYTE_KEY" | spider-agent router set --provider zyte --mode fallback --funding own --token-stdin
+printf '%s' "$OXYLABS_PASSWORD" | spider-agent router set --provider oxylabs --mode fallback \
+  --credential oxylabs_username=NAME --credential oxylabs_password-stdin
+spider-agent router set --option zyte.geolocation=US
+spider-agent router show
+spider-agent router clear
+```
+
+`set` merges into what is stored, so a flag you leave out keeps its value.
+`--no-token`, `--no-credential NAME` and `--no-option PROVIDER.KEY` remove one.
+Keys come from stdin or `SPIDER_ROUTER_TOKEN`. `--token VALUE` is refused,
+because a key on the command line lands in shell history, and so is a
+`--credential` whose name says it is a password, secret, token or key. `show`
+prints every credential and setting value as `<redacted>`.
+
+`--no-router`, or `SPIDER_AGENT_NO_ROUTER` set to any non-empty value, sends no stored
+router for one run. A router file that cannot be read or does not validate stops
+a page command with code 2 before any call.
 
 ## The account reads
 
@@ -328,6 +356,8 @@ you downloaded.
 | `SPIDER_CLOUD_API_KEY` | Fallback API key when `SPIDER_API_KEY` is empty or unset. |
 | `SPIDER_API_URL` | Overrides the API base, normally `https://api.spider.cloud`, for every key-bearing API request. The API base must use https. |
 | `SPIDER_AGENT_NO_UPDATE` | Any non-empty value turns off the update check, the download and the install of a staged update. The same as `--no-update`. |
+| `SPIDER_AGENT_NO_ROUTER` | Any non-empty value sends no stored provider fallback on this run. The same as `--no-router`. |
+| `SPIDER_ROUTER_TOKEN` | The provider token `router set` stores, instead of `--token-stdin`. |
 | `SPIDER_MCP_SERVER` | Overrides the sign-in discovery server, normally `https://mcp.spider.cloud/mcp`, when OAuth is enabled. |
 
 Set either server override only to a server you trust: one receives API requests

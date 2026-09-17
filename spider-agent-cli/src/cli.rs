@@ -125,6 +125,24 @@ For what is left to spend right now, `credits` is the shorter answer."
     Profile,
     /// Sign in through a browser and store the key.
     Login(LoginArgs),
+    /// Store a provider fallback that every page request carries.
+    #[command(
+        long_about = "Store a provider fallback that every page request carries.
+
+The request parameter router names an outside scraping provider and how it \
+takes part: fallback puts it behind Spider's own fetch, tried only when that \
+fails; first puts it in front, and needs a provider and its key; off keeps the \
+request away from outside providers. funding own allows only routes your own \
+keys pay for. Providers that take one token: firecrawl, zenrows, scrapingbee, \
+scraperapi, brightdata, zyte, apify, crawlbase, diffbot. oxylabs and \
+dataforseo take a username and password as credentials instead.
+
+The config lives in ~/.spider/router.json, readable by its owner only. Every \
+command that fetches pages sends it unless the request already names a router. \
+Pass --no-router, or set SPIDER_AGENT_NO_ROUTER to any value, to skip it for \
+one run."
+    )]
+    Router(RouterArgs),
     /// What transport would be chosen for an address. Local, no call, no spend.
     Route(RouteArgs),
     /// The command tree and the record schema, as JSON.
@@ -219,7 +237,7 @@ pub struct Global {
     pub max_tokens: Option<usize>,
 
     /// Fix how the page is fetched. Left alone, the router picks it.
-    #[arg(long, global = true, value_enum)]
+    #[arg(long, global = true, value_name = "MODE", value_parser = fetch_modes())]
     pub mode: Option<Mode>,
 
     /// Ask for the links on every page as well as its content. They come back
@@ -247,6 +265,11 @@ pub struct Global {
     /// same as setting SPIDER_AGENT_NO_UPDATE.
     #[arg(long, global = true)]
     pub no_update: bool,
+
+    /// Send no stored provider fallback on this run. The same as setting
+    /// SPIDER_AGENT_NO_ROUTER.
+    #[arg(long, global = true)]
+    pub no_router: bool,
 
     /// Print nothing on stderr but failures.
     #[arg(short, long, global = true, conflicts_with = "verbose")]
@@ -286,8 +309,13 @@ pub enum Format {
     Ndjson,
 }
 
-/// How a page is fetched.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
+/// A `--mode` value.
+///
+/// Two flags are spelled `--mode`: the global one, for how a page is fetched,
+/// and the one on `router set`, for how a provider takes part. clap keeps one
+/// slot per name and hands a value on `router set` up to the global slot, so
+/// both flags parse into this one type, and each accepts only its own names.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Mode {
     /// Plain HTTP. Cheapest, and enough for most pages.
     Http,
@@ -295,6 +323,46 @@ pub enum Mode {
     Smart,
     /// A full browser.
     Browser,
+    /// A provider behind Spider's own fetch, tried only when that fails.
+    Fallback,
+    /// A provider in front of Spider's own fetch.
+    First,
+    /// No outside provider.
+    Off,
+}
+
+/// The global `--mode`: how a page is fetched.
+fn fetch_modes() -> impl clap::builder::TypedValueParser<Value = Mode> {
+    use clap::builder::{PossibleValue, PossibleValuesParser, TypedValueParser};
+    PossibleValuesParser::new([
+        PossibleValue::new("http").help("Plain HTTP. Cheapest, and enough for most pages"),
+        PossibleValue::new("smart").help("The service decides per page"),
+        PossibleValue::new("browser").help("A full browser"),
+    ])
+    .try_map(|name| match name.as_str() {
+        "http" => Ok(Mode::Http),
+        "smart" => Ok(Mode::Smart),
+        "browser" => Ok(Mode::Browser),
+        other => Err(format!("{other} is not a fetch mode")),
+    })
+}
+
+/// `router set --mode`: how a provider takes part.
+fn router_modes() -> impl clap::builder::TypedValueParser<Value = Mode> {
+    use clap::builder::{PossibleValue, PossibleValuesParser, TypedValueParser};
+    PossibleValuesParser::new([
+        PossibleValue::new("fallback")
+            .help("Behind Spider's own fetch, tried only when that fails"),
+        PossibleValue::new("first")
+            .help("In front of Spider's own fetch. Needs a provider and its key"),
+        PossibleValue::new("off").help("No outside provider"),
+    ])
+    .try_map(|name| match name.as_str() {
+        "fallback" => Ok(Mode::Fallback),
+        "first" => Ok(Mode::First),
+        "off" => Ok(Mode::Off),
+        other => Err(format!("{other} is not a router mode")),
+    })
 }
 
 /// Which pool a request leaves from.
@@ -529,6 +597,84 @@ pub struct LoginArgs {
     /// else, so redirect it or do not use it.
     #[arg(long)]
     pub print: bool,
+}
+
+/// The stored provider fallback.
+#[derive(Debug, Args)]
+pub struct RouterArgs {
+    /// What to do with it.
+    #[command(subcommand)]
+    pub command: RouterCommand,
+}
+
+/// What `router` does.
+#[derive(Debug, Subcommand)]
+pub enum RouterCommand {
+    /// Store or change the fallback. A flag you do not pass keeps its stored
+    /// value.
+    Set(RouterSetArgs),
+    /// Print the stored fallback, with every key and setting value redacted.
+    Show,
+    /// Delete the stored fallback.
+    Clear,
+}
+
+/// Store or change the provider fallback.
+#[derive(Debug, Args)]
+pub struct RouterSetArgs {
+    /// The provider, by name. A name this version does not know is stored with
+    /// a note, because providers are added without a release.
+    #[arg(long, value_name = "NAME")]
+    pub provider: Option<String>,
+
+    /// How the provider takes part.
+    #[arg(long, value_name = "MODE", value_parser = router_modes())]
+    pub mode: Option<Mode>,
+
+    /// Which routes may be used: any, or only those your own keys pay for.
+    #[arg(long, value_enum)]
+    pub funding: Option<Funding>,
+
+    /// Read the provider token from stdin. SPIDER_ROUTER_TOKEN works too.
+    #[arg(long, conflicts_with = "no_token")]
+    pub token_stdin: bool,
+
+    /// Refused: a key on the command line lands in shell history. Use
+    /// --token-stdin or SPIDER_ROUTER_TOKEN.
+    #[arg(long, value_name = "VALUE", num_args = 0..=1, hide = true)]
+    pub token: Option<Option<String>>,
+
+    /// Remove the stored token.
+    #[arg(long)]
+    pub no_token: bool,
+
+    /// A credential, as NAME=VALUE for a value that is not secret, or
+    /// NAME-stdin to read the value from stdin. Repeat for more.
+    #[arg(long, value_name = "NAME=VALUE|NAME-stdin")]
+    pub credential: Vec<String>,
+
+    /// Remove a stored credential. Repeat for more.
+    #[arg(long, value_name = "NAME")]
+    pub no_credential: Vec<String>,
+
+    /// A provider setting, as PROVIDER.KEY=VALUE. A value that reads as JSON is
+    /// stored as JSON, anything else as text. Applied only on routes your own
+    /// key pays for. Repeat for more.
+    #[arg(long, value_name = "PROVIDER.KEY=VALUE")]
+    pub option: Vec<String>,
+
+    /// Remove a stored provider setting. Repeat for more.
+    #[arg(long, value_name = "PROVIDER.KEY")]
+    pub no_option: Vec<String>,
+}
+
+/// Which routes a request may be paid through.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
+pub enum Funding {
+    /// Any route.
+    Any,
+    /// Only routes your own keys pay for.
+    Own,
 }
 
 /// Ask what transport would be chosen.

@@ -10,6 +10,31 @@ error.
 - Document optimizer boundaries, parameter coverage, paired datasets, evidence gates
   and staged rollout; add principle 20 for gated edits and caller precedence.
 
+- New `auth::router` module: a `StoredRouter` (the `router` parameter and
+  `provider_options`) kept in `~/.spider/router.json`, written owner only through
+  the same path as the credentials file, read under a 64 KiB cap, and checked by
+  `StoredRouter::validate`. `Debug` prints no token, credential value or option
+  value, and no error names a value.
+- `SpiderBuilder::stored_router(true)` reads that file at build, and
+  `SpiderBuilder::provider_router` sets one directly. The method is not called
+  `router`, because that name already takes the local router. Off by default.
+  Every page operation then sends the stored `router` when the caller set none,
+  and the stored `provider_options` when the caller set none. A caller's own
+  `router` always wins, `mode: off` included. Nothing changes for a client built
+  without it.
+- `spider-agent router set`, `show` and `clear` store, print and delete that
+  file. `set` merges into what is stored and removes a field with `--no-token`,
+  `--no-credential` and `--no-option`. Keys come from stdin (`--token-stdin`,
+  `--credential NAME-stdin`) or `SPIDER_ROUTER_TOKEN`, and `--token VALUE` is
+  refused because it lands in shell history. `show` prints every key as
+  `<redacted>` and writes a `router` record under `--json`.
+- Every command that fetches pages (scrape, fetch, crawl, extract, links,
+  screenshot, run, and search with `--fetch-pages`) now sends the stored router
+  by default and says so once on stderr, naming provider, mode and funding.
+  `--no-router` or `SPIDER_AGENT_NO_ROUTER` skips it for one run. A router file
+  that cannot be used stops those commands with code 2 before a call.
+- The global `--mode` and `router set --mode` share one value type inside the
+  parser. The accepted values and the help for the global flag are unchanged.
 - Add version one optimizer artifacts, bounded FP32 MLP and GBDT inference,
   calibration, support cells, and synthetic parity fixtures.
 - The optimizer's bundled artifact and both parity fixtures now come from the

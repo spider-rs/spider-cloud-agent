@@ -23,7 +23,7 @@ pub async fn scrape(global: &Global, args: &ScrapeArgs, log: Log) -> Run<Code> {
     if args.goal == Goal::Screenshot {
         setup::refuse_bytes_on_a_terminal(global)?;
     }
-    let spider = setup::client(global)?;
+    let spider = setup::fetching_client(global, log)?;
     let mut emitter = setup::emitter(global, Format::Text)?;
     let mut report = Report {
         targets: urls.len(),
@@ -92,7 +92,7 @@ pub async fn fetch(global: &Global, args: &FetchArgs, log: Log) -> Run<Code> {
     if args.goal == Goal::Screenshot {
         setup::refuse_bytes_on_a_terminal(global)?;
     }
-    let spider = setup::client(global)?;
+    let spider = setup::fetching_client(global, log)?;
     let mut emitter = setup::emitter(global, Format::Text)?;
     let mut report = Report {
         targets: 1,
@@ -143,7 +143,7 @@ pub async fn fetch(global: &Global, args: &FetchArgs, log: Log) -> Run<Code> {
 pub async fn crawl(global: &Global, args: &CrawlArgs, log: Log) -> Run<Code> {
     let need = setup::need(args.goal, args.selectors.as_deref(), None)?;
     let urls = setup::addresses(&args.targets)?;
-    let spider = setup::client(global)?;
+    let spider = setup::fetching_client(global, log)?;
     let mut emitter = setup::emitter(global, Format::Ndjson)?;
     let mut report = Report {
         targets: urls.len(),
@@ -202,7 +202,7 @@ pub async fn crawl(global: &Global, args: &CrawlArgs, log: Log) -> Run<Code> {
 pub async fn extract(global: &Global, args: &ExtractArgs, log: Log) -> Run<Code> {
     let need = setup::fields(&args.selectors, args.at.as_deref())?;
     let urls = setup::addresses(&args.targets)?;
-    let spider = setup::client(global)?;
+    let spider = setup::fetching_client(global, log)?;
     let mut emitter = setup::emitter(global, Format::Ndjson)?;
     let mut report = Report {
         targets: urls.len(),
@@ -254,7 +254,7 @@ pub async fn extract(global: &Global, args: &ExtractArgs, log: Log) -> Run<Code>
 /// Collect the links on a page.
 pub async fn links(global: &Global, args: &LinksArgs, log: Log) -> Run<Code> {
     let urls = setup::addresses(&args.targets)?;
-    let spider = setup::client(global)?;
+    let spider = setup::fetching_client(global, log)?;
     let mut emitter = setup::emitter(global, Format::Text)?;
     let mut report = Report {
         targets: urls.len(),
@@ -331,7 +331,7 @@ pub async fn screenshot(global: &Global, args: &ScreenshotArgs, log: Log) -> Run
             "several pictures into one file would be one unreadable file. Pass --output-dir.",
         ));
     }
-    let spider = setup::client(global)?;
+    let spider = setup::fetching_client(global, log)?;
     let mut emitter = setup::emitter(global, Format::Text)?;
     let mut report = Report {
         targets: urls.len(),
