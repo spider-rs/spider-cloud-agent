@@ -57,7 +57,9 @@ pub enum Reason {
     NoGain,
     /// No candidate cleared the success floor.
     BelowFloor,
-    /// Every candidate failed validation or was dearer than the gate allows.
+    /// No candidate got through: each one failed validation, cost more than
+    /// the gate allows, sat under the success floor, or had too little
+    /// support, and none of the held back ones would have beaten keep.
     Unsupported,
     /// The caller fixed the mode, the pool or the country.
     Pinned,
