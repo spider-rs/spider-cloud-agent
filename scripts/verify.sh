@@ -80,6 +80,20 @@ step "tests, no default features"
 # to work with no model compiled in, and that path has to keep working.
 cargo test --locked --workspace --no-default-features || fail "tests with no default features"
 
+step "training evals"
+# The trainer's own tests and its fixture-only evals: metric floors on the
+# seeded synthetic corpus, the paired gates failing closed with nothing
+# applied, and the exporter reproducing the committed artifacts. uv is not
+# a requirement of the Rust build, so its absence skips the step and says so;
+# a release run requires it.
+if uv --version >/dev/null 2>&1; then
+  training/evals/run.sh --quick || fail "training evals"
+elif "$release"; then
+  fail "release requires uv for the training evals; install it from https://docs.astral.sh/uv/"
+else
+  printf '  skipped training evals: uv is not installed\n'
+fi
+
 step "live gate self-tests"
 python3 -B scripts/test_verify_live.py || fail "live gate self-tests"
 
