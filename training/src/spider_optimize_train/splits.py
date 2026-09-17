@@ -44,17 +44,24 @@ def _pair_day(rows: list[dict]) -> dict[int, int]:
     return out
 
 
+def window_counts(n_days: int) -> list[int]:
+    """How many of `n_days` distinct days the train, tune and calibrate windows take, in
+    order; the test window gets the rest, at least one day."""
+    if n_days < len(WINDOWS):
+        raise ValueError(f"{n_days} distinct days cannot fill {len(WINDOWS)} windows")
+    counts = [max(1, int(round(share * n_days))) for share in SHARES[:-1]]
+    while sum(counts) >= n_days:
+        counts[int(np.argmax(counts))] -= 1
+    return counts
+
+
 def chronological(rows: list[dict]) -> Split:
     """60/15/10/15 of the distinct days, in order. Every row of a day goes to one
     window, and a pair goes where its baseline's day goes."""
     pair_day = _pair_day(rows)
     days = sorted(set(pair_day.values()))
     n = len(days)
-    if n < len(WINDOWS):
-        raise ValueError(f"{n} distinct days cannot fill {len(WINDOWS)} windows")
-    counts = [max(1, int(round(share * n))) for share in SHARES[:-1]]
-    while sum(counts) >= n:
-        counts[int(np.argmax(counts))] -= 1
+    counts = window_counts(n)
     edges = np.cumsum(counts)
     window_of_day = {}
     for at, day in enumerate(days):
