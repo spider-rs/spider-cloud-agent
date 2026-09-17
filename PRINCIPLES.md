@@ -6,8 +6,9 @@ conventions. Where the two disagree, this file is the rule.
 
 Each of these names the lint, the type or the test that holds them up. That named thing is what to
 break when you want to know whether the principle is still doing anything. The anchor gate checks
-every citation against its named symbol or phrase, within two lines, and refuses fewer than 48
-citations. Run `scripts/check-anchors.sh` after moving code so these references stay useful.
+every citation against its named symbol or phrase, within two lines. This document now
+requires at least 72 citations; the script still enforces its older floor of 48.
+Run `scripts/check-anchors.sh` after moving code so these references stay useful.
 
 ## Credentials
 
@@ -176,8 +177,8 @@ citations. Run `scripts/check-anchors.sh` after moving code so these references 
 
 15. **The crate works with no model compiled in.** With no weights, `HeuristicRouter` answers from
     rules alone, and that path is tested on its own (`spider-route/src/heuristic.rs:622`
-    (`fn the_rules_answer_with_no_weights_anywhere_in_the_build`)). The model configuration does not
-    exist yet and the no-default build is what ships, so this test covers the only path.
+    (`fn the_rules_answer_with_no_weights_anywhere_in_the_build`)). Optional optimizer artifacts
+    now exist, but the no-model build ships by default, so this test still covers that path.
     `cargo test -p spider-cloud-agent --no-default-features` is not an optional line in the
     pre-pull-request list. Someone who wants the client and not the classifier has to be able to
     have it, and the only way to know that build still works is to run it.
@@ -236,3 +237,20 @@ citations. Run `scripts/check-anchors.sh` after moving code so these references 
     stdout and stderr against an opted out run. This tool is called by other programs that branch
     on its exit code, and an updater that can turn a scrape into a failure breaks them for a
     reason unrelated to the page.
+
+## Learned edits
+
+20. **A learned edit passes a gate, never overwrites a field the caller set, and does
+    nothing without an artifact compiled in or loaded: the crate answers exactly as before.**
+    The gate chooses at most one edit set at `spider-optimize/src/gate.rs:104`
+    (`pub fn choose(`). Application checks the caller's snapshot, taken before the router
+    and plan wrote anything, at `spider-optimize/src/edit.rs:184` (`pub fn apply(`).
+    The client skips the optimizer entirely when `pins.any()` says the caller fixed mode,
+    pool or country, in `spider-cloud-agent/src/optimize.rs:377` (`pub(crate) fn decide(`).
+    Without weights, `spider-optimize/src/model.rs:65` (`pub struct NoModel`) abstains.
+    The tests are `spider-optimize/src/gate.rs:299` (`fn no_model_always_keeps`),
+    `spider-optimize/src/edit.rs:383` (`fn an_edit_never_touches_a_field_the_caller_set`)
+    and `spider-cloud-agent/tests/optimize.rs:251`
+    (`async fn shadow_mode_sends_the_baseline_request_unchanged`). Without these rules,
+    a cheap prediction can silently buy missing content, undo a deliberate caller setting,
+    or make installing an optional feature change a request that previously worked.

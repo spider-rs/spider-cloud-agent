@@ -1,17 +1,15 @@
 # spider-optimize
 
-Edits a [Spider Cloud](https://spider.cloud) request after `spider-route` has picked its
-settings, and only when a scorer has the evidence for it.
+Scores candidate edits after `spider-route` and the request plan, then applies at
+most one edit set past a gate. Client integration is off by default, behind the
+`optimize` feature. Start with `Optimizer::shadow`: the baseline request goes out
+unchanged, and the caller's settings always win. See the
+[optimizer architecture](https://github.com/spider-rs/spider-cloud-agent/blob/feat/param-optimizer/docs/optimizer/architecture.md).
 
-It lists valid candidate edits to the request parameters, scores each for success,
-latency and credits, and applies at most one edit set that passes validation and the
-gate. Otherwise the request goes out unchanged. A field the caller set is never edited.
-
-The crate does no network work, holds no clock and allocates nothing while it scores.
-With no model compiled in, `NoModel` abstains and every request is kept.
-
-See the [repository README](https://github.com/spider-rs/spider-cloud-agent) for the full
-description.
+With no artifact compiled in or loaded, `NoModel` keeps every request. Artifacts
+hold numbers only, no host, resource pattern or page body. Loading can allocate;
+scoring does no I/O, reads no clock and allocates nothing. The optional embedded
+artifact is a synthetic fixture and provides no evidence of savings on real pages.
 
 ## Numeric models
 
@@ -54,5 +52,6 @@ An empty support table means no restriction. With a nonempty table,
 Run `cargo test -p spider-optimize --lib write_fixture_artifact -- --ignored`
 to regenerate both numeric artifacts and their 64-case golden files. JSON null
 in an input slot encodes NaN; null expected success must match NaN exactly.
-The Rust writer exists only in unit tests. The future Python trainer replaces
-it as the producer and must pass both parity tests within absolute error 1e-5.
+The Rust writer exists only in unit tests. The Python trainer in `training/` also
+exports artifacts; its reference reader and the Rust reader must agree within
+absolute error 1e-5.
