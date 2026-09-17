@@ -44,3 +44,7 @@ spider-cloud-agent = { path = "../spider-cloud-agent", default-features = false 
 [[bench]]
 name = "optimize"
 harness = false
+
+[[example]]
+name = "score_embedded"
+required-features = ["embedded-model"]
