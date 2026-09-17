@@ -133,9 +133,13 @@ impl SearchParams {
 #[non_exhaustive]
 pub enum SearchEngine {
     /// Google results only.
+    #[serde(rename = "google")]
     Google,
     /// Brave results only.
+    #[serde(rename = "brave")]
     Brave,
-    /// Every back end the service has, merged.
+    /// Every back end the service has, merged. The service calls this one
+    /// `generic`.
+    #[serde(rename = "generic", alias = "all")]
     All,
 }

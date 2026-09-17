@@ -5,6 +5,28 @@ response gives back, or what an escalation costs gets one whether or not it brea
 signature, because those are the changes that show up on a bill rather than in a compiler
 error.
 
+## 0.6.0 (2026-09-16)
+
+- `RequestParams` gains the documented fields it was missing:
+  `service_worker_enabled`, `preserve_host`, `delay`, `concurrency_limit`,
+  `wayback`, `sitemap_only`, `sitemap_path`, `block_ads`, `block_analytics`,
+  `block_stylesheets`, the three `disable_first_party_*` switches,
+  `network_whitelist`, `network_blacklist`, `exclude_selector`,
+  `filter_output_images`, `filter_output_svg`, `filter_output_main_only`,
+  `max_size`, `data_connectors`, `router` and `provider_options`. Unset, each
+  sends nothing, so an existing request body is unchanged. `Debug` redacts
+  the router token and credentials, the connector settings, and the free-form
+  lists and selectors.
+- Retired fields stay off the struct: `gpt_config`, `proxy_enabled`,
+  `smart_mode`, `custom_prompt`, `model`, `custom_function`, and the top-level
+  `provider` and `vendor_credentials`, which `router` replaces.
+- New `ScreenshotParams` for the fields only `/screenshot` reads: `full_page`,
+  `binary`, `block_images`, `omit_background`, `fast` and `cdp_params`. Reach
+  it with `Screenshot::screenshot_mut`.
+- Fix: `SearchEngine` went out as `"Google"`, `"Brave"` and `"All"`, names the
+  service does not accept. It now sends `google`, `brave` and `generic`, and
+  still reads `all`. `SearchEngine` is also re-exported from `params`.
+
 ## 0.5.0 (2026-09-16)
 
 - `spider-agent` updates itself. Once a day a run starts a background check

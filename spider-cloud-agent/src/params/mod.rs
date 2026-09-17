@@ -21,6 +21,7 @@
 pub mod extraction;
 pub mod js;
 pub mod scope;
+pub mod screenshot;
 pub mod search;
 pub mod transport;
 
@@ -37,7 +38,8 @@ pub use js::{
     WebAutomation, WebAutomationMap,
 };
 pub use scope::{CrawlBudget, LinkRewriteRule};
-pub use search::{SearchParams, TimeWindow};
+pub use screenshot::ScreenshotParams;
+pub use search::{SearchEngine, SearchParams, TimeWindow};
 pub use transport::{
     Country, InvalidCountry, Profile, ProxyPool, RedirectPolicy, RequestMode, Viewport,
     WebhookSettings, BOT_USER_AGENT, PROXY_POOLS,
@@ -113,6 +115,27 @@ pub struct RequestParams {
     /// How long one page has to come back, in seconds.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub request_timeout: Option<u8>,
+    /// Leave service workers running, for sites that load their content through
+    /// one. On unless you turn it off.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub service_worker_enabled: Option<bool>,
+    /// Keep the default Host header rather than the one derived from the address.
+    /// Helps a server that answers differently when the TLS name cannot be
+    /// worked out.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub preserve_host: Option<bool>,
+    /// Wait this many milliseconds between pages, up to a minute. Setting it
+    /// turns concurrency off.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub delay: Option<u64>,
+    /// The most pages fetched at once, for a site that slows down under load.
+    /// Unlimited when unset.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub concurrency_limit: Option<u32>,
+    /// Fall back to the latest archived copy of a page when every other attempt
+    /// has failed. Archive markup is stripped from what comes back.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub wayback: Option<bool>,
 
     /// How many pages a crawl may visit.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -143,6 +166,12 @@ pub struct RequestParams {
     /// Read the site's sitemap for links as well as following them.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub sitemap: Option<bool>,
+    /// Crawl the sitemap's links and nothing else.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sitemap_only: Option<bool>,
+    /// Where the sitemap lives, when it is not `sitemap.xml`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sitemap_path: Option<String>,
     /// Obey the site's robots file.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub respect_robots: Option<bool>,
@@ -182,6 +211,36 @@ pub struct RequestParams {
     /// what the content needs.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub full_resources: Option<bool>,
+    /// Block advertising requests in a rendered page. On unless you turn it off.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub block_ads: Option<bool>,
+    /// Block analytics requests in a rendered page. On unless you turn it off.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub block_analytics: Option<bool>,
+    /// Block stylesheets in a rendered page. On unless you turn it off.
+    /// First-party CSS still loads unless
+    /// [`RequestParams::disable_first_party_stylesheets`] is set.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub block_stylesheets: Option<bool>,
+    /// Block first-party stylesheets too when stylesheets are blocked. Can stop a
+    /// single page app from rendering.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub disable_first_party_stylesheets: Option<bool>,
+    /// Apply blocklists to first-party scripts as well, which are let through by
+    /// default.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub disable_first_party_javascript: Option<bool>,
+    /// Block first-party images, media and fonts too when visuals are blocked.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub disable_first_party_visuals: Option<bool>,
+    /// Only let requests matching one of these hosts or substrings load. Wins
+    /// over [`RequestParams::network_blacklist`] where both match.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub network_whitelist: Option<Vec<String>>,
+    /// Never load requests matching one of these hosts or substrings, such as a
+    /// tag manager the content does not need.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub network_blacklist: Option<Vec<String>>,
     /// Report the page's own requests and responses alongside the content.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub event_tracker: Option<EventTracker>,
@@ -193,6 +252,22 @@ pub struct RequestParams {
     /// The cheapest trim there is, because the bytes never leave the service.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub root_selector: Option<String>,
+    /// Drop whatever matches this selector from the content.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub exclude_selector: Option<String>,
+    /// Remove images from the returned content.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub filter_output_images: Option<bool>,
+    /// Remove `svg` elements from the returned content.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub filter_output_svg: Option<bool>,
+    /// Remove navigation, asides and footers from the returned content.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub filter_output_main_only: Option<bool>,
+    /// The most bytes of content one page may return. Anything longer keeps its
+    /// start and its end and loses the middle.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_size: Option<u64>,
     /// Strip navigation, adverts and the rest of the furniture, leaving the
     /// article.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -243,6 +318,18 @@ pub struct RequestParams {
     /// Where to send progress, and which events to send.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub webhooks: Option<WebhookSettings>,
+    /// Cloud storage to write results into as they arrive, keyed by connector
+    /// name, such as `s3` or `gcs`, with the service's own field names inside.
+    /// It carries your storage credentials, so `Debug` never prints it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub data_connectors: Option<serde_json::Map<String, serde_json::Value>>,
+    /// Ask for an outside scraping provider to take part in the request.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub router: Option<Router>,
+    /// Settings passed through to an outside provider, keyed by provider name.
+    /// The service applies them only on a route paid for with your own key.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub provider_options: Option<BTreeMap<String, serde_json::Value>>,
 
     /// The most this request may spend, in whole credits.
     ///
@@ -296,6 +383,11 @@ impl std::fmt::Debug for RequestParams {
             .field("session", &self.session)
             .field("redirect_policy", &self.redirect_policy)
             .field("request_timeout", &self.request_timeout)
+            .field("service_worker_enabled", &self.service_worker_enabled)
+            .field("preserve_host", &self.preserve_host)
+            .field("delay", &self.delay)
+            .field("concurrency_limit", &self.concurrency_limit)
+            .field("wayback", &self.wayback)
             .field("limit", &self.limit)
             .field("depth", &self.depth)
             .field("budget", &self.budget.as_ref().map(|_| "<redacted>"))
@@ -308,6 +400,11 @@ impl std::fmt::Debug for RequestParams {
                 &self.external_domains.as_ref().map(|_| "<redacted>"),
             )
             .field("sitemap", &self.sitemap)
+            .field("sitemap_only", &self.sitemap_only)
+            .field(
+                "sitemap_path",
+                &self.sitemap_path.as_ref().map(|_| "<redacted>"),
+            )
             .field("respect_robots", &self.respect_robots)
             .field(
                 "link_rewrite",
@@ -331,12 +428,43 @@ impl std::fmt::Debug for RequestParams {
             )
             .field("disable_intercept", &self.disable_intercept)
             .field("full_resources", &self.full_resources)
+            .field("block_ads", &self.block_ads)
+            .field("block_analytics", &self.block_analytics)
+            .field("block_stylesheets", &self.block_stylesheets)
+            .field(
+                "disable_first_party_stylesheets",
+                &self.disable_first_party_stylesheets,
+            )
+            .field(
+                "disable_first_party_javascript",
+                &self.disable_first_party_javascript,
+            )
+            .field(
+                "disable_first_party_visuals",
+                &self.disable_first_party_visuals,
+            )
+            .field(
+                "network_whitelist",
+                &self.network_whitelist.as_ref().map(|_| "<redacted>"),
+            )
+            .field(
+                "network_blacklist",
+                &self.network_blacklist.as_ref().map(|_| "<redacted>"),
+            )
             .field("event_tracker", &self.event_tracker)
             .field("return_format", &self.return_format)
             .field(
                 "root_selector",
                 &self.root_selector.as_ref().map(|_| "<redacted>"),
             )
+            .field(
+                "exclude_selector",
+                &self.exclude_selector.as_ref().map(|_| "<redacted>"),
+            )
+            .field("filter_output_images", &self.filter_output_images)
+            .field("filter_output_svg", &self.filter_output_svg)
+            .field("filter_output_main_only", &self.filter_output_main_only)
+            .field("max_size", &self.max_size)
             .field("readability", &self.readability)
             .field("clean_html", &self.clean_html)
             .field(
@@ -353,6 +481,15 @@ impl std::fmt::Debug for RequestParams {
             .field("text", &self.text.as_ref().map(|_| "<redacted>"))
             .field("cache", &self.cache)
             .field("webhooks", &self.webhooks)
+            .field(
+                "data_connectors",
+                &self.data_connectors.as_ref().map(|_| "<redacted>"),
+            )
+            .field("router", &self.router)
+            .field(
+                "provider_options",
+                &self.provider_options.as_ref().map(|_| "<redacted>"),
+            )
             .field("max_credits_allowed", &self.max_credits_allowed)
             .field("max_credits_per_page", &self.max_credits_per_page)
             .field("disable_hints", &self.disable_hints)
@@ -387,6 +524,48 @@ impl std::fmt::Debug for RedactedProxy<'_> {
                 .finish_non_exhaustive(),
             _ => f.write_str("<redacted>"),
         }
+    }
+}
+
+/// The `router` parameter: whether and how an outside scraping provider takes
+/// part in a request.
+///
+/// Every field is optional and sent as text, because the service ignores a
+/// value it does not know rather than refusing the request.
+#[derive(Clone, Default, PartialEq, Serialize, Deserialize)]
+pub struct Router {
+    /// `fallback` puts a provider behind the service's own fetch, `first`
+    /// puts one in front of it, and `off` keeps the request away from
+    /// outside providers.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub mode: Option<String>,
+    /// The provider to prefer, by name. A preference, not a pin.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub provider: Option<String>,
+    /// Your key for [`Router::provider`].
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub token: Option<String>,
+    /// Your provider credentials keyed by credential name, for providers that
+    /// need more than one value.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub credentials: Option<BTreeMap<String, String>>,
+    /// `any`, the default, or `own` to allow only routes your own keys pay
+    /// for.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub funding: Option<String>,
+}
+
+// The token and the credentials are keys. Only whether they are there, and
+// how many credentials, is printed.
+impl std::fmt::Debug for Router {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Router")
+            .field("mode", &self.mode)
+            .field("provider", &self.provider)
+            .field("token", &self.token.as_ref().map(|_| "<redacted>"))
+            .field("credentials", &self.credentials.as_ref().map(|c| c.len()))
+            .field("funding", &self.funding)
+            .finish()
     }
 }
 
@@ -820,6 +999,152 @@ mod tests {
         assert_eq!(
             serde_json::from_value::<WebAutomation>(json).expect("deserialize"),
             step
+        );
+    }
+
+    /// The names here are the service's. A misspelt one reaches the service as
+    /// an unknown field and is dropped without an error, so each is pinned.
+    #[test]
+    fn documented_fields_go_out_under_the_service_names() {
+        let mut params = RequestParams::default();
+        params.service_worker_enabled = Some(false);
+        params.preserve_host = Some(true);
+        params.delay = Some(1_000);
+        params.concurrency_limit = Some(8);
+        params.wayback = Some(true);
+        params.sitemap_only = Some(true);
+        params.sitemap_path = Some("sitemap-1.xml".into());
+        params.block_ads = Some(false);
+        params.block_analytics = Some(false);
+        params.block_stylesheets = Some(true);
+        params.disable_first_party_stylesheets = Some(true);
+        params.disable_first_party_javascript = Some(true);
+        params.disable_first_party_visuals = Some(true);
+        params.network_whitelist = Some(vec!["example.com".into()]);
+        params.network_blacklist = Some(vec!["doubleclick.net".into()]);
+        params.exclude_selector = Some(".ad".into());
+        params.filter_output_images = Some(true);
+        params.filter_output_svg = Some(true);
+        params.filter_output_main_only = Some(true);
+        params.max_size = Some(200_000);
+        params.data_connectors = Some(serde_json::Map::from_iter([(
+            "on_find".to_string(),
+            serde_json::Value::Bool(true),
+        )]));
+        params.router = Some(Router {
+            mode: Some("fallback".into()),
+            ..Router::default()
+        });
+        params.provider_options = Some(BTreeMap::from([(
+            "zyte".to_string(),
+            serde_json::json!({"geolocation": "US"}),
+        )]));
+
+        let json = serde_json::to_value(&params).expect("serialize");
+        let object = json.as_object().expect("object");
+        for name in [
+            "service_worker_enabled",
+            "preserve_host",
+            "delay",
+            "concurrency_limit",
+            "wayback",
+            "sitemap_only",
+            "sitemap_path",
+            "block_ads",
+            "block_analytics",
+            "block_stylesheets",
+            "disable_first_party_stylesheets",
+            "disable_first_party_javascript",
+            "disable_first_party_visuals",
+            "network_whitelist",
+            "network_blacklist",
+            "exclude_selector",
+            "filter_output_images",
+            "filter_output_svg",
+            "filter_output_main_only",
+            "max_size",
+            "data_connectors",
+            "router",
+            "provider_options",
+        ] {
+            assert!(object.contains_key(name), "{name} missing");
+        }
+        assert_eq!(object.len(), 23);
+        assert_eq!(json["router"], serde_json::json!({"mode": "fallback"}));
+        let back: RequestParams = serde_json::from_value(json).expect("deserialize");
+        assert_eq!(back, params);
+    }
+
+    #[test]
+    fn retired_fields_are_not_part_of_the_body() {
+        let back: RequestParams = serde_json::from_str(
+            r#"{"gpt_config":{},"proxy_enabled":true,"smart_mode":true,"custom_prompt":"x","vendor_credentials":{"A":"b"}}"#,
+        )
+        .expect("unknown fields are ignored");
+
+        assert!(back.is_empty());
+    }
+
+    #[test]
+    fn router_and_connector_secrets_stay_out_of_debug() {
+        let secret = "synthetic-router-token";
+        let mut params = RequestParams::default();
+        params.router = Some(Router {
+            provider: Some("zyte".into()),
+            token: Some(secret.into()),
+            credentials: Some(BTreeMap::from([("NAME".to_string(), secret.to_string())])),
+            ..Router::default()
+        });
+        params.data_connectors = Some(serde_json::Map::from_iter([(
+            "s3".to_string(),
+            serde_json::json!({"secret_access_key": secret}),
+        )]));
+
+        let printed = format!("{params:?}");
+        assert!(!printed.contains(secret), "credential in Debug");
+        assert!(printed.contains("zyte"));
+        assert_eq!(
+            serde_json::to_value(&params).expect("serialize")["router"]["token"],
+            secret
+        );
+    }
+
+    #[test]
+    fn search_engine_uses_the_service_names() {
+        for (engine, wire) in [
+            (SearchEngine::Google, r#""google""#),
+            (SearchEngine::Brave, r#""brave""#),
+            (SearchEngine::All, r#""generic""#),
+        ] {
+            assert_eq!(serde_json::to_string(&engine).expect("serialize"), wire);
+        }
+        assert_eq!(
+            serde_json::from_str::<SearchEngine>(r#""all""#).expect("alias"),
+            SearchEngine::All
+        );
+    }
+
+    #[test]
+    fn screenshot_params_flatten_the_fetch_settings() {
+        let mut shot = ScreenshotParams::default();
+        shot.base = RequestParams::url("https://example.com");
+        shot.full_page = Some(true);
+        shot.fast = Some(false);
+        shot.cdp_params = Some(serde_json::Map::from_iter([(
+            "format".to_string(),
+            serde_json::Value::from("jpeg"),
+        )]));
+
+        let json = serde_json::to_value(&shot).expect("serialize");
+
+        assert_eq!(
+            json,
+            serde_json::json!({
+                "url": "https://example.com",
+                "full_page": true,
+                "fast": false,
+                "cdp_params": {"format": "jpeg"}
+            })
         );
     }
 

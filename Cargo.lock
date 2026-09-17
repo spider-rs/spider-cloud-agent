@@ -1443,7 +1443,7 @@ dependencies = [
 
 [[package]]
 name = "spider-agent-cli"
-version = "0.5.0"
+version = "0.6.0"
 dependencies = [
  "base64",
  "clap",
@@ -1461,7 +1461,7 @@ dependencies = [
 
 [[package]]
 name = "spider-cloud-agent"
-version = "0.5.0"
+version = "0.6.0"
 dependencies = [
  "base64",
  "bytes",
@@ -1482,7 +1482,7 @@ dependencies = [
 
 [[package]]
 name = "spider-route"
-version = "0.5.0"
+version = "0.6.0"
 dependencies = [
  "criterion",
  "serde",

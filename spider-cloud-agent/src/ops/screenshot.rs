@@ -2,6 +2,7 @@
 
 use crate::client::{IntoUrl, Spider};
 use crate::ops::{curated_surface, first_page, Call};
+use crate::params::{RequestParams, ScreenshotParams};
 use crate::response::{Body, Outcome, Page, PageResult, Pages};
 use crate::thrift::Need;
 use crate::transport::route;
@@ -14,13 +15,23 @@ use crate::Result;
 #[derive(Debug)]
 pub struct Screenshot<'a> {
     call: Call<'a>,
+    shot: ScreenshotParams,
 }
 
 impl<'a> Screenshot<'a> {
     pub(crate) fn new(spider: &'a Spider, url: impl IntoUrl) -> Screenshot<'a> {
         Screenshot {
             call: Call::new(spider, url),
+            shot: ScreenshotParams::default(),
         }
+    }
+
+    /// The screenshot parameters, to change directly.
+    ///
+    /// The fetch settings live in [`Screenshot::params_mut`], and anything set
+    /// on `base` here is replaced by them when the request goes out.
+    pub fn screenshot_mut(&mut self) -> &mut ScreenshotParams {
+        &mut self.shot
     }
 
     /// Take the picture.
@@ -39,12 +50,20 @@ impl<'a> Screenshot<'a> {
         //
         // A need the caller stated is theirs and is left alone.
         self.call.need.get_or_insert(Need::screenshot());
+        let shot = self.shot.clone();
         let outcome = self
             .call
-            .run(route::SCREENSHOT, |params| params.clone())
+            .run(route::SCREENSHOT, |params| body(&shot, params))
             .await?;
         Ok(outcome.map(as_pictures))
     }
+}
+
+/// The request body: the picture settings, plus the fetch settings for the page.
+fn body(shot: &ScreenshotParams, params: &RequestParams) -> ScreenshotParams {
+    let mut body = shot.clone();
+    body.base = params.clone();
+    body
 }
 
 /// Bytes from this endpoint are a picture, which the wire does not say and the
