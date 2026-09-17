@@ -83,6 +83,7 @@ async fn dispatch(parsed: &Cli, log: Log) -> Result<Code, Failure> {
         Some(Command::Keys(args)) => commands::account::keys(global, args, log).await,
         Some(Command::Profile) => commands::account::profile(global, log).await,
         Some(Command::Login(args)) => commands::account::login(global, args, log).await,
+        Some(Command::Router(args)) => commands::router::command(global, args, log),
         Some(Command::Route(args)) => commands::local::route(global, args, log),
         Some(Command::Schema) => commands::local::schema(global),
         Some(Command::Update) => update::command(global, log).await,

@@ -56,6 +56,21 @@ spider-agent schema
 `spider-agent route <url>` prints the transport it would choose without making a
 call, spending nothing and needing no key.
 
+## Provider fallback
+
+Store an outside provider once and every command that fetches pages sends it as
+the `router` parameter. With `--mode fallback` the provider is tried only when
+Spider's own fetch fails. The key is read from stdin, never from an argument.
+
+```bash
+printf '%s' "$ZYTE_KEY" | spider-agent router set --provider zyte --mode fallback --funding own --token-stdin
+spider-agent router show
+```
+
+The caller's own `router` always wins over the stored one. `--no-router`, or
+`SPIDER_AGENT_NO_ROUTER` set to any value, skips it for one run, and
+`spider-agent router clear` deletes it.
+
 ## From Rust
 
 ```toml

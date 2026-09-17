@@ -19,6 +19,19 @@ error.
   and the stored `provider_options` when the caller set none. A caller's own
   `router` always wins, `mode: off` included. Nothing changes for a client built
   without it.
+- `spider-agent router set`, `show` and `clear` store, print and delete that
+  file. `set` merges into what is stored and removes a field with `--no-token`,
+  `--no-credential` and `--no-option`. Keys come from stdin (`--token-stdin`,
+  `--credential NAME-stdin`) or `SPIDER_ROUTER_TOKEN`, and `--token VALUE` is
+  refused because it lands in shell history. `show` prints every key as
+  `<redacted>` and writes a `router` record under `--json`.
+- Every command that fetches pages (scrape, fetch, crawl, extract, links,
+  screenshot, run, and search with `--fetch-pages`) now sends the stored router
+  by default and says so once on stderr, naming provider, mode and funding.
+  `--no-router` or `SPIDER_AGENT_NO_ROUTER` skips it for one run. A router file
+  that cannot be used stops those commands with code 2 before a call.
+- The global `--mode` and `router set --mode` share one value type inside the
+  parser. The accepted values and the help for the global flag are unchanged.
 - Add version one optimizer artifacts, bounded FP32 MLP and GBDT inference,
   calibration, support cells, and synthetic parity fixtures.
 

@@ -1451,3 +1451,368 @@ fn command_line_selectors_replace_the_plan_map() {
     std::fs::remove_file(path).unwrap();
     std::fs::remove_file(fields).unwrap();
 }
+
+/// A home directory of its own for each router test, so no test reads or
+/// writes the developer's `~/.spider`, and no router one test stores reaches
+/// another test that uses the temp directory as its home.
+struct RouterHome(std::path::PathBuf);
+
+impl RouterHome {
+    fn new(tag: &str) -> RouterHome {
+        let unique = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_nanos())
+            .unwrap_or(0);
+        let path = std::env::temp_dir().join(format!(
+            "spider-agent-router-{tag}-{}-{unique}",
+            std::process::id()
+        ));
+        std::fs::create_dir_all(&path).unwrap();
+        RouterHome(path)
+    }
+
+    fn file(&self) -> std::path::PathBuf {
+        self.0.join(".spider").join("router.json")
+    }
+
+    /// Run the binary under this home, with a key and an address that go
+    /// nowhere but `base`, the named variables set, and `input` on stdin.
+    fn run(&self, base: &str, args: &[&str], env: &[(&str, &str)], input: &str) -> Output {
+        use std::io::Write;
+        let mut command = Command::new(env!("CARGO_BIN_EXE_spider-agent"));
+        command
+            .args(args)
+            .env("SPIDER_API_KEY", "not-a-real-key")
+            .env("SPIDER_API_URL", base)
+            .env("HOME", &self.0)
+            .env("USERPROFILE", &self.0)
+            .env_remove("SPIDER_ROUTER_TOKEN")
+            .env_remove("SPIDER_AGENT_NO_ROUTER")
+            .env("SPIDER_AGENT_NO_UPDATE", "1")
+            .stdin(std::process::Stdio::piped())
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::piped());
+        for (name, value) in env {
+            command.env(name, value);
+        }
+        let mut child = command.spawn().expect("the binary runs");
+        let mut stdin = child.stdin.take().expect("a stdin");
+        stdin
+            .write_all(input.as_bytes())
+            .expect("stdin takes the input");
+        drop(stdin);
+        child.wait_with_output().expect("the binary finishes")
+    }
+}
+
+impl Drop for RouterHome {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_dir_all(&self.0);
+    }
+}
+
+/// Synthetic, and never a key anywhere.
+const PROVIDER_TOKEN: &str = "synthetic-provider-token";
+
+/// No router subcommand makes a request, so this address is never dialled.
+/// It only has to parse.
+const NOWHERE: &str = "http://127.0.0.1:9";
+
+fn stderr(output: &Output) -> String {
+    String::from_utf8_lossy(&output.stderr).to_string()
+}
+
+#[test]
+fn router_set_refuses_a_token_on_the_command_line() {
+    let home = RouterHome::new("refuse");
+    for args in [
+        vec![
+            "router",
+            "set",
+            "--provider",
+            "zyte",
+            "--token",
+            PROVIDER_TOKEN,
+        ],
+        vec![
+            "router",
+            "set",
+            "--provider",
+            "zyte",
+            "--token=synthetic-provider-token",
+        ],
+        vec!["router", "set", "--provider", "zyte", "--token"],
+    ] {
+        let output = home.run(NOWHERE, &args, &[], "");
+        let said = stderr(&output);
+        assert_eq!(code(&output), 2, "{args:?}: {said}");
+        assert!(said.contains("shell history"), "{args:?}: {said}");
+        assert!(!said.contains(PROVIDER_TOKEN), "the refusal echoed the key");
+        assert!(output.stdout.is_empty());
+        assert!(!home.file().exists(), "{args:?} stored something");
+    }
+    // The same goes for a credential whose name says it is a secret.
+    let output = home.run(
+        NOWHERE,
+        &[
+            "router",
+            "set",
+            "--provider",
+            "oxylabs",
+            "--credential",
+            "oxylabs_password=synthetic-provider-token",
+        ],
+        &[],
+        "",
+    );
+    assert_eq!(code(&output), 2, "{}", stderr(&output));
+    assert!(!stderr(&output).contains(PROVIDER_TOKEN));
+    assert!(!home.file().exists());
+}
+
+#[test]
+fn router_set_then_show_redacts_the_token() {
+    let home = RouterHome::new("show");
+    let output = home.run(
+        NOWHERE,
+        &[
+            "router",
+            "set",
+            "--provider",
+            "zyte",
+            "--mode",
+            "fallback",
+            "--funding",
+            "own",
+            "--token-stdin",
+        ],
+        &[],
+        &format!("{PROVIDER_TOKEN}\n"),
+    );
+    assert_eq!(code(&output), 0, "{}", stderr(&output));
+    assert!(!stderr(&output).contains(PROVIDER_TOKEN));
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let mode = std::fs::metadata(home.file()).unwrap().permissions().mode() & 0o777;
+        assert_eq!(mode, 0o600, "router.json mode {mode:o}");
+    }
+
+    // A second set merges: the token stays, and the new fields join it.
+    let output = home.run(
+        NOWHERE,
+        &[
+            "router",
+            "set",
+            "--credential",
+            "zyte_username=someone",
+            "--option",
+            "zyte.geolocation=US",
+        ],
+        &[],
+        "",
+    );
+    assert_eq!(code(&output), 0, "{}", stderr(&output));
+    let stored: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(home.file()).unwrap()).unwrap();
+    assert_eq!(stored["router"]["token"], PROVIDER_TOKEN);
+    assert_eq!(stored["router"]["mode"], "fallback");
+    assert_eq!(stored["provider_options"]["zyte"]["geolocation"], "US");
+
+    let text = home.run(NOWHERE, &["router", "show"], &[], "");
+    assert_eq!(code(&text), 0, "{}", stderr(&text));
+    let shown = stdout(&text);
+    assert!(!shown.contains(PROVIDER_TOKEN), "{shown}");
+    assert!(
+        !shown.contains("someone") && !shown.contains("US"),
+        "{shown}"
+    );
+    for line in [
+        "mode\tfallback",
+        "provider\tzyte",
+        "funding\town",
+        "token\t<redacted>",
+        "credential\tzyte_username\t<redacted>",
+        "option\tzyte.geolocation\t<redacted>",
+    ] {
+        assert!(shown.lines().any(|l| l == line), "{line:?} not in {shown}");
+    }
+
+    let json = home.run(NOWHERE, &["router", "show", "--json"], &[], "");
+    assert_eq!(code(&json), 0, "{}", stderr(&json));
+    let shown = stdout(&json);
+    assert!(!shown.contains(PROVIDER_TOKEN), "{shown}");
+    let record: serde_json::Value = serde_json::from_str(shown.trim()).unwrap();
+    assert_eq!(record["type"], "router");
+    assert_eq!(record["stored"], true);
+    assert_eq!(record["provider"], "zyte");
+    assert_eq!(record["token"], "<redacted>");
+    assert_eq!(record["credentials"]["zyte_username"], "<redacted>");
+    assert_eq!(
+        record["provider_options"]["zyte"]["geolocation"],
+        "<redacted>"
+    );
+
+    // --no-token removes it and leaves the rest.
+    let output = home.run(NOWHERE, &["router", "set", "--no-token"], &[], "");
+    assert_eq!(code(&output), 0, "{}", stderr(&output));
+    let stored = std::fs::read_to_string(home.file()).unwrap();
+    assert!(!stored.contains(PROVIDER_TOKEN), "{stored}");
+    assert!(stored.contains("zyte_username"), "{stored}");
+}
+
+#[test]
+fn router_clear_removes_the_file() {
+    let home = RouterHome::new("clear");
+    let output = home.run(
+        NOWHERE,
+        &["router", "set", "--provider", "zyte", "--mode", "fallback"],
+        &[("SPIDER_ROUTER_TOKEN", PROVIDER_TOKEN)],
+        "",
+    );
+    assert_eq!(code(&output), 0, "{}", stderr(&output));
+    assert!(home.file().exists());
+
+    let output = home.run(NOWHERE, &["router", "clear"], &[], "");
+    assert_eq!(code(&output), 0, "{}", stderr(&output));
+    assert!(stderr(&output).contains("deleted"), "{}", stderr(&output));
+    assert!(!home.file().exists(), "the file is still there");
+
+    let again = home.run(NOWHERE, &["router", "clear"], &[], "");
+    assert_eq!(code(&again), 0, "{}", stderr(&again));
+    assert!(stderr(&again).contains("nothing was deleted"));
+
+    // Nothing stored is an answer, not a failure.
+    let shown = home.run(NOWHERE, &["router", "show"], &[], "");
+    assert_eq!(code(&shown), 0, "{}", stderr(&shown));
+    assert!(shown.stdout.is_empty(), "{}", stdout(&shown));
+    assert!(stderr(&shown).contains("no router is stored"));
+    let shown = home.run(NOWHERE, &["router", "show", "--json"], &[], "");
+    let record: serde_json::Value = serde_json::from_str(stdout(&shown).trim()).unwrap();
+    assert_eq!(
+        record,
+        serde_json::json!({"type": "router", "stored": false})
+    );
+}
+
+#[test]
+fn a_scrape_carries_the_stored_router_unless_no_router() {
+    let home = RouterHome::new("scrape");
+    let output = home.run(
+        NOWHERE,
+        &[
+            "router",
+            "set",
+            "--provider",
+            "zyte",
+            "--mode",
+            "fallback",
+            "--funding",
+            "own",
+            "--option",
+            "zyte.geolocation=US",
+        ],
+        &[("SPIDER_ROUTER_TOKEN", PROVIDER_TOKEN)],
+        "",
+    );
+    assert_eq!(code(&output), 0, "{}", stderr(&output));
+
+    let (base, seen) = stub(PAGE_AND_LINKS);
+    let output = home.run(&base, &["scrape", "https://example.com", "--json"], &[], "");
+    assert_eq!(code(&output), 0, "{}", stderr(&output));
+    let sent: serde_json::Value = serde_json::from_str(&seen.recv().unwrap()).unwrap();
+    assert_eq!(
+        sent["router"],
+        serde_json::json!({
+            "mode": "fallback",
+            "provider": "zyte",
+            "token": PROVIDER_TOKEN,
+            "funding": "own"
+        })
+    );
+    assert_eq!(sent["provider_options"]["zyte"]["geolocation"], "US");
+    let said = stderr(&output);
+    assert_eq!(
+        said.matches("using stored router: provider zyte, mode fallback, funding own")
+            .count(),
+        1,
+        "{said}"
+    );
+    assert!(!said.contains(PROVIDER_TOKEN), "{said}");
+    assert!(!stdout(&output).contains(PROVIDER_TOKEN));
+
+    for (args, env) in [
+        (
+            vec!["scrape", "https://example.com", "--json", "--no-router"],
+            vec![],
+        ),
+        (
+            vec!["scrape", "https://example.com", "--json"],
+            vec![("SPIDER_AGENT_NO_ROUTER", "1")],
+        ),
+    ] {
+        let (base, seen) = stub(PAGE_AND_LINKS);
+        let output = home.run(&base, &args, &env, "");
+        assert_eq!(code(&output), 0, "{}", stderr(&output));
+        let sent = seen.recv().unwrap();
+        assert!(!sent.contains("router"), "{args:?} {env:?} sent {sent}");
+        assert!(!sent.contains("provider_options"), "{sent}");
+        assert!(!stderr(&output).contains("using stored router"));
+    }
+}
+
+/// A router file that cannot be used stops a page command before a call, and
+/// says how to get past it. It does not stop a command that fetches no page.
+#[test]
+fn a_broken_router_file_stops_a_scrape_and_not_a_route() {
+    let home = RouterHome::new("broken");
+    std::fs::create_dir_all(home.file().parent().unwrap()).unwrap();
+    std::fs::write(home.file(), format!(r#"{{"router":"{PROVIDER_TOKEN}"}}"#)).unwrap();
+
+    let output = home.run(NOWHERE, &["scrape", "https://example.com"], &[], "");
+    let said = stderr(&output);
+    assert_eq!(code(&output), 2, "{said}");
+    assert!(said.contains("--no-router"), "{said}");
+    assert!(!said.contains(PROVIDER_TOKEN), "{said}");
+
+    let output = home.run(NOWHERE, &["route", "https://example.com"], &[], "");
+    assert_eq!(code(&output), 0, "{}", stderr(&output));
+}
+
+#[test]
+fn the_schema_names_the_router_command_and_the_no_router_flag() {
+    let output = run(&["schema"]);
+    let value: serde_json::Value =
+        serde_json::from_str(stdout(&output).trim()).expect("a document");
+    let router = &value["commands"]["router"];
+    for name in ["set", "show", "clear"] {
+        assert!(
+            router["commands"].get(name).is_some(),
+            "router {name} is missing"
+        );
+    }
+    let set = &router["commands"]["set"]["arguments"];
+    for flag in [
+        "provider",
+        "mode",
+        "funding",
+        "token_stdin",
+        "credential",
+        "option",
+    ] {
+        assert!(set.get(flag).is_some(), "router set --{flag} is missing");
+    }
+    assert_eq!(
+        set["mode"]["possible_values"],
+        serde_json::json!(["fallback", "first", "off"])
+    );
+    assert_eq!(
+        value["command_tree"]["arguments"]["no_router"]["global"],
+        true
+    );
+    assert!(value["records"]["router"].is_object());
+    assert!(value["command_notes"]["router"].is_string());
+    let help = stdout(&run(&["--help"]));
+    assert!(help.contains("router"), "{help}");
+    assert!(stdout(&run(&["scrape", "--help"])).contains("--no-router"));
+}

@@ -85,6 +85,7 @@ fn document() -> serde_json::Value {
             "keys": "the API keys on the account, as metadata. No key, secret or hash is returned. Default format ndjson.",
             "profile": "the account itself: plan limits, totals and billing caps. One row. Default format ndjson.",
             "login": "sign in through a browser and store the key.",
+            "router": "store, show or clear a provider fallback (the router parameter and provider_options) in ~/.spider/router.json. Every command that fetches pages sends it unless the request names a router; --no-router or SPIDER_AGENT_NO_ROUTER skips it for one run. Keys come from stdin or SPIDER_ROUTER_TOKEN, never an argument. show writes a router record with every key replaced. Local, no call.",
             "route": "what transport would be chosen. Local, no call, no spend.",
             "schema": "this document.",
             "update": "install the newest release now. Reports on stderr. Exit 0 installed or current, 1 refused or failed, 2 turned off, 6 unreachable, 7 not this tool's to replace."
@@ -164,6 +165,16 @@ fn document() -> serde_json::Value {
             },
             "credits": { "type": "credits", "credits": "number", "usd": "number" },
             "key": { "type": "key", "key": "string, written by login --print and nothing else" },
+            "router": {
+                "type": "router",
+                "stored": "boolean. When false no other field is present.",
+                "mode": "fallback|first|off or null",
+                "provider": "string or null",
+                "funding": "any|own or null",
+                "token": "<redacted> or null",
+                "credentials": "object of credential name to <redacted>, or null",
+                "provider_options": "object of provider name to an object of setting name to <redacted>, or null"
+            },
             "error": {
                 "type": "error",
                 "url": "string or null",
@@ -194,7 +205,12 @@ fn document() -> serde_json::Value {
             "addresses can be piped in on stdin, one per line",
             crate::cli::KEY_RESOLUTION,
             "There is no flag for the key, because an argument is readable in the process list.",
-            "Environment: SPIDER_API_KEY is the first environment source for the API key; empty values after trimming are skipped. SPIDER_CLOUD_API_KEY is the fallback when SPIDER_API_KEY is empty or unset. SPIDER_API_URL overrides the API base (normally https://api.spider.cloud) for every key-bearing API request; the API base must use https. SPIDER_MCP_SERVER overrides the sign-in discovery server (normally https://mcp.spider.cloud/mcp) when OAuth is enabled. Set either server override only to a server you trust: one receives API requests with your key, and the other directs sign-in."
+            "Environment: SPIDER_API_KEY is the first environment source for the API key; empty values after trimming are skipped. SPIDER_CLOUD_API_KEY is the fallback when SPIDER_API_KEY is empty or unset. SPIDER_API_URL overrides the API base (normally https://api.spider.cloud) for every key-bearing API request; the API base must use https. SPIDER_MCP_SERVER overrides the sign-in discovery server (normally https://mcp.spider.cloud/mcp) when OAuth is enabled. Set either server override only to a server you trust: one receives API requests with your key, and the other directs sign-in.",
+            format!(
+                "Provider fallback: {} set to any value, or --no-router, skips the stored router for one run. {} is read by router set as the provider token.",
+                crate::setup::NO_ROUTER_ENV,
+                crate::commands::router::TOKEN_ENV
+            )
         ]
     })
 }
@@ -352,7 +368,8 @@ mod tests {
             .as_object()
             .expect("records is an object");
         for name in [
-            "page", "failed", "link", "result", "row", "route", "credits", "error", "report",
+            "page", "failed", "link", "result", "row", "route", "router", "credits", "error",
+            "report",
         ] {
             assert!(records.contains_key(name), "{name} is missing");
         }
@@ -382,6 +399,7 @@ mod tests {
             "keys",
             "profile",
             "login",
+            "router",
             "route",
             "schema",
             "update",
@@ -390,7 +408,7 @@ mod tests {
         }
         assert_eq!(
             commands.len(),
-            18,
+            19,
             "a command was added or removed without a line here"
         );
     }

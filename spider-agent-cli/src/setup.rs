@@ -1,18 +1,21 @@
 //! Turning a command line into a client, a need and a list of addresses.
 
 use std::io::{IsTerminal, Read};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 
 use serde_json::Value;
 use url::Url;
 
+use spider_cloud_agent::auth::router::{self, StoredRouter};
 use spider_cloud_agent::params::{Country, ProxyPool, RequestMode};
 use spider_cloud_agent::DeclaredNeed;
-use spider_cloud_agent::{Budget, Credits, Need, Spider};
+use spider_cloud_agent::{Budget, Credits, Error, Need, Spider};
 
 use crate::cli::{Format, Global, Goal, Mode, Pool, Targets};
 use crate::emit::{Emitter, FileRules};
 use crate::exit::{Code, Failure, Run};
+use crate::progress::Log;
 
 /// Read a file, or stdin when the name is a single dash.
 ///
@@ -209,26 +212,101 @@ pub fn budget(global: &Global) -> Budget {
     budget
 }
 
-/// A client carrying the caps, ready to be asked for an operation.
+/// A client carrying the caps, for a command that fetches no page.
+///
+/// The stored router is not read here. It only ever reaches a page request, and
+/// a broken router file has no business failing a balance read.
 pub fn client(global: &Global) -> Run<Spider> {
-    client_with_credits(global, global.budget)
+    build_client(global, global.budget, None)
 }
 
-/// Build the shared run cap, including a cap supplied by a plan.
-pub fn client_with_credits(global: &Global, credits: Option<f64>) -> Run<Spider> {
+/// A client for a command that fetches pages, carrying the stored router
+/// unless this run skips it.
+pub fn fetching_client(global: &Global, log: Log) -> Run<Spider> {
+    build_client(global, global.budget, Some(log))
+}
+
+/// The same, with the shared run cap a plan supplied.
+pub fn client_with_credits(global: &Global, credits: Option<f64>, log: Log) -> Run<Spider> {
+    build_client(global, credits, Some(log))
+}
+
+/// The environment variable that skips the stored router, set to any value.
+pub const NO_ROUTER_ENV: &str = "SPIDER_AGENT_NO_ROUTER";
+
+/// Whether this run leaves the stored router alone.
+pub fn router_skipped(global: &Global) -> bool {
+    global.no_router || std::env::var_os("SPIDER_AGENT_NO_ROUTER").is_some_and(|v| !v.is_empty())
+}
+
+/// Said once per run, however many clients the run builds.
+static ROUTER_NOTED: AtomicBool = AtomicBool::new(false);
+
+fn build_client(global: &Global, credits: Option<f64>, fetching: Option<Log>) -> Run<Spider> {
     let mut builder = Spider::builder().budget(budget(global));
     if let Some(cap) = credits {
         builder = builder.run_budget(spider_cloud_agent::RunBudget::new(Credits::new(cap)));
     }
-    builder.build().map_err(Failure::from)
+    // Read here rather than through the builder's own switch, so a file that
+    // cannot be used is reported as the router file and not as the client.
+    if fetching.is_some() && !router_skipped(global) {
+        if let Some(stored) = stored_router()? {
+            builder = builder.provider_router(stored);
+        }
+    }
+    let spider = builder.build().map_err(Failure::from)?;
+    if let (Some(log), Some(stored)) = (fetching, spider.provider_router()) {
+        if !ROUTER_NOTED.swap(true, Ordering::Relaxed) {
+            log.say(router_note(stored));
+        }
+    }
+    Ok(spider)
+}
+
+/// The stored router, or `None` when there is none, with a file that cannot be
+/// used reported under the code its failure belongs to and the way past it.
+pub fn stored_router() -> Run<Option<StoredRouter>> {
+    router::load().map_err(|error| {
+        let code = match &error {
+            Error::Config(_) => Code::Usage,
+            _ => Code::Output,
+        };
+        Failure::new(
+            code,
+            format!(
+                "the stored router cannot be used: {error}. Replace it with spider-agent router set, remove it with spider-agent router clear, or pass --no-router"
+            ),
+        )
+    })
+}
+
+/// The stderr line for a run that carries the stored router. It names the
+/// provider, the mode and the funding rule, and nothing that is a key.
+pub fn router_note(stored: &StoredRouter) -> String {
+    let router = &stored.router;
+    let parts: Vec<String> = [
+        ("provider", &router.provider),
+        ("mode", &router.mode),
+        ("funding", &router.funding),
+    ]
+    .into_iter()
+    .filter_map(|(name, value)| value.as_ref().map(|value| format!("{name} {value}")))
+    .collect();
+    if parts.is_empty() {
+        "using stored router".to_string()
+    } else {
+        format!("using stored router: {}", parts.join(", "))
+    }
 }
 
 /// The fetch mode the caller fixed, when they fixed one.
 pub fn mode(global: &Global) -> Option<RequestMode> {
-    global.mode.map(|mode| match mode {
-        Mode::Http => RequestMode::Http,
-        Mode::Smart => RequestMode::Smart,
-        Mode::Browser => RequestMode::Browser,
+    // The router modes share the type and never parse on this flag.
+    global.mode.and_then(|mode| match mode {
+        Mode::Http => Some(RequestMode::Http),
+        Mode::Smart => Some(RequestMode::Smart),
+        Mode::Browser => Some(RequestMode::Browser),
+        Mode::Fallback | Mode::First | Mode::Off => None,
     })
 }
 
