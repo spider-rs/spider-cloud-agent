@@ -33,6 +33,17 @@ uv run spider-optimize-train export /tmp/opt/corpus --run /tmp/opt/run --kind ml
   --out /tmp/opt/out/synth-mlp.bin --golden /tmp/opt/out/golden-mlp.json --quantize int8
 ```
 
+Run the two regression scenarios as well, `training/evals/run.sh` does. Both are
+synthetic. `synth --scenario reversal` plants a residential effect that holds through
+the days the model learns from and turns harmful inside the test window; the gate
+must reject that artifact without the model having had any evidence of the flip,
+and the regression report's comparison table must name the harmful overrides.
+`synth --scenario stable` is the same plant with no flip, and the gate must pass it
+with edits applied, at coverage of at least 0.05, so a run cannot pass by abstaining
+on every pair. `spider-optimize-train tradeoff` then shows, per risk budget, what the
+floors buy on the test window. Passing both says the evaluation catches a reversal
+and does not reward a policy that does nothing; it says nothing about real requests.
+
 The default threshold settings can legitimately abstain on every edit. The
 fixture recipe in the training README relaxes coverage, risk and site minimums
 to exercise the reader; those settings are not production approval criteria.

@@ -7,6 +7,15 @@ error.
 
 ## 0.6.0 (2026-09-16)
 
+- Trainer: the residential reversal is an explicit regression fixture. `synth
+  --scenario reversal` flips the effect inside the chronological test window only and
+  the gate must reject the artifact; `--scenario stable` is the control that must pass
+  with edits applied, so passing cannot mean abstaining. `gates` and `eval` report the
+  policy against the heuristic baseline (`compare.py`: coverage, correctness, credits
+  per correct result, harmful and helpful overrides), floors files may bound coverage
+  and the harmful rate, a `tradeoff` subcommand reads the floors at several `r_max`,
+  and `train` now chooses tau outside the test window. All of it fixture-only.
+
 - Trainer: the cost gate is paired (policy minus baseline credits per correct result,
   resampled by pair, upper bound at or under zero) and a policy that applied no edit is
   `insufficient` rather than a cost failure; new `eval` subcommand checks a run against a
