@@ -10,7 +10,13 @@
 //! What happens to the pick depends on the [`ApplyMode`]. In
 //! [`ApplyMode::Shadow`] nothing is written and the request goes out exactly as
 //! it would with no optimizer. In [`ApplyMode::Apply`] the edits are written
-//! onto every field the caller left unset.
+//! onto every field the caller left unset, unless a [`Monitor`] set with
+//! [`Optimizer::with_monitor`] has tripped. From then on every request is
+//! shadowed, the row says `fallback`, and the client stays that way until the
+//! monitor is reset. The monitor is fed every settled outcome, edited or not,
+//! and trips when the edited requests succeed measurably less often than the
+//! kept ones. See [`spider_optimize::monitor`] for what that comparison can
+//! and cannot tell you.
 //!
 //! Three rules hold whatever the scorer says.
 //!
@@ -52,6 +58,7 @@ use std::fmt;
 use std::fs::File;
 use std::io::Write;
 use std::path::Path;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -67,7 +74,8 @@ use spider_route::{
 use url::Url;
 
 pub use spider_optimize::{
-    summarize, Choice, EditSet, Gate, NoModel, Reason, ResourceSummary, Schema, Scorer,
+    summarize, Choice, EditSet, Estimate, Gate, Monitor, MonitorConfig, NoModel, Reason,
+    ResourceSummary, Schema, Scorer, Verdict,
 };
 
 use crate::client::{Spider, SpiderBuilder};
@@ -117,6 +125,10 @@ pub struct Optimizer {
     schema: Schema,
     clock: Option<Arc<dyn Clock>>,
     resources: Option<Arc<dyn ResourceSource>>,
+    monitor: Option<Arc<Monitor>>,
+    /// Whether the trip has been logged. Shared by every clone, so a process
+    /// says it once.
+    warned: Arc<AtomicBool>,
 }
 
 impl fmt::Debug for Optimizer {
@@ -127,6 +139,8 @@ impl fmt::Debug for Optimizer {
             .field("mode", &self.mode)
             .field("clock", &self.clock.is_some())
             .field("resources", &self.resources.is_some())
+            .field("monitor", &self.monitor.is_some())
+            .field("tripped", &self.tripped())
             .finish()
     }
 }
@@ -141,6 +155,8 @@ impl Optimizer {
             schema: Schema::v1(),
             clock: None,
             resources: None,
+            monitor: None,
+            warned: Arc::new(AtomicBool::new(false)),
         }
     }
 
@@ -172,6 +188,57 @@ impl Optimizer {
         self
     }
 
+    /// Feed every settled outcome to this monitor, and apply nothing once it
+    /// has tripped.
+    ///
+    /// In [`ApplyMode::Apply`] a tripped monitor makes every decision a
+    /// shadow one, marked `fallback`, until [`Monitor::reset`]. In
+    /// [`ApplyMode::Shadow`] the monitor sees no applied outcome and never
+    /// trips.
+    pub fn with_monitor(mut self, monitor: Monitor) -> Optimizer {
+        self.monitor = Some(Arc::new(monitor));
+        self
+    }
+
+    /// The monitor the outcomes are fed to, when one was set.
+    pub fn monitor(&self) -> Option<&Monitor> {
+        self.monitor.as_deref()
+    }
+
+    /// Whether the mode is [`ApplyMode::Apply`] and the monitor has tripped,
+    /// so a pick is shadowed rather than written.
+    fn tripped(&self) -> bool {
+        self.mode == ApplyMode::Apply && self.monitor.as_ref().is_some_and(|m| m.tripped())
+    }
+
+    /// Hand one settled outcome to the monitor, and say so once when that
+    /// trips it. Counts and rates only: no url reaches a log line.
+    fn observe(&self, applied: bool, success: bool) {
+        let Some(monitor) = &self.monitor else {
+            return;
+        };
+        monitor.observe(applied, success);
+        if !monitor.tripped() || self.warned.swap(true, Ordering::Relaxed) {
+            return;
+        }
+        match monitor.verdict() {
+            Verdict::Degraded(e) | Verdict::Healthy(e) => log::warn!(
+                "optimizer: monitor tripped, applying nothing until it is reset: \
+                 {} applied ({} ok), {} kept ({} ok), drop {:.3}, lower bound {:.3}",
+                e.applied,
+                e.applied_successes,
+                e.kept,
+                e.kept_successes,
+                e.drop,
+                e.drop_lower_bound
+            ),
+            Verdict::Warming { applied, kept } => log::warn!(
+                "optimizer: monitor tripped, applying nothing until it is reset: \
+                 {applied} applied, {kept} kept in the window now"
+            ),
+        }
+    }
+
     /// List the candidates for one request and pick one, writing nothing.
     ///
     /// This is the whole decision the send loop makes, without the loop.
@@ -182,6 +249,7 @@ impl Optimizer {
             choice,
             candidates: candidates.len().min(usize::from(u8::MAX)) as u8,
             applied: false,
+            fallback: self.tripped(),
         }
     }
 }
@@ -195,6 +263,9 @@ pub struct DecisionLog {
     pub candidates: u8,
     /// Whether an edit was written onto the request.
     pub applied: bool,
+    /// Whether a tripped monitor shadowed the pick in [`ApplyMode::Apply`].
+    /// Never set in [`ApplyMode::Shadow`], where nothing is written anyway.
+    pub fallback: bool,
 }
 
 /// Takes one comparison row per operation the optimizer was asked about.
@@ -430,21 +501,27 @@ pub(crate) fn decide(
     }
     let base = featurize(&unpinned);
 
+    // A tripped monitor turns this request into a shadow one: the pick is
+    // scored and recorded, and nothing is written.
+    let fallback = optimizer.tripped();
     let mut applied = false;
-    if let (ApplyMode::Apply, Choice::Apply { edits, .. }) = (optimizer.mode, &choice) {
+    if let (ApplyMode::Apply, false, Choice::Apply { edits, .. }) =
+        (optimizer.mode, fallback, &choice)
+    {
         applied = edits.apply(&mut call.params, caller).written > 0;
     }
 
-    let arm = match (optimizer.mode, applied) {
-        (ApplyMode::Shadow, _) => Arm::Shadow,
-        (ApplyMode::Apply, true) => Arm::Candidate,
-        (ApplyMode::Apply, false) => Arm::Baseline,
+    let arm = match (optimizer.mode, fallback, applied) {
+        (ApplyMode::Shadow, _, _) | (ApplyMode::Apply, true, _) => Arm::Shadow,
+        (ApplyMode::Apply, false, true) => Arm::Candidate,
+        (ApplyMode::Apply, false, false) => Arm::Baseline,
     };
     Some(Pending {
         log: DecisionLog {
             choice,
             candidates: candidates.len().min(usize::from(u8::MAX)) as u8,
             applied,
+            fallback,
         },
         arm,
         need: input.need,
@@ -464,12 +541,13 @@ pub(crate) fn decide(
     })
 }
 
-/// Write the comparison row, once the walk has settled.
+/// Feed the monitor and write the comparison row, once the walk has settled.
 ///
-/// Does nothing unless a recorder is set, the optimizer was asked about this
-/// request, and the policy accepted or stopped. `result` is the last attempt as
-/// `routing::outcome_of` read it, so the status class reads both planes the
-/// way the router's own rows do.
+/// Does nothing unless the optimizer was asked about this request and the
+/// policy accepted or stopped. The monitor, when there is one, takes every
+/// settled outcome; the row needs a recorder as well. `result` is the last
+/// attempt as `routing::outcome_of` read it, so the status class reads both
+/// planes the way the router's own rows do.
 pub(crate) fn compare(
     call: &Call<'_>,
     pending: Option<&Pending>,
@@ -478,17 +556,23 @@ pub(crate) fn compare(
     attempts: &[Attempt],
     pages: &Pages,
 ) {
-    let (Some(pending), Some(recorder)) = (pending, call.spider.comparison_recorder()) else {
+    let Some(pending) = pending else {
         return;
     };
     // A walk the wall cut short has an attempt whose charge is not known, so
     // its credits would be wrong, and a wrong number in a row is worse than a
-    // gap.
+    // gap. Its success is not known either, so the monitor is not told.
     if !matches!(next, Next::Accept | Next::Stop(_))
         || matches!(next, Next::Stop(StopReason::Budget(BudgetKind::Time)))
     {
         return;
     }
+    if let Some(optimizer) = call.spider.optimizer() {
+        optimizer.observe(pending.log.applied, result.success);
+    }
+    let Some(recorder) = call.spider.comparison_recorder() else {
+        return;
+    };
     // The reason and the counts only. An applied edit can name a blocked
     // resource, and that stays out of a log line as it stays out of a row.
     let log = &pending.log;
@@ -514,6 +598,7 @@ pub(crate) fn compare(
         // Pairs are matched by the collector that sent both arms.
         pair: 0,
         arm: pending.arm,
+        fallback: pending.log.fallback,
         day: pending.day,
         domain_key: pending.site ^ recorder.salt(),
         need: pending.need,

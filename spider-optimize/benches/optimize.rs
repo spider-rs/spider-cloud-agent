@@ -224,6 +224,7 @@ fn optimize(c: &mut Criterion) {
     let row = ComparisonRow {
         pair: 7,
         arm: Arm::Candidate,
+        fallback: false,
         day: 20_000,
         domain_key: 42,
         need: DeclaredNeed::Markdown,

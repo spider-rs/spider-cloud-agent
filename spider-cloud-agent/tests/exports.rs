@@ -233,9 +233,9 @@ fn without_the_optimizer_the_export_list_is_unchanged() {
 #[test]
 fn with_the_optimizer_the_new_names_can_be_written_down() {
     use spider_cloud_agent::optimize::{
-        summarize, ApplyMode, Choice, Clock, ComparisonRecorder, DecisionLog, EditSet, Gate,
-        JsonlComparisonRecorder, NoModel, Optimizer, Reason, ResourceSource, ResourceSummary,
-        Schema, Scorer,
+        summarize, ApplyMode, Choice, Clock, ComparisonRecorder, DecisionLog, EditSet, Estimate,
+        Gate, JsonlComparisonRecorder, Monitor, MonitorConfig, NoModel, Optimizer, Reason,
+        ResourceSource, ResourceSummary, Schema, Scorer, Verdict,
     };
 
     let exports = documented_exports();
@@ -265,15 +265,28 @@ fn with_the_optimizer_the_new_names_can_be_written_down() {
     assert!(scorer.version().is_none());
     let optimizer: Optimizer = Optimizer::new(NoModel, Gate::default(), ApplyMode::Apply)
         .with_clock(Day)
-        .with_resources(Nothing);
+        .with_resources(Nothing)
+        .with_monitor(Monitor::new(MonitorConfig::default()));
     assert_eq!(optimizer.mode(), ApplyMode::Apply);
     assert_eq!(Optimizer::shadow(NoModel).mode(), ApplyMode::Shadow);
+    let monitor: &Monitor = optimizer.monitor().expect("a monitor was set");
+    assert!(!monitor.tripped());
+    assert_eq!(
+        monitor.verdict(),
+        Verdict::Warming {
+            applied: 0,
+            kept: 0
+        }
+    );
+    let estimate: Option<Estimate> = None;
+    assert!(estimate.is_none());
     let log = DecisionLog {
         choice: Choice::Keep(Reason::NoModel),
         candidates: 1,
         applied: false,
+        fallback: false,
     };
-    assert!(!log.applied && EditSet::keep().is_keep());
+    assert!(!log.applied && !log.fallback && EditSet::keep().is_keep());
     let _: Schema = Schema::v1();
     let page = url::Url::parse("https://example.com").expect("a url");
     assert_eq!(summarize(&page, &[]), ResourceSummary::default());

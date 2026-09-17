@@ -245,11 +245,11 @@ citations. Run `scripts/check-anchors.sh` after moving code so these references 
     (`pub fn choose(`). Application checks the caller's snapshot, taken before the router
     and plan wrote anything, at `spider-optimize/src/edit.rs:184` (`pub fn apply(`).
     The client skips the optimizer entirely when `pins.any()` says the caller fixed mode,
-    pool or country, in `spider-cloud-agent/src/optimize.rs:377` (`pub(crate) fn decide(`).
+    pool or country, in `spider-cloud-agent/src/optimize.rs:449` (`pub(crate) fn decide(`).
     Without weights, `spider-optimize/src/model.rs:65` (`pub struct NoModel`) abstains.
     The tests are `spider-optimize/src/gate.rs:299` (`fn no_model_always_keeps`),
     `spider-optimize/src/edit.rs:383` (`fn an_edit_never_touches_a_field_the_caller_set`)
-    and `spider-cloud-agent/tests/optimize.rs:251`
+    and `spider-cloud-agent/tests/optimize.rs:271`
     (`async fn shadow_mode_sends_the_baseline_request_unchanged`). Without these rules,
     a cheap prediction can silently buy missing content, undo a deliberate caller setting,
     or make installing an optional feature change a request that previously worked.

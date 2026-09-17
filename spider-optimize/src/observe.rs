@@ -341,6 +341,7 @@ mod tests {
             let row = comparison_row(&ComparisonRow {
                 pair: 1,
                 arm: Arm::Candidate,
+                fallback: false,
                 day: 2,
                 domain_key: 3,
                 need: DeclaredNeed::Markdown,

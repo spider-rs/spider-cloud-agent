@@ -157,6 +157,9 @@ pub struct ComparisonRow<'a> {
     pub pair: u64,
     /// Which arm.
     pub arm: Arm,
+    /// Whether a tripped monitor shadowed a pick that would otherwise have
+    /// been applied. See [`crate::monitor`].
+    pub fallback: bool,
     /// The day the trial ran, as a count the caller chooses.
     pub day: u32,
     /// The caller's opaque key for the site, for splitting train and test by
@@ -262,6 +265,8 @@ pub fn comparison_row(r: &ComparisonRow<'_>) -> String {
         r.pair
     );
     out.label(arm_label(r.arm));
+    out.raw(",\"fallback\":");
+    out.flag(r.fallback);
     write!(out, ",\"day\":{},\"dk\":{},\"need\":", r.day, r.domain_key);
     out.label(need_label(r.need));
     out.raw(",\"ext\":");
@@ -536,6 +541,7 @@ mod tests {
         comparison_row(&ComparisonRow {
             pair: u64::MAX,
             arm: Arm::Candidate,
+            fallback: false,
             day: 20_000,
             domain_key: 42,
             need: ctx.need,
@@ -599,6 +605,7 @@ mod tests {
                 "edit_feat_v",
                 "pair",
                 "arm",
+                "fallback",
                 "day",
                 "dk",
                 "need",

@@ -99,9 +99,9 @@ A later collector must execute and join both arms to fill the evidence gaps.
 
 Before applying edits, connect artifact per-edit floors and support cells to the
 client scorer and verify equivalence with the training policy. The current generic
-path does not enforce those floors. Build the canary controls in the caller or a
-later integration: the present `Optimizer` has no hash-share selector, per-need
-allowlist or rolling regression monitor.
+path does not enforce those floors. Build the share selector and the allowlists in
+the caller or a later integration: the present `Optimizer` has no hash-share
+selector or per-need allowlist. The rolling monitor exists; see below.
 
 Select a bounded share by a stable hash, with the share, seed, need allowlist,
 edit-code allowlist, spend cap and stop conditions recorded before starting.
@@ -110,12 +110,36 @@ gates qualify. Keep `block_stylesheets` and `network_blacklist` shadow-only duri
 this rollout. Pinning any caller field still wins; pinning mode, pool or country
 skips optimization entirely.
 
-Maintain a rolling paired estimate over the last 500 rows of matched evidence,
-keeping complete pairs together. If the success-delta lower bound breaks the
--0.005 success gate, automatically flip new traffic to shadow. Do not infer that
-bound from unpaired shadow rows. Insufficient matched evidence also keeps traffic
-in shadow. This rolling monitor is separate from the offline gate requiring 300
-test pairs: 500 rows of two-arm trials do not meet that offline minimum.
+Set a `Monitor` on the optimizer with `Optimizer::with_monitor`
+(`spider-optimize/src/monitor.rs`). The client feeds it every settled outcome,
+edited or kept, and it holds the last `window` of them (64 to 8,192, default
+1,024). Once the window has at least `min_applied` edited and `min_kept` kept
+outcomes (default 100 each), it takes the kept success rate minus the applied one
+and subtracts `z` standard errors of that difference (one sided normal
+approximation, default `z` 1.645). If what is left is above `max_drop` (default
+0.02), the monitor trips. A tripped monitor latches: every later request in
+`Apply` mode goes out as a shadow one, its row says `"fallback":true`, the client
+logs one warning with the counts and the drop, and nothing is applied again until
+`Monitor::reset`. Below the minimums the monitor is warming and has no say in
+the decision, so a canary that never reaches `min_applied` edits is never judged.
+
+Detection has a price. The monitor cannot say anything before `min_applied`
+edited outcomes have settled, and a change part way through a window is diluted
+by the healthy outcomes still in it, so the losses before a trip are up to
+`min_applied` degraded outcomes plus however many the window hides. The unit test
+`degradation_trips_within_the_window_and_the_losses_are_counted` measures both on
+a seeded stream (0.9 to 0.6 applied success, window 1,024, minimum 64): the trip
+came 272 outcomes after the drop, 141 of them edited, and 35 more of those failed
+than the kept rate would give. The wire test `a_tripped_monitor_falls_back_to_shadow`
+sees exactly `min_applied` failed edits before the trip when every edit fails.
+
+The comparison is unpaired. The gate chose which requests to edit, so the two
+groups are not the same requests and a drop can come from the edit, from the
+model's choice of requests, or from which sites happened to be fetched. The
+monitor is a tripwire that stops the bleeding, not a measurement of the edit's
+effect; that measurement comes from the paired rows and the offline gate, which
+still requires 300 chronological test pairs and which the monitor does not
+replace.
 
 The kill switch is to drop the optimizer from the builder and construct the
 client without `.optimizer(...)`. No model result can affect new requests through
