@@ -123,3 +123,43 @@ uv run spider-optimize-train validate /path/to/DIR
 A dry run of 30 urls and one entry per learnable key passed every pair, host, version
 and shape rule. A stub that serves every arm a page in the end leaves each edit code
 with one success outcome, which is the one rule such a run cannot meet.
+
+## Measured on 2026-09-17, fixture model
+
+Taken with `scripts/measure-optimize.sh` at 20260917T031555Z on Darwin arm64, rustc 1.97.1, commit 493d4fae0ffe. The only model in `spider-optimize/assets` is the synthetic fixture the trainer exports from its planted corpus, so every number here says what carrying a model of that shape costs, and nothing about a trained one. A wall time of 0.0 means under the 10 ms resolution of `/usr/bin/time`.
+
+The command line tool never constructs an optimizer, so its difference is what compiling the feature in adds before the linker drops what nothing calls. The two examples make one scoring call each, one through the bundled artifact and the reader and one through `NoModel`, so their difference is the reader and the artifact.
+
+### Model bytes, synthetic fixture model, not a trained one
+
+| Asset | Bytes |
+|---|---:|
+| `spider-optimize-v1.bin` | 153229 |
+
+### Stripped release binaries, synthetic fixture model, not a trained one
+
+| Binary | Bytes |
+|---|---:|
+| spider-agent, without the feature | 2711728 |
+| spider-agent, with `spider-cloud-agent/optimize` (compiled, not called) | 2728416 |
+| spider-agent difference | 16688 |
+| `keep_no_model` example | 302528 |
+| `score_embedded` example, reader and artifact linked | 467808 |
+| example difference | 165280 |
+
+### One scoring call from a cold start, 20 runs each, synthetic fixture model, not a trained one
+
+| Program | Peak RSS min (bytes) | Peak RSS median (bytes) | Wall min (s) | Wall median (s) |
+|---|---:|---:|---:|---:|
+| `keep_no_model` | 1523712 | 1523712 | 0.0 | 0.0 |
+| `score_embedded` | 1998848 | 2015232 | 0.0 | 0.0 |
+
+### Criterion means, `cargo bench -p spider-optimize --bench optimize`, synthetic fixture model, not a trained one
+
+| Benchmark | Mean |
+|---|---:|
+| `generate` | 3.672 µs |
+| `featurize_edit` | 35.7 ns |
+| `score_mlp` | 22.613 µs |
+| `score_gbdt` | 7.205 µs |
+| `choose_no_model` | 9.7 ns |
