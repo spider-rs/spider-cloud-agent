@@ -9,6 +9,14 @@ error.
 
 - Add version one optimizer artifacts, bounded FP32 MLP and GBDT inference,
   calibration, support cells, and synthetic parity fixtures.
+- The optimizer's bundled artifact and both parity fixtures now come from the
+  Python trainer (`training/fixtures/golden/`), trained on a synthetic corpus.
+  They are still FIXTURE-ONLY: they prove the two readers agree, not that a
+  model helps. The embedded MLP artifact grows from 24,126 to 153,229 bytes,
+  well under its 2,097,152 byte baseline. The trainer's exporter now writes
+  what the Rust reader accepts: Platt calibrations with zero knots, finite
+  sentinel thresholds for folded splits, `null` for non-finite golden inputs,
+  and no identity calibration on the success head.
 
 - `RequestParams` gains the documented fields it was missing:
   `service_worker_enabled`, `preserve_host`, `delay`, `concurrency_limit`,
