@@ -4,7 +4,7 @@ Scores candidate edits after `spider-route` and the request plan, then applies a
 most one edit set past a gate. Client integration is off by default, behind the
 `optimize` feature. Start with `Optimizer::shadow`: the baseline request goes out
 unchanged, and the caller's settings always win. See the
-[optimizer architecture](https://github.com/spider-rs/spider-cloud-agent/blob/feat/param-optimizer/docs/optimizer/architecture.md).
+[optimizer architecture](https://github.com/spider-rs/spider-cloud-agent/blob/main/docs/optimizer/architecture.md).
 
 With no artifact compiled in or loaded, `NoModel` keeps every request. Artifacts
 hold numbers only, no host, resource pattern or page body. Loading can allocate;

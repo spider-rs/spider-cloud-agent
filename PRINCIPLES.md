@@ -6,9 +6,8 @@ conventions. Where the two disagree, this file is the rule.
 
 Each of these names the lint, the type or the test that holds them up. That named thing is what to
 break when you want to know whether the principle is still doing anything. The anchor gate checks
-every citation against its named symbol or phrase, within two lines. This document now
-requires at least 72 citations; the script still enforces its older floor of 48.
-Run `scripts/check-anchors.sh` after moving code so these references stay useful.
+every citation against its named symbol or phrase, within two lines, and refuses fewer than 72
+citations. Run `scripts/check-anchors.sh` after moving code so these references stay useful.
 
 ## Credentials
 
