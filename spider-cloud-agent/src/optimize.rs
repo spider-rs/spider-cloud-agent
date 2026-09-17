@@ -29,8 +29,8 @@
 //!
 //! With a [`ComparisonRecorder`] set, every operation the optimizer was asked
 //! about writes one row when its walk settles, whether it was accepted or
-//! stopped. A walk cut short by the wall, the budget or a failed connection
-//! writes none, because what it cost is not known. A row holds numbers, buckets
+//! stopped. A walk the wall cut short writes none, because what its last
+//! attempt cost is not known. A row holds numbers, buckets
 //! and labels only: no url, no host and no body. See
 //! [`spider_optimize::ComparisonRow`].
 //!
@@ -72,9 +72,10 @@ pub use spider_optimize::{
 
 use crate::client::{Spider, SpiderBuilder};
 use crate::credits::Credits;
+use crate::error::BudgetKind;
 use crate::ops::Call;
 use crate::params::{RequestParams, Timeout, WaitFor};
-use crate::policy::{Budget, Next};
+use crate::policy::{Budget, Next, StopReason};
 use crate::response::{Attempt, Pages};
 
 /// Whether a chosen edit is written onto the request.
@@ -480,7 +481,12 @@ pub(crate) fn compare(
     let (Some(pending), Some(recorder)) = (pending, call.spider.comparison_recorder()) else {
         return;
     };
-    if !matches!(next, Next::Accept | Next::Stop(_)) {
+    // A walk the wall cut short has an attempt whose charge is not known, so
+    // its credits would be wrong, and a wrong number in a row is worse than a
+    // gap.
+    if !matches!(next, Next::Accept | Next::Stop(_))
+        || matches!(next, Next::Stop(StopReason::Budget(BudgetKind::Time)))
+    {
         return;
     }
     // The reason and the counts only. An applied edit can name a blocked
