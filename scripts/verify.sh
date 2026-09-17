@@ -84,7 +84,7 @@ step "live gate self-tests"
 python3 -B scripts/test_verify_live.py || fail "live gate self-tests"
 
 step "allocation baselines"
-cargo bench --locked -p spider-cloud-agent --bench allocations -- --test \
+cargo bench --locked -p spider-cloud-agent --all-features --bench allocations -- --test \
   || fail "client allocation baselines"
 cargo bench --locked -p spider-route --bench route -- --test \
   || fail "route allocation baselines"
