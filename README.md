@@ -68,7 +68,7 @@ spider-agent router show
 ```
 
 The caller's own `router` always wins over the stored one. `--no-router`, or
-`SPIDER_AGENT_NO_ROUTER` set to any value, skips it for one run, and
+`SPIDER_AGENT_NO_ROUTER` set to any non-empty value, skips it for one run, and
 `spider-agent router clear` deletes it.
 
 ## From Rust

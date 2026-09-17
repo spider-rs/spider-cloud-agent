@@ -139,7 +139,7 @@ because a key on the command line lands in shell history, and so is a
 `--credential` whose name says it is a password, secret, token or key. `show`
 prints every credential and setting value as `<redacted>`.
 
-`--no-router`, or `SPIDER_AGENT_NO_ROUTER` set to any value, sends no stored
+`--no-router`, or `SPIDER_AGENT_NO_ROUTER` set to any non-empty value, sends no stored
 router for one run. A router file that cannot be read or does not validate stops
 a page command with code 2 before any call.
 

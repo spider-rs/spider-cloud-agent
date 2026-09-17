@@ -24,6 +24,10 @@ pub const ALLOWED_ENV_VARS: &[&str] = &[
     // background check runs under, and the release base read by debug builds
     // only, so a test can point it at a loopback stub.
     "SPIDER_AGENT_NO_UPDATE",
+    // The stored provider fallback in spider-agent: the token read by
+    // `router set`, and the opt out that sends no stored router for one run.
+    "SPIDER_ROUTER_TOKEN",
+    "SPIDER_AGENT_NO_ROUTER",
     "SPIDER_AGENT_UPDATE_BACKGROUND",
     "SPIDER_AGENT_UPDATE_BASE",
     "SPIDER_AGENT_UPDATE_KEY",
