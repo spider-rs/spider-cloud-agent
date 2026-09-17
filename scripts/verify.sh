@@ -80,6 +80,26 @@ step "tests, no default features"
 # to work with no model compiled in, and that path has to keep working.
 cargo test --locked --workspace --no-default-features || fail "tests with no default features"
 
+step "minimum supported rust"
+# The workspace declares rust-version 1.88, and a newer compiler on the
+# developer's machine infers more than that one does. Checking every target
+# under the floor is what caught a test that only built on 1.97. Skipped with
+# a reason when the toolchain is absent; required on a release run.
+MSRV="$(sed -n 's/^rust-version = "\(.*\)"/\1/p' Cargo.toml | head -n 1)"
+[ -n "$MSRV" ] || fail "no rust-version in Cargo.toml"
+# rustup names an installed toolchain by its full version, so 1.88 has to be
+# matched against 1.88.x in the list.
+MSRV_TOOLCHAIN="$(rustup toolchain list 2>/dev/null \
+  | sed -n "s/^\($MSRV\(\.[0-9][0-9]*\)\{0,1\}\)-.*/\1/p" | head -n 1)"
+if [ -n "$MSRV_TOOLCHAIN" ]; then
+  rustup run "$MSRV_TOOLCHAIN" cargo check --locked --workspace --all-targets --all-features \
+    || fail "minimum supported rust ($MSRV_TOOLCHAIN)"
+elif "$release"; then
+  fail "release requires the $MSRV toolchain: rustup toolchain install $MSRV --profile minimal"
+else
+  printf '  skipped minimum supported rust: toolchain %s is not installed\n' "$MSRV"
+fi
+
 step "training evals"
 # The trainer's own tests and its fixture-only evals: metric floors on the
 # seeded synthetic corpus, the paired gates failing closed with nothing

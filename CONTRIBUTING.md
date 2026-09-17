@@ -2,7 +2,11 @@
 
 ## Setup
 
-You need Rust 1.88 or newer and Python 3. Release checks also need cargo-deny.
+You need Rust 1.88 or newer and Python 3. Release checks also need cargo-deny, the
+1.88 toolchain (`rustup toolchain install 1.88 --profile minimal`, so the gate can
+check every target under the declared floor) and `uv` for the trainer's evals under
+`training/`. An ordinary run skips those two steps with a printed reason when the
+tool is absent.
 
 ```bash
 git clone https://github.com/spider-rs/spider-cloud-agent

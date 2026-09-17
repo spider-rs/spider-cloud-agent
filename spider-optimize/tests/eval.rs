@@ -251,15 +251,15 @@ fn random_url(rng: &mut XorShift) -> Url {
     ];
 
     let mut raw = String::new();
-    raw.push_str(rng.pick(&SCHEMES));
-    raw.push_str(rng.pick(&HOSTS));
+    raw.push_str(*rng.pick(&SCHEMES[..]));
+    raw.push_str(*rng.pick(&HOSTS[..]));
     for _ in 0..rng.below(4) {
         raw.push('/');
-        raw.push_str(rng.pick(&SEGMENTS));
+        raw.push_str(*rng.pick(&SEGMENTS[..]));
     }
     raw.push('/');
-    raw.push_str(rng.pick(&LEAVES));
-    raw.push_str(rng.pick(&QUERIES));
+    raw.push_str(*rng.pick(&LEAVES[..]));
+    raw.push_str(*rng.pick(&QUERIES[..]));
     if rng.below(8) == 0 {
         raw.push_str("#top");
     }
