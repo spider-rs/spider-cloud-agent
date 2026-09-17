@@ -43,16 +43,25 @@ fn parity(bytes: &[u8], golden: &str, kind: ModelKind) {
             ),
             None => assert!(actual.p_success.is_nan(), "case {i}: NaN"),
         }
+        // The latency and credit heads carry units, so they are held to a
+        // relative 1e-5: at a few thousand milliseconds one float32 ulp is
+        // already 5e-4, and the trainer's numpy and this crate's libm differ
+        // by that much between macOS and glibc. Support is a flag.
         for (actual, expected) in [
             (actual.latency_ms, case.expect.latency_ms),
             (actual.credits, case.expect.credits),
-            (actual.support, case.expect.support),
         ] {
             assert!(
-                (actual - expected).abs() <= 1e-5,
+                (actual - expected).abs() <= 1e-5 * expected.abs().max(1.0),
                 "case {i}: {actual} != {expected}"
             );
         }
+        assert!(
+            (actual.support - case.expect.support).abs() <= 1e-5,
+            "case {i}: support {} != {}",
+            actual.support,
+            case.expect.support
+        );
     }
 }
 #[test]
