@@ -21,8 +21,8 @@
 
 use criterion::{criterion_group, criterion_main, Criterion};
 use spider_optimize::{
-    choose, comparison_row, featurize_edit, generate, summarize, Arm, ComparisonRow, Context,
-    EditDescriptor, Gate, Key, MemoryState, NoModel, Observation, Params, Schema,
+    choose, comparison_row, featurize_edit, generate, summarize, Arm, Compact, ComparisonRow,
+    Context, EditDescriptor, Gate, Key, MemoryState, NoModel, Observation, Params, Schema,
 };
 use spider_route::{
     featurize, DeclaredNeed, ExtClass, ProxyPool, RequestMode, RouteDecision, RouteInput,
@@ -166,6 +166,8 @@ impl Params for Request {
 /// `row_write` makes 1: the line is written into one `String` sized for it.
 /// `featurize_edit` and `choose_no_model` must stay at zero.
 const EXPECTED: &[(&str, usize)] = &[
+    ("score_mlp", 0),
+    ("score_gbdt", 0),
     ("generate", 75),
     ("featurize_edit", 0),
     ("choose_no_model", 0),
@@ -247,7 +249,22 @@ fn optimize(c: &mut Criterion) {
     println!("\nallocations per optimizer call");
     println!("{:<18} {:>6}", "call", "allocs");
 
+    let mlp = Compact::from_bytes(include_bytes!("../assets/spider-optimize-v1.bin")).unwrap();
+    let gbdt = Compact::from_bytes(include_bytes!("../tests/fixtures/gbdt-v1.bin")).unwrap();
+    let base_slots = &base.as_slice()[..152];
     let counts = [
+        (
+            "score_mlp",
+            measure(|| {
+                black_box(mlp.score_slices(black_box(base_slots), black_box(feats.as_slice()), 0));
+            }),
+        ),
+        (
+            "score_gbdt",
+            measure(|| {
+                black_box(gbdt.score_slices(black_box(base_slots), black_box(feats.as_slice()), 0));
+            }),
+        ),
         (
             "generate",
             measure(|| {
@@ -306,6 +323,16 @@ fn optimize(c: &mut Criterion) {
     });
     group.bench_function("row_write", |b| {
         b.iter(|| black_box(comparison_row(black_box(&row))))
+    });
+    group.bench_function("score_mlp", |b| {
+        b.iter(|| {
+            black_box(mlp.score_slices(black_box(base_slots), black_box(feats.as_slice()), 0))
+        })
+    });
+    group.bench_function("score_gbdt", |b| {
+        b.iter(|| {
+            black_box(gbdt.score_slices(black_box(base_slots), black_box(feats.as_slice()), 0))
+        })
     });
     group.finish();
 }

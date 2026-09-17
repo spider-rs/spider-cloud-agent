@@ -30,6 +30,7 @@
 #![forbid(unsafe_code)]
 #![warn(missing_docs)]
 
+pub mod artifact;
 pub mod candidates;
 pub mod edit;
 pub mod features;
@@ -42,6 +43,9 @@ pub mod row;
 pub mod schema;
 pub mod validate;
 
+#[cfg(feature = "embedded-model")]
+pub use crate::artifact::embedded;
+pub use crate::artifact::{cell_id, ArtifactError, Compact, ModelKind, MAX_WIDTH};
 pub use candidates::{generate, Candidate, Context, MAX_CANDIDATES, MULTIPLIERS};
 pub use edit::{Applied, Edit, EditError, EditSet, Op, Value, MAX_EDITS};
 pub use features::{featurize_edit, EditFeatures, Input, EDIT_DIM, EDIT_FEATURE_VERSION};
@@ -54,7 +58,9 @@ pub use row::{
     comparison_row, Arm, ComparisonRow, EditDescriptor, IdentDescriptor, MemoryState,
     CMP_ROW_VERSION,
 };
-pub use schema::{Dependency, Group, Key, Kind, ParamSpec, Schema, SCHEMA_VERSION};
+pub use schema::{
+    edit_code, Dependency, Group, Key, Kind, ParamSpec, Schema, KEEP_CODE, SCHEMA_VERSION,
+};
 pub use validate::{validate, Rejection};
 
 #[cfg(test)]
