@@ -50,7 +50,7 @@ git ignores.
 ### Export reproducibility
 
 The export was byte reproducible before this eval existed. On 2026-09-16, at commit
-`92df018`, rerunning the sequence in `fixtures/golden/README.md` on this machine (Apple
+`25fe815`, rerunning the sequence in `fixtures/golden/README.md` on this machine (Apple
 silicon, the `uv.lock` versions of numpy and LightGBM) wrote `synth-mlp.bin` with sha256
 `7198d0615a76accda8b6e7d573cea9e3d94bfc368490dd338aadb2032d96a022` and `synth-gbdt.bin`
 with `d20fe2163049e9f76117b881d6de3cf9f3342851026b707a5f4c990921bf1bcf`, the digests in
@@ -98,8 +98,8 @@ through `mae_millis` and `mae_credits` on the whole window rather than per effec
 
 ## Measured reference values
 
-Measured on 2026-09-16 at commit `92df018` plus the eval change in the same commit as
-this file, on the chronological test window of the seed 7 corpus at the default sweep
+Measured on 2026-09-16 at commit `a003cf6`, the commit that added `eval`, on the
+chronological test window of the seed 7 corpus at the default sweep
 settings. FIXTURE-ONLY, like everything else here.
 
 4000 pairs, 1222 test rows, 611 test pairs, 0 applied, gate `insufficient`:
