@@ -21,6 +21,9 @@ pub mod credits;
 pub mod error;
 pub mod memory;
 pub mod ops;
+#[cfg(feature = "optimize")]
+#[cfg_attr(docsrs, doc(cfg(feature = "optimize")))]
+pub mod optimize;
 pub mod params;
 pub mod policy;
 pub mod record;

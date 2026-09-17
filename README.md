@@ -56,6 +56,21 @@ spider-agent schema
 `spider-agent route <url>` prints the transport it would choose without making a
 call, spending nothing and needing no key.
 
+## Provider fallback
+
+Store an outside provider once. Every command that fetches pages then sends it as
+the `router` parameter. With `--mode fallback`, the provider is tried only when
+Spider's own fetch fails. The key is read from stdin, never from an argument.
+
+```bash
+printf '%s' "$ZYTE_KEY" | spider-agent router set --provider zyte --mode fallback --funding own --token-stdin
+spider-agent router show
+```
+
+The caller's own `router` always wins over the stored one. `--no-router`, or
+`SPIDER_AGENT_NO_ROUTER` set to any non-empty value, skips the stored router for one
+run. `spider-agent router clear` deletes it.
+
 ## From Rust
 
 ```toml
@@ -137,6 +152,14 @@ went out, and answers from rules in microseconds. It reads the host once, for it
 shape, and keeps no name.
 
 To route another way, implement the `Router` trait.
+
+## Learning cheaper settings
+
+The parameter optimizer is compiled in by default and does nothing until you pass
+one to `SpiderBuilder::optimizer`. Start in shadow mode, which scores edits and
+sends the baseline request unchanged. `default-features = false` leaves it out.
+The caller's settings always win. See the [optimizer architecture](docs/optimizer/architecture.md)
+for the gates and the evidence needed before applying edits.
 
 ## License
 

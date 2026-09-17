@@ -47,7 +47,15 @@ def production(text):
     return code
 
 
-def scan(directory, policy=False):
+def scan(directory, policy=False, extra_roots=frozenset(), extra_macros=frozenset(),
+         extra_std=frozenset()):
+    """Scan one source tree.
+
+    extra_roots, extra_macros and extra_std widen the allowlists for a tree that
+    has its own modules, its own reviewed dependencies or a reviewed corner of
+    std. All three default to empty, which leaves every existing scan exactly
+    as it was.
+    """
     files = sorted(Path(directory).rglob('*.rs'))
     errors = []
     if len(files) < (6 if policy else 7):
@@ -58,14 +66,17 @@ def scan(directory, policy=False):
         'str', 'FromStr', 'ops', 'Deref', 'convert', 'TryFrom', 'cmp', 'Ordering',
         'f32', 'consts', 'TAU',
     }
+    allowed_std |= set(extra_std)
     allowed_roots = {'crate', 'self', 'super', 'url', 'std'}
     if policy:
         allowed_roots |= {'backoff', 'budget', 'engine', 'ladder', 'rule'}
     if not policy:
         allowed_roots |= {'serde', 'action', 'decision', 'domain', 'features', 'heuristic', 'router'}
+    allowed_roots |= set(extra_roots)
     allowed_macros = {'vec', 'matches', 'format', 'write', 'writeln', 'debug_assert', 'debug_assert_eq'}
     if not policy:
         allowed_macros.add('assert')  # Compile-time feature dimension assertion.
+    allowed_macros |= set(extra_macros)
     forbidden = {'fs', 'net', 'process', 'tokio'}
     if policy:
         forbidden |= {'io', 'env', 'thread', 'Instant', 'SystemTime', 'log', 'tracing', 'reqwest', 'async_std', 'println', 'eprintln', 'print', 'eprint', 'dbg'}
@@ -159,6 +170,27 @@ fn after_tests() {}
                 checked += 1
                 if bool(findings) != should_fail:
                     errors.append(f'case {checked}: unexpected findings: {findings}')
+        # An extra root or macro is allowed only where a caller lists it.
+        extra_cases = [
+            ('use spider_route::Key; fn pure() {}', {}, True),
+            ('use spider_route::Key; fn pure() {}', {'extra_roots': {'spider_route'}}, False),
+            ('fn pure() { let _ = schema::Key::Url; }', {'extra_roots': {'spider_route'}}, True),
+            ('fn pure() { let _ = schema::Key::Url; }', {'extra_roots': {'schema'}}, False),
+            ('const W: &[u8] = include_bytes!("w.bin");', {}, True),
+            ('const W: &[u8] = include_bytes!("w.bin");', {'extra_macros': {'include_bytes'}}, False),
+            ('use std::fs::read; fn io() {}', {'extra_roots': {'spider_route'}}, True),
+            ('fn io() { env!("X"); }', {'extra_macros': {'include_bytes'}}, True),
+            ('use std::sync::atomic::AtomicU8; fn pure() {}', {}, True),
+            ('use std::sync::atomic::AtomicU8; fn pure() {}', {'extra_std': {'atomic', 'AtomicU8'}}, False),
+            ('fn pure() { let _ = std::sync::atomic::AtomicBool::new(false); }', {'extra_std': {'atomic', 'AtomicU8'}}, True),
+            ('use std::thread::spawn; fn io() {}', {'extra_std': {'atomic', 'AtomicU8'}}, True),
+        ]
+        for code, extra, should_fail in extra_cases:
+            target.write_text(code)
+            _, findings = scan(root, **extra)
+            checked += 1
+            if bool(findings) != should_fail:
+                errors.append(f'case {checked}: unexpected findings with {extra}: {findings}')
         nested = root / 'nested'
         nested.mkdir()
         (nested / 'module.rs').write_text('use std::net as sockets;')

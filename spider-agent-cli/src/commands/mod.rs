@@ -4,6 +4,7 @@ pub mod account;
 pub mod local;
 pub mod pages;
 pub mod query;
+pub mod router;
 pub mod run;
 
 use std::time::{Duration, Instant};

@@ -5,6 +5,128 @@ response gives back, or what an escalation costs gets one whether or not it brea
 signature, because those are the changes that show up on a bill rather than in a compiler
 error.
 
+## 0.7.0 (2026-09-17)
+
+- The live release gate now requires all nine live tests to pass. The selector-name
+  test no longer fails against the service, so its tracked exception is gone.
+- The `optimize` feature is now on by default, and in `full`. The optimizer code is
+  compiled in, but nothing runs until a caller passes one to `SpiderBuilder::optimizer`,
+  so a client built without that call sends the same requests as before. Turn the
+  code off with `default-features = false`. No model ships: `NoModel` keeps every request.
+- Fix: `EventTracker` always sends all three switches, an unset one as
+  `false`. Reading back still accepts a partial object.
+- New `spider_optimize::Monitor`, a lock free ring of the last `window` settled
+  outcomes that trips when the edited requests succeed less often than the kept ones
+  by more than `max_drop`, with `z` standard errors of the unpaired difference taken
+  off. `Optimizer::with_monitor` feeds it every settled outcome; once it trips, every
+  `Apply` decision is shadowed, `DecisionLog.fallback` is set, the row carries
+  `"fallback":true`, one warning is logged, and nothing is applied again until
+  `Monitor::reset`. Detection costs up to `min_applied` degraded outcomes plus what
+  the window hides; the tests print the measured delay and losses.
+- Trainer: the residential reversal is an explicit regression fixture. `synth
+  --scenario reversal` flips the effect inside the chronological test window only and
+  the gate must reject the artifact; `--scenario stable` is the control that must pass
+  with edits applied, so passing cannot mean abstaining. `gates` and `eval` report the
+  policy against the heuristic baseline (`compare.py`: coverage, correctness, credits
+  per correct result, harmful and helpful overrides), floors files may bound coverage
+  and the harmful rate, a `tradeoff` subcommand reads the floors at several `r_max`,
+  and `train` now chooses tau outside the test window. All of it fixture-only.
+
+- Trainer: the cost gate is paired (policy minus baseline credits per correct result,
+  resampled by pair, upper bound at or under zero) and a policy that applied no edit is
+  `insufficient` rather than a cost failure; new `eval` subcommand checks a run against a
+  JSON floors file, with planted effect recovery on a synthetic corpus;
+  `training/evals/run.sh` reruns the seed 7 pipeline and compares the export with the
+  committed fixtures byte for byte. All of it fixture-only.
+
+- New offline evaluation `spider-optimize/tests/eval.rs`, behind `embedded-model`: a
+  seeded sweep of 2,000 contexts through `generate`, `featurize_edit` and `choose`
+  that holds both fixture artifacts to keep on every request, a confident scorer to
+  edits that pass `validate` and touch no field the caller set, decisions to the same
+  answer twice and a time bound, and the trainer's golden cases to the gate's abstain
+  handling.
+- Document optimizer boundaries, parameter coverage, paired datasets, evidence gates
+  and staged rollout; add principle 20 for gated edits and caller precedence.
+
+- New `auth::router` module: a `StoredRouter` (the `router` parameter and
+  `provider_options`) kept in `~/.spider/router.json`, written owner only through
+  the same path as the credentials file, read under a 64 KiB cap, and checked by
+  `StoredRouter::validate`. `Debug` prints no token, credential value or option
+  value, and no error names a value.
+- `SpiderBuilder::stored_router(true)` reads that file at build, and
+  `SpiderBuilder::provider_router` sets one directly. The method is not called
+  `router`, because that name already takes the local router. Off by default.
+  Every page operation then sends the stored `router` when the caller set none,
+  and the stored `provider_options` when the caller set none. A caller's own
+  `router` always wins, `mode: off` included. Nothing changes for a client built
+  without it.
+- `spider-agent router set`, `show` and `clear` store, print and delete that
+  file. `set` merges into what is stored and removes a field with `--no-token`,
+  `--no-credential` and `--no-option`. Keys come from stdin (`--token-stdin`,
+  `--credential NAME-stdin`) or `SPIDER_ROUTER_TOKEN`, and `--token VALUE` is
+  refused because it lands in shell history. `show` prints every key as
+  `<redacted>` and writes a `router` record under `--json`.
+- Every command that fetches pages (scrape, fetch, crawl, extract, links,
+  screenshot, run, and search with `--fetch-pages`) now sends the stored router
+  by default and says so once on stderr, naming provider, mode and funding.
+  `--no-router` or `SPIDER_AGENT_NO_ROUTER` skips it for one run. A router file
+  that cannot be used stops those commands with code 2 before a call.
+- The global `--mode` and `router set --mode` share one value type inside the
+  parser. The accepted values and the help for the global flag are unchanged.
+- New unpublished workspace member `optimize-collect`, the paired comparison
+  collector. For every url it runs a baseline arm and one arm per candidate edit
+  set applied through the optimizer, labels each candidate row against its
+  baseline, and writes `rows.jsonl` and `manifest.json` in the shape the
+  training validator reads. It refuses to start without `--dry-run` against a
+  loopback stub or `--spend` with `--max-credits`, and exits 3 at the cap.
+
+- Add version one optimizer artifacts, bounded FP32 MLP and GBDT inference,
+  calibration, support cells, and synthetic parity fixtures.
+- The optimizer's bundled artifact and both parity fixtures now come from the
+  Python trainer (`training/fixtures/golden/`), trained on a synthetic corpus.
+  They are still FIXTURE-ONLY: they prove the two readers agree, not that a
+  model helps. The embedded MLP artifact grows from 24,126 to 153,229 bytes,
+  well under its 2,097,152 byte baseline. The trainer's exporter now writes
+  what the Rust reader accepts: Platt calibrations with zero knots, finite
+  sentinel thresholds for folded splits, `null` for non-finite golden inputs,
+  and no identity calibration on the success head.
+
+- New crate `spider-optimize`, the core of a second decision layer that runs
+  after the router and the plan. It lists valid edits to the learnable request
+  fields (`request`, `proxy`, an idle network wait, `disable_intercept`,
+  `full_resources`, the three blocking switches and `network_blacklist`
+  appends), scores them through a `Scorer`, and applies at most one set that
+  clears validation and a `Gate`. With `NoModel`, the only scorer shipped, every
+  request is kept. Nothing uses it yet: the client does not call it, so no
+  request changes. A field the caller set is never edited, nothing heavier is
+  proposed under a rate limit, and a blacklist edit needs `disable_hints`.
+- `spider-optimize` also writes comparison rows by hand, with no url, host or
+  body in them, and ships the label helpers `shingle_jaccard`, `byte_ratio`
+  and `fields_ok`. `training/fixtures/schema-v1.json` mirrors its key table
+  and feature layout for the trainer, and a test fails when the two differ.
+- `scripts/verify.sh` gains the optimize boundary gate, its allocation
+  baselines and its packaging dry run.
+- New `optimize` feature on `spider-cloud-agent`, on by default and in `full`.
+  `SpiderBuilder::optimizer` runs an `Optimizer` on the first attempt
+  of every operation, after the router and the plan. `ApplyMode::Shadow` sends
+  the request unchanged; `ApplyMode::Apply` writes the pick onto the fields the
+  caller left unset. A request that fixes the mode, the pool or the country is
+  never passed to it, the escalation ladder is untouched, and `event_tracker`
+  is never set on the caller's behalf. A blacklist edit reads its resource
+  summary from a `ResourceSource` the caller supplies.
+- `SpiderBuilder::comparison_recorder` writes one comparison row per optimized
+  operation when its walk settles, with the credits and attempts of the whole
+  walk, the requested and returned field counts, and a site key salted by
+  `JsonlComparisonRecorder::with_salt`. A row carries no url, host or body.
+  Without the feature, the client builds and exports exactly what it did.
+- New `training/` uv project, `spider-optimize-train`, which ships in no crate.
+  It validates a corpus of comparison rows, trains a LightGBM and a numpy MLP
+  scorer on the same split, calibrates success, sweeps a per-edit success floor
+  with a pair bootstrap risk bound, runs paired regression gates, and exports
+  the artifact the crate will read, with a Python reference reader and golden
+  cases. Only a synthetic corpus with planted effects exists, so every number it
+  prints is labelled FIXTURE-ONLY. It sends no request.
+
 ## 0.6.0 (2026-09-16)
 
 - `RequestParams` gains the documented fields it was missing:

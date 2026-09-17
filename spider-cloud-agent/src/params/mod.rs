@@ -1172,4 +1172,31 @@ mod tests {
         assert!(!json.contains("proxy_enabled"), "dropped from the surface");
         assert!(!json.contains("pipeline"));
     }
+
+    /// Every event tracker switch goes out, an unset one as false.
+    #[test]
+    fn an_event_tracker_always_sends_all_three_switches() {
+        let mut params = RequestParams::default();
+        params.event_tracker = Some(EventTracker {
+            responses: Some(true),
+            ..EventTracker::default()
+        });
+        let json = serde_json::to_value(&params).expect("serialize");
+        assert_eq!(
+            json["event_tracker"],
+            serde_json::json!({"responses": true, "requests": false, "automation": false})
+        );
+
+        params.event_tracker = Some(EventTracker::default());
+        let json = serde_json::to_value(&params).expect("serialize");
+        assert_eq!(
+            json["event_tracker"],
+            serde_json::json!({"responses": false, "requests": false, "automation": false})
+        );
+
+        // Reading back still takes a partial object.
+        let partial: EventTracker = serde_json::from_str(r#"{"automation": true}"#).expect("parse");
+        assert_eq!(partial.automation, Some(true));
+        assert_eq!(partial.responses, None);
+    }
 }

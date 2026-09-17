@@ -13,16 +13,17 @@ from unittest.mock import patch
 spec = importlib.util.spec_from_file_location("verify_live", Path(__file__).with_name("verify-live.py"))
 gate = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(gate)
-NAMES = [f"live_case_{n}" for n in range(8)] + [gate.EXCEPTION]
+NAMES = [f"live_case_{n}" for n in range(9)]
 
 
 class LiveGateTests(unittest.TestCase):
     def run_gate(self, names=NAMES, results=None, key="synthetic", revision="test-revision",
                  endpoint="https://example.com"):
         if results is None:
-            results = [(name, "FAILED" if name == gate.EXCEPTION else "ok") for name in NAMES]
+            results = [(name, "ok") for name in NAMES]
+        code = 0 if results and all(status == "ok" for _, status in results) else 101
         listing = subprocess.CompletedProcess([], 0, "".join(f"{n}: test\n" for n in names), "")
-        run = subprocess.CompletedProcess([], 101, "".join(f"test {n} ... {s}\n" for n, s in results), "")
+        run = subprocess.CompletedProcess([], code, "".join(f"test {n} ... {s}\n" for n, s in results), "")
         with tempfile.TemporaryDirectory() as directory:
             previous = Path.cwd()
             try:
@@ -44,10 +45,9 @@ class LiveGateTests(unittest.TestCase):
             finally:
                 os.chdir(previous)
 
-    def test_tracks_failure_separately(self):
+    def test_every_test_passing_passes(self):
         record = self.run_gate()
-        self.assertEqual(record["status"], "passed with tracked exception")
-        self.assertEqual(record["results"][gate.EXCEPTION], "FAILED")
+        self.assertEqual(record["status"], "passed")
         self.assertEqual(record["service_revision"], "test-revision")
 
     def test_missing_key_or_revision_fails(self):
@@ -68,20 +68,16 @@ class LiveGateTests(unittest.TestCase):
         with self.assertRaises(SystemExit):
             self.run_gate(results=[])
 
-    def test_other_failure_or_skip_fails(self):
+    def test_any_failure_or_skip_fails(self):
         for status in ["FAILED", "ignored"]:
-            results = [(n, "FAILED" if n == gate.EXCEPTION else "ok") for n in NAMES]
-            results[0] = (NAMES[0], status)
+            results = [(n, "ok") for n in NAMES]
+            results[-1] = (NAMES[-1], status)
             with self.subTest(status=status), self.assertRaises(SystemExit):
                 self.run_gate(results=results)
 
-    def test_exception_passing_requires_review(self):
-        with self.assertRaises(SystemExit):
-            self.run_gate(results=[(n, "ok") for n in NAMES])
-
     def test_duplicate_result_fails(self):
         with self.assertRaises(SystemExit):
-            self.run_gate(results=[(NAMES[0], "ok")] * 8 + [(gate.EXCEPTION, "FAILED")])
+            self.run_gate(results=[(NAMES[0], "ok")] * 9)
 
 
 if __name__ == "__main__":

@@ -1,0 +1,18 @@
+{
+  "_fixture_only": "Floors for the synthetic reversal scenario, seed 7, 20000 pairs: the residential effect flips inside the test window, and the run is expected to be rejected there. The success metrics on that window describe the flip and are not floored; the time and cost heads are. Set from one measured run with a margin; see evals/README.md. Nothing here is evidence about real requests.",
+  "expect_gate_status": "fail",
+  "min_coverage": 0.05,
+  "min_harmful": 1,
+  "min_planted_uplift": 0.1,
+  "min_planted_rows": 20,
+  "kinds": {
+    "mlp": {
+      "max_mae_credits": 0.202,
+      "max_mae_millis": 560
+    },
+    "gbdt": {
+      "max_mae_credits": 0.349,
+      "max_mae_millis": 660
+    }
+  }
+}

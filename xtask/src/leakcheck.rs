@@ -24,6 +24,10 @@ pub const ALLOWED_ENV_VARS: &[&str] = &[
     // background check runs under, and the release base read by debug builds
     // only, so a test can point it at a loopback stub.
     "SPIDER_AGENT_NO_UPDATE",
+    // The stored provider fallback in spider-agent: the token read by
+    // `router set`, and the opt out that sends no stored router for one run.
+    "SPIDER_ROUTER_TOKEN",
+    "SPIDER_AGENT_NO_ROUTER",
     "SPIDER_AGENT_UPDATE_BACKGROUND",
     "SPIDER_AGENT_UPDATE_BASE",
     "SPIDER_AGENT_UPDATE_KEY",
@@ -370,7 +374,8 @@ fn is_fixture_path(rel: &str) -> bool {
 }
 
 fn is_model_artifact(rel: &str) -> bool {
-    rel.starts_with("spider-route/assets/") && rel.ends_with(".bin")
+    (rel.starts_with("spider-route/assets/") || rel.starts_with("spider-optimize/assets/"))
+        && rel.ends_with(".bin")
 }
 
 // ---------------------------------------------------------------------------
@@ -903,6 +908,21 @@ mod tests {
         let unrecorded = audit_artifact("a.bin", &blob, None);
         assert_eq!(unrecorded.len(), 1);
         assert!(unrecorded[0].reason.contains("no size baseline"));
+    }
+
+    #[test]
+    fn optimizer_artifacts_are_audited() {
+        let path = "spider-optimize/assets/spider-optimize-v1.bin";
+        assert!(is_model_artifact(path));
+        let bytes = include_bytes!("../../spider-optimize/assets/spider-optimize-v1.bin");
+        let baselines =
+            load_baselines(Path::new(env!("CARGO_MANIFEST_DIR")).parent().unwrap()).unwrap();
+        assert!(audit_artifact(path, bytes, baselines.get(path).copied()).is_empty());
+        let mut planted = bytes.to_vec();
+        planted.extend_from_slice(&[b'A'; 20]);
+        assert!(audit_artifact(path, &planted, Some(2097152))
+            .iter()
+            .any(|f| f.reason.contains("printable ascii run")));
     }
 
     #[test]

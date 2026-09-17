@@ -15,7 +15,13 @@ pub async fn search(global: &Global, args: &SearchArgs, log: Log) -> Run<Code> {
     if query.trim().is_empty() {
         return Err(Failure::usage("the query is empty."));
     }
-    let spider = setup::client(global)?;
+    // A bare search is one query and no page request, so only a search that
+    // reads its results carries the stored router.
+    let spider = if args.fetch_pages {
+        setup::fetching_client(global, log)?
+    } else {
+        setup::client(global)?
+    };
     let mut emitter = setup::emitter(global, Format::Ndjson)?;
     let mut report = Report {
         targets: 1,

@@ -26,6 +26,7 @@ maintenance = { status = "actively-developed" }
 
 [dependencies]
 spider-route = { workspace = true }
+spider-optimize = { workspace = true, optional = true }
 reqwest = { workspace = true }
 tokio = { workspace = true }
 serde = { workspace = true }
@@ -41,13 +42,17 @@ getrandom = { version = "0.3", optional = true }
 keyring = { version = "3", features = ["apple-native", "windows-native", "sync-secret-service"], optional = true }
 
 [features]
-default = []
+default = ["optimize"]
 # The browser sign in flow. Off by default: a library that only ever uses a key
 # from the environment should not carry a crypto stack or open a socket.
 oauth = ["dep:sha2", "dep:base64", "dep:percent-encoding", "dep:getrandom", "tokio/net", "tokio/io-util"]
 # Store the key in the operating system keychain instead of a file.
 keyring = ["dep:keyring"]
-full = ["oauth", "keyring"]
+full = ["oauth", "keyring", "optimize"]
+# The gated parameter optimizer on the first attempt of each operation. On by
+# default but inert: nothing runs until a caller passes `SpiderBuilder::optimizer`,
+# and with `NoModel`, the only scorer shipped, it keeps every request.
+optimize = ["dep:spider-optimize"]
 
 [dev-dependencies]
 criterion = { version = "0.7", features = ["html_reports"] }

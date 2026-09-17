@@ -1,0 +1,710 @@
+{
+  "blocks": [
+    {
+      "base": 0,
+      "name": "config",
+      "width": 24
+    },
+    {
+      "base": 24,
+      "name": "edit_key",
+      "width": 16
+    },
+    {
+      "base": 40,
+      "name": "edit_op",
+      "width": 5
+    },
+    {
+      "base": 45,
+      "name": "value_bucket",
+      "width": 8
+    },
+    {
+      "base": 53,
+      "name": "pair",
+      "width": 8
+    },
+    {
+      "base": 61,
+      "name": "need_bits",
+      "width": 4
+    },
+    {
+      "base": 65,
+      "name": "obs_hosts",
+      "width": 5
+    },
+    {
+      "base": 70,
+      "name": "obs_share",
+      "width": 5
+    },
+    {
+      "base": 75,
+      "name": "obs_class",
+      "width": 14
+    },
+    {
+      "base": 89,
+      "name": "obs_party",
+      "width": 2
+    },
+    {
+      "base": 91,
+      "name": "missing",
+      "width": 4
+    },
+    {
+      "base": 95,
+      "name": "bias",
+      "width": 1
+    }
+  ],
+  "edit_dim": 96,
+  "edit_feature_version": 1,
+  "keys": [
+    {
+      "content_changing": false,
+      "index": 0,
+      "learnable": false,
+      "name": "Url",
+      "wire": "url"
+    },
+    {
+      "content_changing": false,
+      "index": 1,
+      "learnable": true,
+      "name": "Request",
+      "wire": "request"
+    },
+    {
+      "content_changing": false,
+      "index": 2,
+      "learnable": true,
+      "name": "Proxy",
+      "wire": "proxy"
+    },
+    {
+      "content_changing": false,
+      "index": 3,
+      "learnable": false,
+      "name": "CountryCode",
+      "wire": "country_code"
+    },
+    {
+      "content_changing": false,
+      "index": 4,
+      "learnable": false,
+      "name": "RemoteProxy",
+      "wire": "remote_proxy"
+    },
+    {
+      "content_changing": false,
+      "index": 5,
+      "learnable": false,
+      "name": "Stealth",
+      "wire": "stealth"
+    },
+    {
+      "content_changing": false,
+      "index": 6,
+      "learnable": false,
+      "name": "Fingerprint",
+      "wire": "fingerprint"
+    },
+    {
+      "content_changing": false,
+      "index": 7,
+      "learnable": false,
+      "name": "UserAgent",
+      "wire": "user_agent"
+    },
+    {
+      "content_changing": false,
+      "index": 8,
+      "learnable": false,
+      "name": "Viewport",
+      "wire": "viewport"
+    },
+    {
+      "content_changing": false,
+      "index": 9,
+      "learnable": false,
+      "name": "Locale",
+      "wire": "locale"
+    },
+    {
+      "content_changing": false,
+      "index": 10,
+      "learnable": false,
+      "name": "Cookies",
+      "wire": "cookies"
+    },
+    {
+      "content_changing": false,
+      "index": 11,
+      "learnable": false,
+      "name": "Headers",
+      "wire": "headers"
+    },
+    {
+      "content_changing": false,
+      "index": 12,
+      "learnable": false,
+      "name": "Encoding",
+      "wire": "encoding"
+    },
+    {
+      "content_changing": false,
+      "index": 13,
+      "learnable": false,
+      "name": "Storageless",
+      "wire": "storageless"
+    },
+    {
+      "content_changing": false,
+      "index": 14,
+      "learnable": false,
+      "name": "Session",
+      "wire": "session"
+    },
+    {
+      "content_changing": false,
+      "index": 15,
+      "learnable": false,
+      "name": "RedirectPolicy",
+      "wire": "redirect_policy"
+    },
+    {
+      "content_changing": false,
+      "index": 16,
+      "learnable": false,
+      "name": "RequestTimeout",
+      "wire": "request_timeout"
+    },
+    {
+      "content_changing": false,
+      "index": 17,
+      "learnable": false,
+      "name": "ServiceWorkerEnabled",
+      "wire": "service_worker_enabled"
+    },
+    {
+      "content_changing": false,
+      "index": 18,
+      "learnable": false,
+      "name": "PreserveHost",
+      "wire": "preserve_host"
+    },
+    {
+      "content_changing": false,
+      "index": 19,
+      "learnable": false,
+      "name": "Delay",
+      "wire": "delay"
+    },
+    {
+      "content_changing": false,
+      "index": 20,
+      "learnable": false,
+      "name": "ConcurrencyLimit",
+      "wire": "concurrency_limit"
+    },
+    {
+      "content_changing": false,
+      "index": 21,
+      "learnable": false,
+      "name": "Wayback",
+      "wire": "wayback"
+    },
+    {
+      "content_changing": false,
+      "index": 22,
+      "learnable": false,
+      "name": "Limit",
+      "wire": "limit"
+    },
+    {
+      "content_changing": false,
+      "index": 23,
+      "learnable": false,
+      "name": "Depth",
+      "wire": "depth"
+    },
+    {
+      "content_changing": false,
+      "index": 24,
+      "learnable": false,
+      "name": "Budget",
+      "wire": "budget"
+    },
+    {
+      "content_changing": false,
+      "index": 25,
+      "learnable": false,
+      "name": "Blacklist",
+      "wire": "blacklist"
+    },
+    {
+      "content_changing": false,
+      "index": 26,
+      "learnable": false,
+      "name": "Whitelist",
+      "wire": "whitelist"
+    },
+    {
+      "content_changing": false,
+      "index": 27,
+      "learnable": false,
+      "name": "Subdomains",
+      "wire": "subdomains"
+    },
+    {
+      "content_changing": false,
+      "index": 28,
+      "learnable": false,
+      "name": "Tld",
+      "wire": "tld"
+    },
+    {
+      "content_changing": false,
+      "index": 29,
+      "learnable": false,
+      "name": "ExternalDomains",
+      "wire": "external_domains"
+    },
+    {
+      "content_changing": false,
+      "index": 30,
+      "learnable": false,
+      "name": "Sitemap",
+      "wire": "sitemap"
+    },
+    {
+      "content_changing": false,
+      "index": 31,
+      "learnable": false,
+      "name": "SitemapOnly",
+      "wire": "sitemap_only"
+    },
+    {
+      "content_changing": false,
+      "index": 32,
+      "learnable": false,
+      "name": "SitemapPath",
+      "wire": "sitemap_path"
+    },
+    {
+      "content_changing": false,
+      "index": 33,
+      "learnable": false,
+      "name": "RespectRobots",
+      "wire": "respect_robots"
+    },
+    {
+      "content_changing": false,
+      "index": 34,
+      "learnable": false,
+      "name": "LinkRewrite",
+      "wire": "link_rewrite"
+    },
+    {
+      "content_changing": false,
+      "index": 35,
+      "learnable": false,
+      "name": "CrawlTimeout",
+      "wire": "crawl_timeout"
+    },
+    {
+      "content_changing": false,
+      "index": 36,
+      "learnable": false,
+      "name": "RunInBackground",
+      "wire": "run_in_background"
+    },
+    {
+      "content_changing": false,
+      "index": 37,
+      "learnable": true,
+      "name": "WaitIdleMillis",
+      "wire": "wait_for"
+    },
+    {
+      "content_changing": false,
+      "index": 38,
+      "learnable": false,
+      "name": "Scroll",
+      "wire": "scroll"
+    },
+    {
+      "content_changing": false,
+      "index": 39,
+      "learnable": false,
+      "name": "ExecutionScripts",
+      "wire": "execution_scripts"
+    },
+    {
+      "content_changing": false,
+      "index": 40,
+      "learnable": false,
+      "name": "AutomationScripts",
+      "wire": "automation_scripts"
+    },
+    {
+      "content_changing": false,
+      "index": 41,
+      "learnable": false,
+      "name": "EvaluateOnNewDocument",
+      "wire": "evaluate_on_new_document"
+    },
+    {
+      "content_changing": false,
+      "index": 42,
+      "learnable": true,
+      "name": "DisableIntercept",
+      "wire": "disable_intercept"
+    },
+    {
+      "content_changing": false,
+      "index": 43,
+      "learnable": true,
+      "name": "FullResources",
+      "wire": "full_resources"
+    },
+    {
+      "content_changing": false,
+      "index": 44,
+      "learnable": true,
+      "name": "BlockAds",
+      "wire": "block_ads"
+    },
+    {
+      "content_changing": false,
+      "index": 45,
+      "learnable": true,
+      "name": "BlockAnalytics",
+      "wire": "block_analytics"
+    },
+    {
+      "content_changing": true,
+      "index": 46,
+      "learnable": true,
+      "name": "BlockStylesheets",
+      "wire": "block_stylesheets"
+    },
+    {
+      "content_changing": true,
+      "index": 47,
+      "learnable": false,
+      "name": "DisableFirstPartyStylesheets",
+      "wire": "disable_first_party_stylesheets"
+    },
+    {
+      "content_changing": true,
+      "index": 48,
+      "learnable": false,
+      "name": "DisableFirstPartyJavascript",
+      "wire": "disable_first_party_javascript"
+    },
+    {
+      "content_changing": true,
+      "index": 49,
+      "learnable": false,
+      "name": "DisableFirstPartyVisuals",
+      "wire": "disable_first_party_visuals"
+    },
+    {
+      "content_changing": true,
+      "index": 50,
+      "learnable": false,
+      "name": "NetworkWhitelist",
+      "wire": "network_whitelist"
+    },
+    {
+      "content_changing": true,
+      "index": 51,
+      "learnable": true,
+      "name": "NetworkBlacklist",
+      "wire": "network_blacklist"
+    },
+    {
+      "content_changing": false,
+      "index": 52,
+      "learnable": false,
+      "name": "EventTracker",
+      "wire": "event_tracker"
+    },
+    {
+      "content_changing": true,
+      "index": 53,
+      "learnable": false,
+      "name": "ReturnFormat",
+      "wire": "return_format"
+    },
+    {
+      "content_changing": true,
+      "index": 54,
+      "learnable": false,
+      "name": "RootSelector",
+      "wire": "root_selector"
+    },
+    {
+      "content_changing": true,
+      "index": 55,
+      "learnable": false,
+      "name": "ExcludeSelector",
+      "wire": "exclude_selector"
+    },
+    {
+      "content_changing": true,
+      "index": 56,
+      "learnable": false,
+      "name": "FilterOutputImages",
+      "wire": "filter_output_images"
+    },
+    {
+      "content_changing": true,
+      "index": 57,
+      "learnable": false,
+      "name": "FilterOutputSvg",
+      "wire": "filter_output_svg"
+    },
+    {
+      "content_changing": true,
+      "index": 58,
+      "learnable": false,
+      "name": "FilterOutputMainOnly",
+      "wire": "filter_output_main_only"
+    },
+    {
+      "content_changing": true,
+      "index": 59,
+      "learnable": false,
+      "name": "MaxSize",
+      "wire": "max_size"
+    },
+    {
+      "content_changing": true,
+      "index": 60,
+      "learnable": false,
+      "name": "Readability",
+      "wire": "readability"
+    },
+    {
+      "content_changing": true,
+      "index": 61,
+      "learnable": false,
+      "name": "CleanHtml",
+      "wire": "clean_html"
+    },
+    {
+      "content_changing": true,
+      "index": 62,
+      "learnable": false,
+      "name": "CssExtractionMap",
+      "wire": "css_extraction_map"
+    },
+    {
+      "content_changing": true,
+      "index": 63,
+      "learnable": false,
+      "name": "ChunkingAlg",
+      "wire": "chunking_alg"
+    },
+    {
+      "content_changing": false,
+      "index": 64,
+      "learnable": false,
+      "name": "Metadata",
+      "wire": "metadata"
+    },
+    {
+      "content_changing": false,
+      "index": 65,
+      "learnable": false,
+      "name": "ReturnEmbeddings",
+      "wire": "return_embeddings"
+    },
+    {
+      "content_changing": false,
+      "index": 66,
+      "learnable": false,
+      "name": "ReturnHeaders",
+      "wire": "return_headers"
+    },
+    {
+      "content_changing": false,
+      "index": 67,
+      "learnable": false,
+      "name": "ReturnCookies",
+      "wire": "return_cookies"
+    },
+    {
+      "content_changing": false,
+      "index": 68,
+      "learnable": false,
+      "name": "ReturnPageLinks",
+      "wire": "return_page_links"
+    },
+    {
+      "content_changing": false,
+      "index": 69,
+      "learnable": false,
+      "name": "ReturnJsonData",
+      "wire": "return_json_data"
+    },
+    {
+      "content_changing": true,
+      "index": 70,
+      "learnable": false,
+      "name": "Text",
+      "wire": "text"
+    },
+    {
+      "content_changing": false,
+      "index": 71,
+      "learnable": false,
+      "name": "Cache",
+      "wire": "cache"
+    },
+    {
+      "content_changing": false,
+      "index": 72,
+      "learnable": false,
+      "name": "Webhooks",
+      "wire": "webhooks"
+    },
+    {
+      "content_changing": false,
+      "index": 73,
+      "learnable": false,
+      "name": "DataConnectors",
+      "wire": "data_connectors"
+    },
+    {
+      "content_changing": false,
+      "index": 74,
+      "learnable": false,
+      "name": "Router",
+      "wire": "router"
+    },
+    {
+      "content_changing": false,
+      "index": 75,
+      "learnable": false,
+      "name": "ProviderOptions",
+      "wire": "provider_options"
+    },
+    {
+      "content_changing": false,
+      "index": 76,
+      "learnable": false,
+      "name": "MaxCreditsAllowed",
+      "wire": "max_credits_allowed"
+    },
+    {
+      "content_changing": false,
+      "index": 77,
+      "learnable": false,
+      "name": "MaxCreditsPerPage",
+      "wire": "max_credits_per_page"
+    },
+    {
+      "content_changing": false,
+      "index": 78,
+      "learnable": false,
+      "name": "DisableHints",
+      "wire": "disable_hints"
+    },
+    {
+      "content_changing": false,
+      "index": 79,
+      "learnable": false,
+      "name": "SkipConfigChecks",
+      "wire": "skip_config_checks"
+    }
+  ],
+  "multipliers": [
+    {
+      "mode": "http",
+      "multiplier": 1.0,
+      "proxy": "isp",
+      "wait_ms": 0
+    },
+    {
+      "mode": "smart",
+      "multiplier": 1.5,
+      "proxy": "isp",
+      "wait_ms": 0
+    },
+    {
+      "mode": "browser",
+      "multiplier": 4.0,
+      "proxy": "isp",
+      "wait_ms": 0
+    },
+    {
+      "mode": "browser",
+      "multiplier": 5.0,
+      "proxy": "isp",
+      "wait_ms": 10000
+    },
+    {
+      "mode": "smart",
+      "multiplier": 3.0,
+      "proxy": "residential",
+      "wait_ms": 0
+    },
+    {
+      "mode": "browser",
+      "multiplier": 8.0,
+      "proxy": "residential",
+      "wait_ms": 10000
+    }
+  ],
+  "needs": [
+    "text",
+    "markdown",
+    "html",
+    "links",
+    "metadata",
+    "fields",
+    "screenshot",
+    "raw"
+  ],
+  "ops": [
+    {
+      "code": 0,
+      "name": "set"
+    },
+    {
+      "code": 1,
+      "name": "append"
+    },
+    {
+      "code": 2,
+      "name": "remove"
+    },
+    {
+      "code": 3,
+      "name": "replace"
+    },
+    {
+      "code": 4,
+      "name": "clear"
+    }
+  ],
+  "schema_version": 1,
+  "status": [
+    "unknown",
+    "ok",
+    "empty",
+    "bad_request",
+    "needs_login",
+    "blocked",
+    "not_found",
+    "rate_limited",
+    "server_error"
+  ]
+}

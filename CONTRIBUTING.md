@@ -2,7 +2,12 @@
 
 ## Setup
 
-You need Rust 1.88 or newer and Python 3. Release checks also need cargo-deny.
+You need Rust 1.88 or newer and Python 3. Release checks also need three more tools.
+The first is cargo-deny. The second is the 1.88 toolchain, so the gate can check every
+target under the declared floor. Install it with
+`rustup toolchain install 1.88 --profile minimal`. The third is `uv`, for the
+trainer's evals under `training/`. When the 1.88 toolchain or `uv` is absent, an
+ordinary run skips its step and prints the reason.
 
 ```bash
 git clone https://github.com/spider-rs/spider-cloud-agent
@@ -61,12 +66,8 @@ for the older transitive versions already in the lockfile.
 The live script spends credits and requires a non-empty key, an explicit API URL and
 `SPIDER_SERVICE_REVISION`. Obtain that revision from the deployment serving that URL;
 it is an operator attestation, not the client's Git revision. Python 3 checks the
-compiled inventory and the results: all nine tests must execute, eight must pass,
-and none may skip. No test-name filter is accepted. The selector-name test is the
-tracked F7a exception: the backend extraction cache does not include the selector map
-in its key. Its failure is recorded separately, never as a pass. A pass from that test
-also fails the gate so the exception must be reviewed and removed after the service fix.
-The tests' assertions stay intact.
+compiled inventory and the results: all nine tests must execute and pass, and none
+may skip. No test-name filter is accepted.
 
 Keep `target/live-verification/*.json` with the release evidence. Each record contains
 the service revision, client revision, test inventory and per-test outcomes. A local

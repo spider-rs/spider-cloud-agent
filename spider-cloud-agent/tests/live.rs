@@ -188,7 +188,7 @@ async fn live_named_selectors_come_back_in_the_body_and_not_in_the_metadata() {
 }
 
 #[tokio::test]
-#[ignore = "calls the live api, spends credits, and fails until the service is fixed"]
+#[ignore = "calls the live api and spends credits"]
 async fn live_the_service_answers_with_the_field_names_the_request_asked_for() {
     let spider = client!();
 

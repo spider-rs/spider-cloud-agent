@@ -332,15 +332,23 @@ pub type ExecutionScriptsMap = BTreeMap<String, String>;
 ///
 /// Turning these on adds to the response body, so ask for them when you are
 /// working out why a page came back wrong, not by default.
+///
+/// All three switches always go out, and one left unset is sent as `false`.
+/// Reading back still accepts an object that names only some of them.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct EventTracker {
     /// Report the responses the page received, with their byte counts.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(default, serialize_with = "false_when_unset")]
     pub responses: Option<bool>,
     /// Report the requests the page sent, with the time each went out.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(default, serialize_with = "false_when_unset")]
     pub requests: Option<bool>,
     /// Report what each automation step did, including its screenshots.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(default, serialize_with = "false_when_unset")]
     pub automation: Option<bool>,
+}
+
+/// Write an unset switch as `false`, so the object always names all three.
+fn false_when_unset<S: serde::Serializer>(value: &Option<bool>, s: S) -> Result<S::Ok, S::Error> {
+    s.serialize_bool(value.unwrap_or(false))
 }

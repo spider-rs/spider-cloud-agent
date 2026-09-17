@@ -51,6 +51,9 @@ step "route boundary"
 python3 scripts/check-rust-boundary.py || fail "boundary scanner self-tests"
 scripts/check-route-boundary.sh || fail "route boundary"
 
+step "optimize boundary"
+scripts/check-optimize-boundary.sh || fail "optimize boundary"
+
 step "policy purity"
 scripts/check-policy-purity.sh || fail "policy purity"
 
@@ -77,14 +80,50 @@ step "tests, no default features"
 # to work with no model compiled in, and that path has to keep working.
 cargo test --locked --workspace --no-default-features || fail "tests with no default features"
 
+step "minimum supported rust"
+# The workspace declares rust-version 1.88, and a newer compiler on the
+# developer's machine infers more than that one does. Checking every target
+# under the floor is what caught a test that only built on 1.97. Skipped with
+# a reason when the toolchain is absent; required on a release run.
+MSRV="$(sed -n 's/^rust-version = "\(.*\)"/\1/p' Cargo.toml | head -n 1)"
+[ -n "$MSRV" ] || fail "no rust-version in Cargo.toml"
+# rustup names an installed toolchain by its full version, so 1.88 has to be
+# matched against 1.88.x in the list.
+MSRV_TOOLCHAIN="$(rustup toolchain list 2>/dev/null \
+  | sed -n "s/^\($MSRV\(\.[0-9][0-9]*\)\{0,1\}\)-.*/\1/p" | head -n 1)"
+if [ -n "$MSRV_TOOLCHAIN" ]; then
+  rustup run "$MSRV_TOOLCHAIN" cargo check --locked --workspace --all-targets --all-features \
+    || fail "minimum supported rust ($MSRV_TOOLCHAIN)"
+elif "$release"; then
+  fail "release requires the $MSRV toolchain: rustup toolchain install $MSRV --profile minimal"
+else
+  printf '  skipped minimum supported rust: toolchain %s is not installed\n' "$MSRV"
+fi
+
+step "training evals"
+# The trainer's own tests and its fixture-only evals: metric floors on the
+# seeded synthetic corpus, the paired gates failing closed with nothing
+# applied, and the exporter reproducing the committed artifacts. uv is not
+# a requirement of the Rust build, so its absence skips the step and says so;
+# a release run requires it.
+if uv --version >/dev/null 2>&1; then
+  training/evals/run.sh --quick || fail "training evals"
+elif "$release"; then
+  fail "release requires uv for the training evals; install it from https://docs.astral.sh/uv/"
+else
+  printf '  skipped training evals: uv is not installed\n'
+fi
+
 step "live gate self-tests"
 python3 -B scripts/test_verify_live.py || fail "live gate self-tests"
 
 step "allocation baselines"
-cargo bench --locked -p spider-cloud-agent --bench allocations -- --test \
+cargo bench --locked -p spider-cloud-agent --all-features --bench allocations -- --test \
   || fail "client allocation baselines"
 cargo bench --locked -p spider-route --bench route -- --test \
   || fail "route allocation baselines"
+cargo bench --locked -p spider-optimize --bench optimize -- --test \
+  || fail "optimize allocation baselines"
 
 step "docs"
 RUSTDOCFLAGS="-D warnings" cargo doc --locked --no-deps --all-features \
@@ -105,8 +144,9 @@ fi
 
 step "package"
 # Publish dependencies first: the CLI depends on both libraries at the workspace
-# version (spider-route through spider-cloud-agent).
-cargo publish --locked --dry-run -p spider-route -p spider-cloud-agent -p spider-agent-cli \
+# version (spider-route through spider-cloud-agent), and spider-optimize depends
+# on spider-route.
+cargo publish --locked --dry-run -p spider-route -p spider-optimize -p spider-cloud-agent -p spider-agent-cli \
   || fail "packaging, the crates would not publish"
 
 printf '\nall gates passed\n'

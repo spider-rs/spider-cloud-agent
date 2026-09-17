@@ -1,9 +1,9 @@
 [workspace]
-members = ["spider-agent-cli", "spider-cloud-agent", "spider-route", "xtask"]
+members = ["optimize-collect", "spider-agent-cli", "spider-cloud-agent", "spider-optimize", "spider-route", "xtask"]
 resolver = "2"
 
 [workspace.package]
-version = "0.6.0"
+version = "0.7.0"
 edition = "2021"
 # Cargo metadata for the locked graph declares Rust 1.88 for icu_collections,
 # icu_locale_core, icu_normalizer{,_data}, icu_properties{,_data} and icu_provider.
@@ -18,8 +18,9 @@ repository = "https://github.com/spider-rs/spider-cloud-agent"
 homepage = "https://spider.cloud"
 
 [workspace.dependencies]
-spider-cloud-agent = { version = "0.6.0", path = "spider-cloud-agent", default-features = false }
-spider-route = { version = "0.6.0", path = "spider-route" }
+spider-cloud-agent = { version = "0.7.0", path = "spider-cloud-agent", default-features = false }
+spider-route = { version = "0.7.0", path = "spider-route" }
+spider-optimize = { version = "0.7.0", path = "spider-optimize" }
 reqwest = { version = "0.13", default-features = false, features = ["json", "rustls", "rustls-native-certs"] }
 tokio = { version = "1", default-features = false, features = ["rt", "time", "macros"] }
 serde = { version = "1", features = ["derive"] }

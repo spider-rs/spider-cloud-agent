@@ -9,7 +9,7 @@ import re
 import sys
 
 WINDOW = 2
-FLOOR = 48
+FLOOR = 72
 document = Path('PRINCIPLES.md').read_text()
 citations = list(re.finditer(r'(?<![\w/.-])([\w./-]+):(\d+)\b', document))
 errors = []

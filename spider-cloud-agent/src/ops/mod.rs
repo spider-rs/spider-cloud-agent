@@ -33,6 +33,7 @@ use std::time::{Duration, Instant};
 use serde::Serialize;
 use url::Url;
 
+use crate::auth::router::StoredRouter;
 use crate::client::{IntoUrl, Spider};
 use crate::credits::Credits;
 use crate::error::{BudgetKind, Error};
@@ -99,14 +100,6 @@ where
     match deadline.0 {
         Some(end) => timeout_at(end, call).await.ok(),
         None => Some(call.await),
-    }
-}
-
-/// The error for a call the wall ended before the service answered.
-pub(crate) fn out_of_time(attempts: Vec<Attempt>) -> Error {
-    Error::BudgetExceeded {
-        kind: BudgetKind::Time,
-        attempts,
     }
 }
 
@@ -353,6 +346,13 @@ impl<'a> Call<'a> {
 
         routing::apply_decision(&decision, &mut self.params, &caller);
         plan.apply_over(&mut self.params, &caller);
+        apply_stored_router(self.spider.provider_router(), &mut self.params, &caller);
+        // The optimizer reads the request as it is about to go out, and like the
+        // explorer it is never asked about a request the caller pinned. Only the
+        // first attempt is edited: every rung after it writes over the mode, the
+        // pool and the wait, and leaves a blacklist edit where it was.
+        #[cfg(feature = "optimize")]
+        let optimized = crate::optimize::decide(self, &input, &caller, &decision);
         let format = self.format();
 
         let mut state = AttemptState::new(self.budget);
@@ -594,6 +594,9 @@ impl<'a> Call<'a> {
                 self.spider.site_memory().observe(&target, &result);
             }
             self.spider.router().observe(&input, &result);
+            // One comparison row per operation, written when the walk settles.
+            #[cfg(feature = "optimize")]
+            crate::optimize::compare(self, optimized.as_ref(), &next, &result, &attempts, &pages);
 
             // Only the first attempt was routed. Every one after it was chosen
             // by the ladder, so a row for it would describe a decision the
@@ -909,6 +912,26 @@ fn escalate(step: &Step, params: &mut RequestParams, plan: &Plan, caller: &Reque
     plan.apply_over(params, caller);
 }
 
+/// Fill in the stored provider fallback where the caller left it alone.
+///
+/// Read against the caller snapshot, like the routing decision, so a `router`
+/// the caller set goes out as they set it, `mode: off` included. The two fields
+/// are decided apart. The ladder touches neither, and under `mode: fallback`
+/// the service tries the provider only after its own fetch fails.
+pub(crate) fn apply_stored_router(
+    store: Option<&StoredRouter>,
+    params: &mut RequestParams,
+    caller: &RequestParams,
+) {
+    let Some(store) = store else { return };
+    if caller.router.is_none() {
+        params.router = Some(store.router.clone());
+    }
+    if caller.provider_options.is_none() && store.provider_options.is_some() {
+        params.provider_options.clone_from(&store.provider_options);
+    }
+}
+
 /// Where a plan sends the call.
 ///
 /// Only a page request is moved. A crawl that asked for links keeps crawling
@@ -1040,6 +1063,14 @@ fn nothing_came_back(pages: &Pages) -> bool {
     }
     let mut served = pages.ok().peekable();
     served.peek().is_some() && pages.ok().all(Page::is_blank)
+}
+
+/// The error for a call the wall ended before the service answered.
+pub(crate) fn out_of_time(attempts: Vec<Attempt>) -> Error {
+    Error::BudgetExceeded {
+        kind: BudgetKind::Time,
+        attempts,
+    }
 }
 
 /// Turn the policy's reason for stopping into the error the caller sees.
@@ -1297,36 +1328,6 @@ mod tests {
     use crate::thrift::Need;
 
     #[test]
-    fn f2_a_malformed_breakdown_does_not_erase_a_readable_total() {
-        let body = serde_json::json!({
-            "costs": { "total_cost": 0.0002, "compute_cost": {} },
-            "status": "not a status"
-        });
-        assert!(has_charge(&body));
-        assert_eq!(charged(&body), Credits(2.0));
-        assert!(!has_charge(&serde_json::json!({"costs": {}})));
-    }
-
-    #[test]
-    fn f1_default_wall_reaches_page_and_search_calls() {
-        let spider = Spider::builder()
-            .key("not-a-real-key")
-            .base_url(Url::parse("https://example.com").unwrap())
-            .build()
-            .unwrap();
-        // All page builders use new or bare; search uses bare and run_json.
-        // Check the default here, and exercise every send path with a short
-        // wall in wire::f1_wall_ends_every_operation.
-        for call in [
-            Call::new(&spider, "https://example.com"),
-            Call::bare(&spider),
-        ] {
-            assert_eq!(call.budget.wall, Some(Duration::from_secs(900)));
-            assert!(Deadline::new(call.budget.wall).unwrap().0.is_some());
-        }
-    }
-
-    #[test]
     fn curated_surface_membership_is_explicit() {
         let source = include_str!("mod.rs");
         let surface = source
@@ -1377,6 +1378,36 @@ mod tests {
                 "{name} needs a line in docs/action-vocabulary.md"
             );
         }
+    }
+
+    #[test]
+    fn f1_default_wall_reaches_page_and_search_calls() {
+        let spider = Spider::builder()
+            .key("not-a-real-key")
+            .base_url(Url::parse("https://example.com").unwrap())
+            .build()
+            .unwrap();
+        // All page builders use new or bare; search uses bare and run_json.
+        // Check the default here, and exercise every send path with a short
+        // wall in wire::f1_wall_ends_every_operation.
+        for call in [
+            Call::new(&spider, "https://example.com"),
+            Call::bare(&spider),
+        ] {
+            assert_eq!(call.budget.wall, Some(Duration::from_secs(900)));
+            assert!(Deadline::new(call.budget.wall).unwrap().0.is_some());
+        }
+    }
+
+    #[test]
+    fn f2_a_malformed_breakdown_does_not_erase_a_readable_total() {
+        let body = serde_json::json!({
+            "costs": { "total_cost": 0.0002, "compute_cost": {} },
+            "status": "not a status"
+        });
+        assert!(has_charge(&body));
+        assert_eq!(charged(&body), Credits(2.0));
+        assert!(!has_charge(&serde_json::json!({"costs": {}})));
     }
 
     #[test]
@@ -1494,5 +1525,68 @@ mod tests {
         tokio::time::advance(Duration::from_millis(400)).await;
         assert!(!deadline.allows_wait(Duration::ZERO));
         assert!(Deadline::new(None).unwrap().allows_wait(Duration::MAX));
+    }
+
+    fn stored(mode: &str) -> StoredRouter {
+        StoredRouter {
+            router: crate::params::Router {
+                mode: Some(mode.to_string()),
+                provider: Some("zyte".to_string()),
+                funding: Some("own".to_string()),
+                ..crate::params::Router::default()
+            },
+            provider_options: Some(
+                [("zyte".to_string(), serde_json::json!({"geolocation": "US"}))].into(),
+            ),
+        }
+    }
+
+    #[test]
+    fn a_stored_router_fills_in_what_the_caller_left_alone() {
+        let store = stored("fallback");
+        let caller = RequestParams::url("https://example.com");
+        let mut params = caller.clone();
+        apply_stored_router(Some(&store), &mut params, &caller);
+        assert_eq!(params.router, Some(store.router.clone()));
+        assert_eq!(params.provider_options, store.provider_options);
+        let wire = serde_json::to_value(&params).unwrap();
+        assert_eq!(wire["router"]["mode"], "fallback");
+        assert_eq!(wire["provider_options"]["zyte"]["geolocation"], "US");
+
+        // No store, nothing written.
+        let mut params = caller.clone();
+        apply_stored_router(None, &mut params, &caller);
+        assert_eq!(params, caller);
+    }
+
+    #[test]
+    fn a_stored_router_never_argues_with_the_caller() {
+        let store = stored("fallback");
+        let mut caller = RequestParams::url("https://example.com");
+        caller.router = Some(crate::params::Router {
+            mode: Some("off".to_string()),
+            ..crate::params::Router::default()
+        });
+        caller.provider_options =
+            Some([("zyte".to_string(), serde_json::json!({"geolocation": "DE"}))].into());
+        let mut params = caller.clone();
+        apply_stored_router(Some(&store), &mut params, &caller);
+        assert_eq!(params, caller);
+
+        // The two are decided apart: the caller's router stays, and options
+        // the caller did not set are filled in.
+        caller.provider_options = None;
+        let mut params = caller.clone();
+        apply_stored_router(Some(&store), &mut params, &caller);
+        assert_eq!(params.router, caller.router);
+        assert_eq!(params.provider_options, store.provider_options);
+
+        // The snapshot decides, not what is on the request by now: a router
+        // written after the snapshot is not the caller's.
+        let caller = RequestParams::url("https://example.com");
+        let mut params = caller.clone();
+        params.router = Some(crate::params::Router::default());
+        apply_stored_router(Some(&store), &mut params, &caller);
+        assert_eq!(params.router, Some(store.router));
     }
 }

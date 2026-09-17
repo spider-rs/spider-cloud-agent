@@ -944,6 +944,20 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "7c87def4c32ab89d880effc9e097653c8da5d6ef28e6b539d313baaacfbafcbe"
 
 [[package]]
+name = "optimize-collect"
+version = "0.7.0"
+dependencies = [
+ "clap",
+ "serde",
+ "serde_json",
+ "sha2",
+ "spider-cloud-agent",
+ "spider-optimize",
+ "tokio",
+ "url",
+]
+
+[[package]]
 name = "percent-encoding"
 version = "2.3.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1443,7 +1457,7 @@ dependencies = [
 
 [[package]]
 name = "spider-agent-cli"
-version = "0.6.0"
+version = "0.7.0"
 dependencies = [
  "base64",
  "clap",
@@ -1461,7 +1475,7 @@ dependencies = [
 
 [[package]]
 name = "spider-cloud-agent"
-version = "0.6.0"
+version = "0.7.0"
 dependencies = [
  "base64",
  "bytes",
@@ -1474,6 +1488,7 @@ dependencies = [
  "serde",
  "serde_json",
  "sha2",
+ "spider-optimize",
  "spider-route",
  "thiserror 2.0.20",
  "tokio",
@@ -1481,8 +1496,20 @@ dependencies = [
 ]
 
 [[package]]
+name = "spider-optimize"
+version = "0.7.0"
+dependencies = [
+ "criterion",
+ "serde",
+ "serde_json",
+ "spider-cloud-agent",
+ "spider-route",
+ "url",
+]
+
+[[package]]
 name = "spider-route"
-version = "0.6.0"
+version = "0.7.0"
 dependencies = [
  "criterion",
  "serde",
