@@ -7,6 +7,13 @@ error.
 
 ## 0.6.0 (2026-09-16)
 
+- New unpublished workspace member `optimize-collect`, the paired comparison
+  collector. For every url it runs a baseline arm and one arm per candidate edit
+  set applied through the optimizer, labels each candidate row against its
+  baseline, and writes `rows.jsonl` and `manifest.json` in the shape the
+  training validator reads. It refuses to start without `--dry-run` against a
+  loopback stub or `--spend` with `--max-credits`, and exits 3 at the cap.
+
 - Add version one optimizer artifacts, bounded FP32 MLP and GBDT inference,
   calibration, support cells, and synthetic parity fixtures.
 

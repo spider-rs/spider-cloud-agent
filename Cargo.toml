@@ -1,5 +1,5 @@
 [workspace]
-members = ["spider-agent-cli", "spider-cloud-agent", "spider-optimize", "spider-route", "xtask"]
+members = ["optimize-collect", "spider-agent-cli", "spider-cloud-agent", "spider-optimize", "spider-route", "xtask"]
 resolver = "2"
 
 [workspace.package]
