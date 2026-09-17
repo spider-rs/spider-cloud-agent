@@ -7,6 +7,12 @@ error.
 
 ## 0.6.0 (2026-09-16)
 
+- New offline evaluation `spider-optimize/tests/eval.rs`, behind `embedded-model`: a
+  seeded sweep of 2,000 contexts through `generate`, `featurize_edit` and `choose`
+  that holds both fixture artifacts to keep on every request, a confident scorer to
+  edits that pass `validate` and touch no field the caller set, decisions to the same
+  answer twice and a time bound, and the trainer's golden cases to the gate's abstain
+  handling.
 - Document optimizer boundaries, parameter coverage, paired datasets, evidence gates
   and staged rollout; add principle 20 for gated edits and caller precedence.
 
