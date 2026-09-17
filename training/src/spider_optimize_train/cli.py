@@ -1,4 +1,4 @@
-"""`spider-optimize-train synth|validate|train|evaluate|thresholds|gates|eval|export`."""
+"""`spider-optimize-train synth|validate|train|evaluate|thresholds|gates|eval|tradeoff|export`."""
 
 from __future__ import annotations
 
@@ -8,14 +8,12 @@ import math
 import sys
 from pathlib import Path
 
-import numpy as np
-
+from . import compare, report, splits, synth, tradeoff
 from . import evaluate as ev
 from . import export as ex
 from . import features as feat
 from . import floors as fl
 from . import gates as gt
-from . import report, splits, synth
 from . import thresholds as th
 from .dataset import Manifest, read_rows, validate
 from .models import load_run, make_split, train
@@ -39,8 +37,9 @@ def _thresholds(run: Path, kind: str) -> th.Thresholds:
 
 
 def cmd_synth(args) -> int:
-    manifest = synth.generate(Path(args.out), args.seed, args.pairs)
-    _out(f"wrote {manifest.rows} rows in {manifest.pairs} pairs to {args.out}", True)
+    manifest = synth.generate(Path(args.out), args.seed, args.pairs, args.scenario)
+    _out(f"wrote {manifest.rows} rows in {manifest.pairs} pairs to {args.out} "
+         f"({args.scenario} scenario)", True)
     return 0
 
 
@@ -143,14 +142,7 @@ def cmd_evaluate(args) -> int:
     return 0
 
 
-def _gate_pairs(model, cal, test: feat.Arrays, thresholds, tau):
-    scored = th.score(model, cal, test, tau)
-    cand = np.flatnonzero(scored.candidates)
-    applied = th.applies(scored, thresholds)[cand]
-    baselines = [test.rows[j] for j in scored.baseline_of[cand]]
-    chosen = [test.rows[i] if a else test.rows[j]
-              for i, j, a in zip(cand, scored.baseline_of[cand], applied, strict=True)]
-    return gt.outcomes(baselines, chosen, applied, tau)
+_gate_pairs = compare.gate_pairs
 
 
 def cmd_gates(args) -> int:
@@ -164,10 +156,13 @@ def cmd_gates(args) -> int:
         pairs = _gate_pairs(model, cals[kind], windows["test"], _thresholds(run, kind),
                             doc["tau"])
         result = gt.run(pairs, args.resamples, args.seed)
-        texts.append(gt.render(result, manifest.synthetic, kind))
+        against = compare.from_outcomes(pairs, args.resamples, args.seed)
+        texts.append(gt.render(result, manifest.synthetic, kind) + "\n"
+                     + compare.render(against, manifest.synthetic, kind))
         why = f" ({result.reason})" if result.reason else ""
         _out(f"{kind}: gate {result.status} on {result.pairs} pairs, applied "
              f"{result.applied}{why}", manifest.synthetic)
+        _out(f"{kind}: {compare.summary(against)}", manifest.synthetic)
         failed |= not result.passed
     (run / "regression-report.md").write_text("\n".join(texts))
     return 1 if failed else 0
@@ -193,8 +188,10 @@ def cmd_eval(args) -> int:
         metrics = ev.evaluate(model, cals[kind], test, thresholds, doc["tau"])["success"]
         pairs = _gate_pairs(model, cals[kind], test, thresholds, doc["tau"])
         gate = gt.run(pairs, args.resamples, args.seed)
+        against = compare.from_outcomes(pairs, args.resamples, args.seed)
         result = fl.KindResult(kind, fl.metric_checks(kind, metrics, floors)
-                               + fl.gate_checks(gate, floors))
+                               + fl.gate_checks(gate, floors)
+                               + fl.comparison_checks(against, floors), comparison=against)
         if manifest.synthetic and manifest.planted:
             scored = th.score(model, cals[kind], test, doc["tau"])
             result.planted = fl.planted_checks(manifest.planted, scored, floors)
@@ -209,7 +206,36 @@ def cmd_eval(args) -> int:
         gated = [c for c in r.checks + r.planted if c.passed is not None]
         bad = len(r.failed())
         _out(f"{r.kind}: {len(gated) - bad} of {len(gated)} floors met", manifest.synthetic)
+        _out(f"{r.kind}: {compare.summary(r.comparison)}", manifest.synthetic)
     return 1 if failed else 0
+
+
+def _r_max_grid(text: str) -> list[float]:
+    grid = [float(v) for v in text.split(",") if v.strip()]
+    if not grid or any(not 0 < v <= 1 for v in grid) or grid != sorted(grid):
+        raise SystemExit("--r-max wants rising values in (0, 1], comma separated")
+    return grid
+
+
+def cmd_tradeoff(args) -> int:
+    corpus, run = Path(args.corpus), Path(args.run)
+    manifest, doc, models, cals, windows = _corpus(corpus, run)
+    if doc["split_name"] != "chronological":
+        print("tradeoff reads the chronological test window; train with --split chronological")
+        return 1
+    grid = _r_max_grid(args.r_max)
+    per_kind = {}
+    for kind, model in models.items():
+        rows = tradeoff.sweep(model, cals[kind], windows, doc["tau"], grid, args.min_covered,
+                              args.min_sites, args.resamples, args.gate_resamples, args.seed)
+        per_kind[kind] = rows
+        for r in rows:
+            _out(f"{kind} r_max {report.fmt(r.r_max, 3)}: floors {r.floors}, "
+                 f"{compare.summary(r.comparison)}, gate {r.gate.status}", manifest.synthetic)
+    (run / "tradeoff.md").write_text(
+        tradeoff.render(per_kind, manifest.synthetic, args.min_covered, args.min_sites)
+    )
+    return 0
 
 
 def cmd_export(args) -> int:
@@ -266,6 +292,9 @@ def parser() -> argparse.ArgumentParser:
     s.add_argument("--out", required=True)
     s.add_argument("--seed", type=int, default=1)
     s.add_argument("--pairs", type=int, default=4000)
+    s.add_argument("--scenario", choices=tuple(synth.SCENARIOS), default="default",
+                   help="default is the fixture corpus; reversal flips the residential "
+                        "effect inside the test window; stable is the control without a flip")
     s.set_defaults(func=cmd_synth)
 
     s = sub.add_parser("validate", help="list every violation in a corpus; exit 1 on any")
@@ -312,6 +341,21 @@ def parser() -> argparse.ArgumentParser:
     s.add_argument("--resamples", type=int, default=gt.RESAMPLES)
     s.add_argument("--seed", type=int, default=0)
     s.set_defaults(func=cmd_eval)
+
+    s = sub.add_parser("tradeoff", help="re-choose the floors at several r_max and read each "
+                                        "policy against the baseline on the test window")
+    s.add_argument("corpus")
+    s.add_argument("--run", required=True)
+    s.add_argument("--r-max", default=",".join(str(v) for v in tradeoff.R_MAX_GRID),
+                   help="comma separated, rising")
+    s.add_argument("--min-covered", type=int, default=th.MIN_COVERED)
+    s.add_argument("--min-sites", type=int, default=th.MIN_SITES)
+    s.add_argument("--resamples", type=int, default=th.RESAMPLES,
+                   help="bootstrap resamples for the floor sweep")
+    s.add_argument("--gate-resamples", type=int, default=gt.RESAMPLES,
+                   help="bootstrap resamples for the gate and the comparison")
+    s.add_argument("--seed", type=int, default=0)
+    s.set_defaults(func=cmd_tradeoff)
 
     s = sub.add_parser("export", help="write the artifact, its sidecar and golden cases")
     s.add_argument("corpus")

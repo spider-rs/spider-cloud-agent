@@ -66,6 +66,49 @@ success count. Both ratios are recomputed inside every resample. Report missing 
 implemented gate does not treat unknown content as broken. Report both model
 kinds; the command fails unless every evaluated kind passes.
 
+## The policy against the heuristic baseline
+
+Below the three gates the report carries one more table, from `compare.py`, read on
+the same pairs the gates read. It says what the selected policy did that the
+heuristic would not have done, and what it cost:
+
+| Row | What it holds |
+| --- | --- |
+| overrides | Pairs on which the policy applied the candidate, and their share of the window (coverage). On every other pair the policy's arm is the baseline arm |
+| success rate, content_ok rate | The policy's arms and the baseline arms, with the net success delta |
+| credits per correct result | Total credits over correct arms (a success whose content is not broken), for both, with the delta |
+| harmful overrides | Applied pairs where the baseline succeeded and the policy's arm did not, or the arm came back with broken content; their count, their rate over overrides and its 95 percent bootstrap upper bound |
+| helpful overrides | Applied pairs where the policy's arm is correct and the baseline failed |
+
+A floors file may bound this table: `min_coverage`, `max_harmful_rate` (on the upper
+bound, so a policy with no override cannot meet it) and `min_harmful`. The
+`tradeoff` command writes the same columns once per `r_max`, so a reader can see what
+each risk budget buys on the test window before any budget is chosen.
+
+## The two synthetic regression scenarios
+
+`synth --scenario reversal` and `synth --scenario stable` are fixtures, made from the
+generator with the same seed and no fetched page. They prove two things about the
+evaluation and nothing about real requests.
+
+The reversal plants a residential effect on blocked sites that holds through every day
+the model is fitted, stopped and calibrated on and flips on the first day of the
+chronological test window. No earlier row carries any sign of it. The trained model
+applies the edit, as the evidence says it should, and the test window shows the edit
+losing what the plain fetch had: `gates` returns `fail` with the success check red, the
+comparison table names the harmful overrides, and `eval` with
+`training/evals/synth-reversal-floors.json` expects exactly that. The model is not
+required to have foreseen the flip. The evaluation is required to reject the artifact.
+
+The stable control is the same plant with no flip. `gates` must return `pass` with
+edits applied: coverage at least 0.05, the harmful rate's upper bound at or under
+`r_max`, and the policy's credits per correct result at or under the baseline's. A
+policy that abstains on every pair fails this control on coverage before anything
+else, so passing cannot consist of switching every learned action off.
+
+`training/evals/README.md` has the plant, the measured numbers and the tradeoff tables
+for both.
+
 ## What code guarantees and what is empirical
 
 Validation refuses unsupported edits and pinned fields; application rechecks the

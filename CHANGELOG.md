@@ -15,6 +15,15 @@ error.
   `"fallback":true`, one warning is logged, and nothing is applied again until
   `Monitor::reset`. Detection costs up to `min_applied` degraded outcomes plus what
   the window hides; the tests print the measured delay and losses.
+- Trainer: the residential reversal is an explicit regression fixture. `synth
+  --scenario reversal` flips the effect inside the chronological test window only and
+  the gate must reject the artifact; `--scenario stable` is the control that must pass
+  with edits applied, so passing cannot mean abstaining. `gates` and `eval` report the
+  policy against the heuristic baseline (`compare.py`: coverage, correctness, credits
+  per correct result, harmful and helpful overrides), floors files may bound coverage
+  and the harmful rate, a `tradeoff` subcommand reads the floors at several `r_max`,
+  and `train` now chooses tau outside the test window. All of it fixture-only.
+
 - Trainer: the cost gate is paired (policy minus baseline credits per correct result,
   resampled by pair, upper bound at or under zero) and a policy that applied no edit is
   `insufficient` rather than a cost failure; new `eval` subcommand checks a run against a

@@ -109,8 +109,12 @@ def train(
         rows = read_rows(Path(dataset))
     else:
         rows = list(dataset)
-    tau, tau_note = labels.choose_tau(rows)
     parts = make_split(rows, split)
+    # Tau is read from the windows the model is fitted, stopped and calibrated on. The
+    # test window is held back from it like from everything else, so nothing the gate
+    # reads has shaped the labels.
+    tau, tau_note = labels.choose_tau(parts.train + parts.tune + parts.calibrate)
+    tau_note = f"{tau_note}, outside the test window"
     windows = {name: feat.build(parts.window(name), tau) for name in splits.WINDOWS}
     train_w, tune_w = windows["train"], windows["tune"]
     if len(train_w) == 0 or len(tune_w) == 0 or len(windows["calibrate"]) == 0:

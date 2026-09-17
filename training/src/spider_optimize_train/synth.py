@@ -11,17 +11,26 @@ time and cost, the way two fetches of the same page a minute apart share the pag
 a candidate with a higher success chance rarely loses a pair its baseline won. One
 pair in ten draws the candidate's success on its own, which is where those rare
 losses come from.
+
+Three scenarios share the generator. `default` is the corpus every fixture was made
+from. `reversal` plants a strong residential effect on blocked sites that holds
+through the train, tune and calibrate days and flips inside the chronological test
+window only, so a model trained on the evidence applies the edit and the evaluation
+has to reject the artifact. `stable` is the same plant with no flip, the control a
+passing run must clear with edits applied rather than by abstaining. `SCENARIOS`
+below says what each one changes.
 """
 
 from __future__ import annotations
 
+import copy
 import json
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 
 import numpy as np
 
-from . import labels
+from . import labels, splits
 from . import schema as sch
 from .dataset import Manifest
 
@@ -93,6 +102,97 @@ EDIT_WEIGHTS = {
 # Keys a synthetic caller pins. None of them is learnable.
 PINNABLE = (5, 7, 10, 11, 79)
 
+# How a site's labels are drawn, in the order the draws happen.
+STATUS_WEIGHTS = {"ok": 0.72, "blocked": 0.16, "empty": 0.12}
+EXT_WEIGHTS = {"markup": 0.62, "other": 0.14, "json": 0.08, "none": 0.08, "pdf": 0.04,
+               "feed": 0.04}
+NEED_WEIGHTS = {"markdown": 0.7, "text": 0.08, "html": 0.06, "links": 0.06, "metadata": 0.05,
+                "fields": 0.05}
+NEED_WEIGHTS_OTHER = {"markdown": 0.7, "text": 0.2, "html": 0.1}
+TARGET_SHARE = 0.5
+
+
+@dataclass(frozen=True)
+class Scenario:
+    """What one scenario changes. `default` is the generator as every fixture knows it;
+    the others are the regression fixtures the module docstring describes."""
+
+    name: str
+    planted: dict
+    edit_weights: dict = field(default_factory=lambda: EDIT_WEIGHTS)
+    domains: int = DOMAINS
+    status_weights: dict = field(default_factory=lambda: STATUS_WEIGHTS)
+    ext_weights: dict = field(default_factory=lambda: EXT_WEIGHTS)
+    need_weights: dict = field(default_factory=lambda: NEED_WEIGHTS)
+    need_weights_other: dict = field(default_factory=lambda: NEED_WEIGHTS_OTHER)
+    target_share: float = TARGET_SHARE  # chance a planted edit is tried where its effect is
+
+    @property
+    def uncoupled_share(self) -> float:
+        return float(self.planted["uncoupled_share"])
+
+
+# The first day of the chronological test window when every one of the DAYS days has a
+# pair, which a corpus of a few hundred pairs or more always does.
+FLIP_DAY = sum(splits.window_counts(DAYS))
+
+
+def _scenario_planted(flip: bool) -> dict:
+    """The plant the two regression scenarios share. The residential and wait effects are
+    strong enough to be cheaper per correct result than keep, the way the sweep needs
+    them, and the credit and time factors are small enough that a policy applying both
+    on half the pairs can pass the window-wide cost and latency checks. `flip` turns the
+    residential uplift into a loss from the first test day on; nothing before that day
+    differs between the two."""
+    p = copy.deepcopy(PLANTED)
+    p["wait"].update({"success_from": 0.55, "success_to": 0.75, "add_millis": 200,
+                      "credit_factor": 1.1})
+    p["residential"].update({
+        "success_from": 0.25,
+        "success_to": 0.90,
+        "credit_factor": 1.5,
+        "millis_factor": 1.1,
+        "flip_day": FLIP_DAY if flip else None,
+        "flipped_last_days": DAYS - FLIP_DAY if flip else 0,
+        "success_when_flipped": 0.05 if flip else 0.90,
+    })
+    # Arms of one pair share their success draw almost always, so the risk the sweep
+    # bounds comes from the plant and not from luck.
+    p["uncoupled_share"] = 0.005
+    p["domains"] = 800
+    return p
+
+
+_SCENARIO_MIX = {
+    # More blocked sites, and most tries of the two planted edits where their effect is,
+    # so each floor sees 200 covered rows on the calibrate window and the top
+    # need/ext/mem cell of each edit is seen on 50 sites in train.
+    "edit_weights": {
+        "wait_for": 0.16,
+        "proxy": 0.40,
+        "request": 0.08,
+        "block_stylesheets": 0.12,
+        "network_blacklist": 0.12,
+        "disable_intercept": 0.03,
+        "full_resources": 0.03,
+        "block_ads": 0.03,
+        "block_analytics": 0.03,
+    },
+    "domains": 800,
+    "status_weights": {"ok": 0.53, "blocked": 0.35, "empty": 0.12},
+    "ext_weights": {"markup": 0.80, "other": 0.10, "json": 0.05, "none": 0.05},
+    "need_weights": {"markdown": 0.85, "text": 0.05, "html": 0.05, "links": 0.05},
+    "target_share": 0.8,
+}
+
+SCENARIOS = {
+    "default": Scenario("default", PLANTED),
+    "reversal": Scenario("reversal", {"scenario": "reversal", **_scenario_planted(True)},
+                         **_SCENARIO_MIX),
+    "stable": Scenario("stable", {"scenario": "stable", **_scenario_planted(False)},
+                       **_SCENARIO_MIX),
+}
+
 
 @dataclass
 class Site:
@@ -110,14 +210,19 @@ class Site:
 
     @property
     def base_success(self) -> float:
-        if self.status == "blocked":
-            return PLANTED["residential"]["success_from"]
-        if self.status == "empty":
-            return PLANTED["browser"]["success_from"]
-        wait = PLANTED["wait"]
-        if self.ext == wait["ext"] and self.mem == wait["mem"]:
-            return wait["success_from"]
-        return 0.93
+        return base_success(self, PLANTED)
+
+
+def base_success(site: Site, planted: dict) -> float:
+    """How a plain fetch of the site goes under a plant."""
+    if site.status == "blocked":
+        return planted["residential"]["success_from"]
+    if site.status == "empty":
+        return planted["browser"]["success_from"]
+    wait = planted["wait"]
+    if site.ext == wait["ext"] and site.mem == wait["mem"]:
+        return wait["success_from"]
+    return 0.93
 
 
 def _pick(rng: np.random.Generator, options: dict):
@@ -126,21 +231,17 @@ def _pick(rng: np.random.Generator, options: dict):
     return names[int(rng.choice(len(names), p=weights / weights.sum()))]
 
 
-def make_sites(rng: np.random.Generator, count: int = DOMAINS) -> list[Site]:
+def make_sites(rng: np.random.Generator, count: int = DOMAINS,
+               scenario: Scenario | None = None) -> list[Site]:
+    scenario = scenario or SCENARIOS["default"]
     sites = []
     for _ in range(count):
-        status = _pick(rng, {"ok": 0.72, "blocked": 0.16, "empty": 0.12})
-        ext = _pick(
-            rng, {"markup": 0.62, "other": 0.14, "json": 0.08, "none": 0.08, "pdf": 0.04,
-                  "feed": 0.04}
-        )
+        status = _pick(rng, scenario.status_weights)
+        ext = _pick(rng, scenario.ext_weights)
         if ext == "other":
-            need = _pick(rng, {"markdown": 0.7, "text": 0.2, "html": 0.1})
+            need = _pick(rng, scenario.need_weights_other)
         else:
-            need = _pick(
-                rng, {"markdown": 0.7, "text": 0.08, "html": 0.06, "links": 0.06,
-                      "metadata": 0.05, "fields": 0.05}
-            )
+            need = _pick(rng, scenario.need_weights)
         if status == "ok":
             mem = _pick(rng, {"cold": 0.75, "thin": 0.12, "warm": 0.13})
         else:
@@ -305,10 +406,11 @@ def with_edit(row: dict, edit: Edit | None) -> dict:
     return out
 
 
-def effect(site: Site, edit: Edit | None, day: int) -> dict:
+def effect(site: Site, edit: Edit | None, day: int, planted: dict | None = None) -> dict:
     """What an edit does to a site on a day, as factors on the baseline arm."""
+    p = PLANTED if planted is None else planted
     out = {
-        "success": site.base_success,
+        "success": base_success(site, p),
         "millis_factor": 1.0,
         "add_millis": 0.0,
         "credit_factor": 1.0,
@@ -317,7 +419,6 @@ def effect(site: Site, edit: Edit | None, day: int) -> dict:
     }
     if edit is None:
         return out
-    p = PLANTED
     if edit.wire == "wait_for":
         out["add_millis"] = p["wait"]["add_millis"]
         out["credit_factor"] = p["wait"]["credit_factor"]
@@ -325,9 +426,9 @@ def effect(site: Site, edit: Edit | None, day: int) -> dict:
             out["success"] = p["wait"]["success_to"]
     elif edit.wire == "proxy":
         out["credit_factor"] = p["residential"]["credit_factor"]
-        out["millis_factor"] = 1.3
+        out["millis_factor"] = p["residential"].get("millis_factor", 1.3)
         if site.status == p["residential"]["status"]:
-            flipped = day >= DAYS - p["residential"]["flipped_last_days"]
+            flipped = day >= p["days"] - p["residential"]["flipped_last_days"]
             key = "success_when_flipped" if flipped else "success_to"
             out["success"] = p["residential"][key]
     elif edit.wire == "request":
@@ -436,7 +537,8 @@ def _compact(value: float):
 
 
 def draw_pair(rng: np.random.Generator, pair: int, day: int, site: Site, edit: Edit | None,
-              repeat: bool) -> list[dict]:
+              repeat: bool, scenario: Scenario | None = None) -> list[dict]:
+    scenario = scenario or SCENARIOS["default"]
     u = rng.random()
     noise = rng.lognormal(0.0, 0.25)
     pins = (0, 0)
@@ -446,12 +548,12 @@ def draw_pair(rng: np.random.Generator, pair: int, day: int, site: Site, edit: E
         high = sum(1 << (int(k) - 32) for k in keys if k >= 32)
         pins = (low, high)
 
-    base_fx = effect(site, None, day)
-    cand_fx = effect(site, edit, day)
+    base_fx = effect(site, None, day, scenario.planted)
+    cand_fx = effect(site, edit, day, scenario.planted)
     b_success = u < base_fx["success"]
     # Most of the time the second fetch sees the page the first did; now and then it
     # draws its own luck, which is where a regression on a better edit comes from.
-    c_u = rng.random() if rng.random() < UNCOUPLED_SHARE else u
+    c_u = rng.random() if rng.random() < scenario.uncoupled_share else u
     c_success = c_u < cand_fx["success"]
 
     b_millis = site.millis * noise
@@ -499,26 +601,35 @@ def draw_pair(rng: np.random.Generator, pair: int, day: int, site: Site, edit: E
     return [baseline, candidate]
 
 
-def _site_for(rng: np.random.Generator, sites: list[Site], wire: str) -> Site:
+def _site_for(rng: np.random.Generator, sites: list[Site], wire: str,
+              scenario: Scenario) -> Site:
     """Most tries of a planted edit go where its effect is, so the corpus holds enough
     of each; the rest go anywhere."""
-    wait = PLANTED["wait"]
+    p = scenario.planted
+    wait = p["wait"]
     wanted = {
         "wait_for": lambda s: s.status == "ok" and s.ext == wait["ext"] and s.mem == wait["mem"],
-        "proxy": lambda s: s.status == PLANTED["residential"]["status"],
-        "request": lambda s: s.status == PLANTED["browser"]["status"],
-        "block_stylesheets": lambda s: s.ext == PLANTED["stylesheets"]["breaks_ext"],
+        "proxy": lambda s: s.status == p["residential"]["status"],
+        "request": lambda s: s.status == p["browser"]["status"],
+        "block_stylesheets": lambda s: s.ext == p["stylesheets"]["breaks_ext"],
     }.get(wire)
-    if wanted is not None and rng.random() < 0.5:
+    if wanted is not None and rng.random() < scenario.target_share:
         pool = [s for s in sites if wanted(s)]
         if pool:
             return pool[int(rng.integers(0, len(pool)))]
     return sites[int(rng.integers(0, len(sites)))]
 
 
-def generate_rows(seed: int, pairs: int = 4000) -> list[dict]:
+def scenario_named(name: str) -> Scenario:
+    if name not in SCENARIOS:
+        raise ValueError(f"unknown scenario {name!r}; one of {', '.join(SCENARIOS)}")
+    return SCENARIOS[name]
+
+
+def generate_rows(seed: int, pairs: int = 4000, scenario: str = "default") -> list[dict]:
+    sc = scenario_named(scenario)
     rng = np.random.default_rng(seed)
-    sites = make_sites(rng)
+    sites = make_sites(rng, sc.domains, sc)
     first_pair = int(rng.integers(1, 1 << 40))
     rows = []
     for n in range(pairs):
@@ -528,17 +639,18 @@ def generate_rows(seed: int, pairs: int = 4000) -> list[dict]:
             site = sites[int(rng.integers(0, len(sites)))]
             edit = None
         else:
-            wire = _pick(rng, EDIT_WEIGHTS)
-            site = _site_for(rng, sites, wire)
+            wire = _pick(rng, sc.edit_weights)
+            site = _site_for(rng, sites, wire, sc)
             edit = standard_edit(wire, rng)
-        rows.extend(draw_pair(rng, first_pair + n, day, site, edit, repeat))
+        rows.extend(draw_pair(rng, first_pair + n, day, site, edit, repeat, sc))
     return rows
 
 
-def generate(out: Path, seed: int, pairs: int = 4000) -> Manifest:
+def generate(out: Path, seed: int, pairs: int = 4000, scenario: str = "default") -> Manifest:
+    sc = scenario_named(scenario)
     out = Path(out)
     out.mkdir(parents=True, exist_ok=True)
-    rows = generate_rows(seed, pairs)
+    rows = generate_rows(seed, pairs, scenario)
     schema = sch.load()
     with open(out / "rows.jsonl", "w") as handle:
         for row in rows:
@@ -557,9 +669,9 @@ def generate(out: Path, seed: int, pairs: int = 4000) -> Manifest:
         service_revision="none",
         credits_spent=0.0,
         tau=labels.DEFAULT_TAU,
-        salt_id=f"synth-{seed}",
+        salt_id=f"synth-{seed}" if scenario == "default" else f"synth-{seed}-{scenario}",
         synthetic=True,
-        planted=PLANTED,
+        planted=sc.planted,
     )
     manifest.write(out)
     return manifest

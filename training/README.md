@@ -25,8 +25,10 @@ uv run ruff check .
 uv run pytest -q
 ```
 
-The full suite runs in well under three minutes; it trains both kinds once on a 4000
-pair synthetic corpus and shares that run across tests.
+The full suite runs in under four minutes (about two on this machine); it trains both
+kinds once on a 4000 pair synthetic corpus and shares that run across tests, and
+`tests/test_scenarios.py` trains once more on each of the two 20000 pair regression
+scenarios.
 
 ## Commands
 
@@ -35,7 +37,8 @@ A corpus is a directory with `rows.jsonl`, one row per line as
 under `training/data/`, which git ignores.
 
 ```bash
-# Write a synthetic corpus with planted effects.
+# Write a synthetic corpus with planted effects. --scenario reversal flips the residential
+# effect inside the test window; --scenario stable is the control with no flip.
 uv run spider-optimize-train synth --out /tmp/opt/corpus --seed 1
 
 # List every violation; exit 1 on any.
@@ -52,9 +55,14 @@ uv run spider-optimize-train thresholds /tmp/opt/corpus --run /tmp/opt/run
 # column; write evaluation-<kind>.md.
 uv run spider-optimize-train evaluate /tmp/opt/corpus --run /tmp/opt/run --quantize int8
 
-# Paired gates on the chronological test window; write regression-report.md and
-# exit 1 unless every kind passes.
+# Paired gates on the chronological test window, with the policy read against the
+# heuristic baseline; write regression-report.md and exit 1 unless every kind passes.
 uv run spider-optimize-train gates /tmp/opt/corpus --run /tmp/opt/run
+
+# Choose the floors again at each r_max and read what each risk budget buys on the
+# test window; write tradeoff.md.
+uv run spider-optimize-train tradeoff /tmp/opt/corpus --run /tmp/opt/run \
+  --r-max 0.005,0.01,0.02,0.05,0.1
 
 # Check the run against a floors file: metric floors per kind on the test window, the
 # applied count and gate status, and planted effect recovery on a synthetic corpus;
@@ -85,9 +93,12 @@ looks like a host or holds `://`, a feature outside [-1, 1] or not finite, a fea
 vector of the wrong length, and versions that differ from the manifest.
 
 `train` recomputes `content_ok` from the stored scalars with tau at the 5th percentile
-of baseline repeat jaccard (the default 0.80 when fewer than 20 repeats exist). The
-success label is a success whose content was not judged broken. The split is 60, 15,
-10 and 15 percent of the days, in order. Both kinds see
+of baseline repeat jaccard (the default 0.80 when fewer than 20 repeats exist). Tau is
+read from the train, tune and calibrate rows; the test window shapes nothing before the
+gate, and `test_the_test_window_is_never_read_before_the_gate` rewrites every test row
+and checks the model, the calibration and the floors come out byte for byte the same.
+The success label is a success whose content was not judged broken. The split is 60,
+15, 10 and 15 percent of the days, in order. Both kinds see
 `base[152] ++ edit_feats[96] ++ pinned_bucket[4]`, with class weights times a 30 day
 recency half-life. The calibrate window chooses isotonic regression at 500 candidate
 rows or more and Platt scaling below that, and also Platt when isotonic pools into fewer
@@ -105,12 +116,29 @@ baseline arm: the success and content lower bounds at -0.005, the 95 percent upp
 bound of the policy's credits per correct result minus the baseline's, resampled by
 pair, at or under zero, p50 within 10 percent and p90 within 20 percent. Fewer than 300
 pairs is `insufficient`, which fails, and so is a policy that applied no edit on the
-window: its arm is the baseline on every pair and there is nothing to compare.
+window: its arm is the baseline on every pair and there is nothing to compare. The
+report ends with `compare.py`'s table, the policy against the heuristic baseline on the
+same pairs: overrides and coverage, success and content_ok rates, credits per correct
+result, harmful overrides (a success the baseline had and the policy lost, or broken
+content) with their rate and its upper bound, helpful overrides (correct where the
+baseline failed) and the net success delta.
 
 `eval` reads a JSON floors file and checks, per kind, the test window metrics against
-it, the number of applied edits and the gate status against exact expectations, and on
-a synthetic corpus the model's predicted uplift on each planted effect the row data can
+it, the number of applied edits and the gate status against exact expectations, the
+policy's coverage and harmful override rate where the file bounds them, and on a
+synthetic corpus the model's predicted uplift on each planted effect the row data can
 locate. `evals/README.md` has the file format and the effects it reaches.
+
+`tradeoff` chooses the floors again at each `--r-max` on the calibrate window and reads
+the policy each table gives against the baseline on the test window, one row per risk
+budget, into `tradeoff.md`. `evals/README.md` shows the tables for the two regression
+scenarios and says why they are flat.
+
+`synth --scenario reversal` plants a residential effect that holds through the days the
+model is fitted, stopped and calibrated on and flips inside the test window, so the
+gate has to reject an artifact that applied the edit on the evidence it had.
+`--scenario stable` is the same plant with no flip, the control a passing run must clear
+with edits applied. `evals/README.md` describes both and the numbers they measure.
 
 A pair counts as regressed (`labels.regressed`) when the baseline succeeded and the
 candidate did not, or when the candidate succeeded and its content was judged broken.
