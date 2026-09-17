@@ -137,7 +137,12 @@ pub fn validate(schema: &Schema, ctx: &Context<'_>, cand: &Candidate) -> Result<
                 Dependency::Rendered => {
                     matches!(mode, RequestMode::Smart | RequestMode::Browser)
                 }
-                Dependency::NotWith(other) => !active(ctx, edits, *other),
+                // An edit that switches its own field off cannot conflict
+                // with the other one, so only an edit that leaves its field
+                // on is held to this.
+                Dependency::NotWith(other) => {
+                    !active(ctx, edits, edit.key) || !active(ctx, edits, *other)
+                }
             };
             if !met {
                 return Err(Rejection::Dependency(edit.key));
@@ -341,6 +346,18 @@ mod tests {
         assert_eq!(
             check(&observed, vec![append("cdn-beta.example")]),
             Err(Rejection::Dependency(Key::NetworkBlacklist))
+        );
+        // Turning interception back on beside a blacklist is compatible: the
+        // edit switches its own field off, so nothing is left to conflict.
+        let mut listed = Fixture::observed();
+        listed.current.disable_intercept = Some(true);
+        listed.current.network_blacklist = Some(vec!["cdn-beta.example".into()]);
+        assert_eq!(
+            check(
+                &listed,
+                vec![Edit::set(Key::DisableIntercept, Value::Bool(false))]
+            ),
+            Ok(())
         );
         let rendered = Fixture::cold();
         assert_eq!(
