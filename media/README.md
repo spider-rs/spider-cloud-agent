@@ -2,9 +2,9 @@
 
 Six recorded scenes of a calling program driving spider-agent 0.7.0. Four of
 them put nothing on screen but machine-readable output: NDJSON records, a run
-report, an exit code. The two that drive a coding agent CLI also show the
-sentence the agent was given. The measured payload table is the one scene
-written for a human eye.
+report, an exit code. The two that drive a coding agent CLI also show the task
+the agent was given. The measured payload table is the one scene written for a
+human eye.
 
 ## Re-record
 
@@ -62,19 +62,30 @@ libx264 and yuv420p for the MP4, and the last frame copied out as a still.
 It also cuts the dead air. A tape sleeps a fixed stretch after Enter so a slow
 run still fits, which leaves a frozen tail on a fast one, and that tail goes.
 Any wait longer than 1.5 seconds is shortened to 1.5 seconds, and the two
-coding agent scenes cut that to 0.6. Those two wait on a model, twelve seconds
+coding agent scenes cut that to 0.6. Those two wait on a model, twenty seconds
 and up with nothing landing on screen, so their gap holds no output to read.
 The other four keep the 1.5 seconds they were recorded under.
 Nothing between the first and last visible change is dropped, and the
 millisecond stamps on screen are whatever that run measured.
 
+vhs stops capturing at the `Hide` that closes a scene, but one frame is already
+in flight when it does, and the hidden teardown types its first key a
+millisecond later. Around one take in twenty ends on that frame, with a stray
+`$ s` under the report. So the encoder drops a trailing stretch that stood for
+less than half a second, since a scene ends on a screen that sat still. On 60
+captures that leaked nothing it picked the same last frame as before. The Codex
+tape also waits a second inside `Hide` before it types. A bare test tape leaked
+once in 28 takes without that wait, and not once in 24 with it.
+
 The tapes share Menlo at 20, a dark theme, 24 fps capture and 70 ms typing, and
-each one is only as tall as its output. The two coding agent scenes type at
-10 ms throughout. Their command is the longest thing in the six scenes, and at
-70 ms typing it ran to three quarters of the video. The commands also set the
-tape width, 129 columns at the widest for Claude Code and 134 for Codex, since
-a line that wraps inside a flag is worse than a wide frame. GIFs must stay
-under 2,000,000 bytes.
+each one is only as tall as its output. The two coding agent scenes type faster,
+40 ms for Claude Code and 35 ms for Codex, whose invocation runs to three lines.
+The invocation is still the longest thing typed in the six scenes, so that speed
+decides the length of the video more than the run does. Their width is set by
+what the agent chooses rather than by what the tape types, 124 columns for Claude
+Code and 144 for Codex, because nothing here knows in advance how long the fetch
+the agent settles on will be, and a line that wraps mid word is worse than a wide
+frame. GIFs must stay under 2,000,000 bytes.
 
 ## Scenes
 
@@ -134,48 +145,74 @@ The visible line of `tapes/claude-calls-agent.tape` is the invocation itself,
 typed at a bare prompt with no wrapper around it:
 
 ```sh
-claude -p 'spider-agent scrape https://example.com --selectors fields.json --json --budget 2 --wall 20 --no-router.
-Print 2 lines, no markdown: the command, then served/refused/cost_credits/elapsed_ms JSON.' --allowed-tools Bash --model sonnet
+claude -p 'Run spider-agent schema, then pull the title, price and stock of each book on the
+books.toscrape.com front page, without the page body crossing the wire' --allowed-tools Bash --model sonnet
 ```
 
-The task is two short sentences because typing it is most of the scene. The
-first names the flags. Asked for the fields without them, Claude guessed at
-`--documents`, watched it fail and then read the crate source for ten turns,
-which is a true recording of something nobody wants to watch. The second makes
-`claude -p` end on two lines rather than a paragraph with the command in a
-fenced block. Even cut down the prompt runs past one line, so the tape presses
-Enter inside the quotes and bash continues it at `>`. Nothing filters what comes
-back.
+The task hands over no flag, no subcommand and no scheme on the address. It sends
+Claude to `spider-agent schema`, 274 KB of JSON holding the command tree and
+every record shape, and Claude works the rest out from there: `extract`, a
+selectors file it writes itself, `--json`. The last clause is what rules out
+downloading the page and grepping it locally. books.toscrape.com is a site built
+to be scraped, so a public recording can point at it and the front page holds
+twenty books, which is a job someone would pay for rather than a one-field
+errand. The task runs past one line, so the tape presses Enter inside the quotes
+and bash continues it at `>`. Nothing filters what comes back.
+
+An earlier cut of this scene carried three more sentences inside those quotes,
+ordering the model to print plain lines and no markdown. Nobody types that. It
+now lives in the `CLAUDE.md` the hidden setup leaves in the working directory,
+which is where Claude Code already looks for directions about where it is
+working, and the line on screen is the request on its own. The same file asks
+for the selectors to go in a file rather than inline, because a command with a
+JSON document inside it runs past the width of the frame.
 
 Everything else the scene needs is hidden with vhs `Hide`. `demo/agent-scene.sh`
-puts the agent in a scratch directory holding `fields.json`, starts a copy of
-whatever is printed there, clears the screen, and hands the copy to
-`demo/agent-scene.py` afterwards. That script parses the two lines back rather
-than trusting them, so a take is kept only when the command was a `spider-agent
-scrape` and the report it read says one page served and none refused. The take
-is timed by `PS0` and `PROMPT_COMMAND`, from the keystroke that submits the
-invocation to the moment it returns, which leaves out both the typing and the
-fixed sleep the tape spends waiting.
+puts the agent in an empty scratch directory, makes that directory a git
+repository, writes the notes file, starts a copy of whatever is printed there,
+and clears the screen. It hands the copy to `demo/agent-scene.py` afterwards.
+That script parses the lines back rather than trusting them, so a take is kept
+only when `spider-agent schema` is one of the commands on screen, the fetch under
+it carries `--selectors`, and the report says one page served and none refused.
+The `--selectors` check is also what keeps the frames publishable, since
+`--goal metadata` answers with an account id in every record. The take is timed
+by `PS0` and `PROMPT_COMMAND`, from the keystroke that submits the invocation to
+the moment it returns, which leaves out both the typing and the fixed sleep the
+tape spends waiting.
+
+The last line on screen is the one line the agent did not write. The shell's
+prompt hook prints it when the invocation returns, marked `[harness]` so nobody
+reads it as the model's answer, and a take with no such line is thrown away. Its
+seconds come off that same pair of stamps. Its token count is summed out of the
+transcript Claude Code writes for the scratch directory, every input, cache and
+output token the run recorded, and the fetch milliseconds are read back off the
+report already on screen. Nothing in it is estimated.
 
 Needs a signed-in `claude`, a live key, and the tokens the run costs.
 
 ### Codex calls agent
 
 `tapes/codex-calls-agent.tape` types the same task at Codex, under the same
-hidden plumbing:
+hidden plumbing, with the same notes written to the name Codex reads,
+`AGENTS.md`:
 
 ```sh
-codex exec -s workspace-write -c sandbox_workspace_write.network_access=true --skip-git-repo-check --json '<same task>' | jq -rs 'map(.item.text? // empty)[-1]'
+codex exec -p spider --json '<same task>' | tee turn.jsonl | jq -rs 'map(.item.text? // empty)[-1]'
 ```
 
-The default sandbox is read only and blocks the network, which kills the scrape
-with a budget error and zero wire bytes, so the recording asks for
-`workspace-write` and turns network access on. This is the one scene with a
-filter on screen. Codex has no quiet mode. It narrates every step and ends on a
-usage banner, and `--json` turns that into an event per line, so one jq takes the
-last agent message and lets the rest go by. There is no `< /dev/null` on the
-line. Codex reads stdin only when it is a pipe or a file, and under vhs it is a
-terminal.
+The default sandbox is read only and blocks the network, which kills the fetch
+with a budget error and zero wire bytes. That used to be two flags and a config
+override on screen. They are now a profile at `$CODEX_HOME/spider.config.toml`,
+which the README at the root of the repository prints in full, and
+`--skip-git-repo-check` is gone because the scratch directory is a repository.
+
+This is the one scene with a filter on screen. Codex has no quiet mode. It
+narrates every step, prints a session id in its header, and ends on a usage
+banner, so `--json` turns the run into an event per line and one jq takes the
+last agent message. The `tee` keeps the stream, because the `turn.completed`
+event at the end of it carries the usage block the harness line quotes. There is
+no `< /dev/null` on the line. Codex reads stdin only when it is a pipe or a file,
+and under vhs it is a terminal.
 
 Needs a signed-in `codex`, a live key, and the tokens the run costs.
 
@@ -214,9 +251,9 @@ are not.
 
 As of 17 September 2026 the standing takes are 1,163 ms for the flagship, 266 ms
 for route and cost, 2,632 ms for the crawl, and a 4.6 second video for the local
-table. The two CLI scenes are timed on the caller, 14,787 ms for Claude Code and
-13,281 ms for Codex, against the 239 and 308 ms the scrape itself took inside
-them. Little of that reaches the video. The encoder cuts the wait down, so what
-is left is mostly the command being typed, and those two GIFs run 4.8 and 5.9
-seconds and weigh 32 KB and 42 KB. The other four run 4.6 to 6.4 seconds and weigh about
-31 KB.
+table. The two CLI scenes are timed on the caller, 107,433 ms for Claude Code and
+94,817 ms for Codex, against the 1,432 and 794 ms the fetch itself took inside
+them. Reading the schema is most of that gap. Little of it reaches the video.
+The encoder cuts the wait down, so what is left is mostly the task being typed,
+and those two GIFs run 10.1 and 9.9 seconds and weigh 37 KB and 41 KB. The other
+four run 4.6 to 6.4 seconds and weigh about 31 KB.

@@ -93,32 +93,62 @@ call, spending nothing and needing no key.
 
 There is no plugin to install and no server to register. A coding agent already
 has a shell, and that is the whole interface. The two recordings below are
-Claude Code and Codex, run headless with the same task, each assembling the
+Claude Code and Codex, run headless with the same task, each working out the
 invocation itself and reading the report back.
 
 ```bash
-claude -p 'spider-agent scrape https://example.com --selectors fields.json --json --budget 2 --wall 20 --no-router.
-Print 2 lines, no markdown: the command, then served/refused/cost_credits/elapsed_ms JSON.' \
-  --allowed-tools Bash --model sonnet
+claude -p 'Run spider-agent schema, then pull the title, price and stock of each book on the
+books.toscrape.com front page, without the page body crossing the wire' --allowed-tools Bash --model sonnet
 
-codex exec -s workspace-write -c sandbox_workspace_write.network_access=true --skip-git-repo-check --json '<same task>' \
-  | jq -rs 'map(.item.text? // empty)[-1]'
+codex exec -p spider --json '<same task>' | tee turn.jsonl | jq -rs 'map(.item.text? // empty)[-1]'
 ```
 
-The task names the flags. Left to find them, Claude guessed at an option that
-does not exist and then read the crate source for ten turns, so the wording
-hands over `--selectors` and the two caps and asks for two lines back. Codex
-needs `-s workspace-write` and network access turned on, because its default
-sandbox blocks the fetch, and it prints a whole transcript on `--json`, which is
-what the jq is for.
+The task names no flag, no subcommand and not even the scheme on the address.
+`spider-agent schema` prints the command tree and every record shape as one JSON
+document, and both agents read it before they choose anything. Both land on
+`extract`, a selectors file they write themselves, and `--json`. That is what the
+subcommand is there for, and the last clause of the task is what rules out
+downloading the page and grepping it locally.
 
-![Claude Code, run headless, choosing a spider-agent invocation and reading served, refused and credits out of the run report](media/out/claude-calls-agent.gif)
+Two files carry what would otherwise be retyped on every run. `-p spider` is a
+Codex profile at `$CODEX_HOME/spider.config.toml`, and without it the fetch dies
+inside the default sandbox, which is read only and has no network:
 
-![Codex, run headless, choosing a spider-agent invocation and reading served, refused and credits out of the run report](media/out/codex-calls-agent.gif)
+```toml
+notify = []
+sandbox_mode = "workspace-write"
 
-Deciding what to type cost the calling agent its own tokens. The fetch cost it
-none, because no model runs on this side of the call. What comes back is the
-record any other caller gets.
+[sandbox_workspace_write]
+network_access = true
+```
+
+The shape of the answer lives where each CLI already looks for directions about
+the working directory, `CLAUDE.md` for Claude Code and `AGENTS.md` for Codex:
+
+```text
+Answer in plain lines and nothing else. No markdown, no fenced blocks, no prose.
+
+1. the command you ran to find out what spider-agent can do
+2. the spider-agent command that worked
+3. served, refused, cost_credits and elapsed_ms out of its report, as one JSON
+   object, credits rounded to six decimals
+
+Selectors go in a file. Nobody can read a command with a JSON document inside it.
+```
+
+Codex prints a whole transcript on `--json`, which is what the jq is for. The
+`tee` keeps that stream, because the usage block Codex closes it with is where
+the token count below comes from.
+
+![Claude Code, run headless, reading spider-agent's schema, choosing an extract invocation from it, and reading served, refused and credits out of the run report](media/out/claude-calls-agent.gif)
+
+![Codex, run headless, reading spider-agent's schema, choosing an extract invocation from it, and reading served, refused and credits out of the run report](media/out/codex-calls-agent.gif)
+
+The `[harness]` line at the bottom of each recording is the recorder talking, not
+the model. Choosing that one command cost Claude Code 107 seconds and 670,991
+tokens, and Codex 95 seconds and 406,370. The fetch underneath took 1,432 ms and
+794 ms and spent no model tokens at all, because no model runs on this side of
+the call. What comes back is the record any other caller gets.
 
 ## Provider fallback
 

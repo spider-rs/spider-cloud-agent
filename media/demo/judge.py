@@ -29,8 +29,10 @@ OUT = ROOT / "media/out"
 EXPECTED = {
     "agent-calls-agent": {"served": 2, "refused": 0},
     "streaming-crawl": {"served": 3, "refused": 0},
-    "claude-calls-agent": {"served": 1, "refused": 0, "spider_agent": True},
-    "codex-calls-agent": {"served": 1, "refused": 0, "spider_agent": True},
+    "claude-calls-agent": {"served": 1, "refused": 0, "spider_agent": True, "discovered": True,
+                           "note": True},
+    "codex-calls-agent": {"served": 1, "refused": 0, "spider_agent": True, "discovered": True,
+                          "note": True},
 }
 
 # Everything that decides what the scene shows. Change one and the standing
@@ -42,9 +44,9 @@ RECIPE = {
     "route-and-cost": ["media/tapes/route-and-cost.tape", "media/demo/route-and-cost.sh"],
     "payload-savings": ["media/tapes/payload-savings.tape", "media/demo/payload-savings.py"],
     "claude-calls-agent": ["media/tapes/claude-calls-agent.tape", "media/demo/agent-scene.sh",
-                           "media/demo/agent-scene.py", "media/demo/fields.json"],
+                           "media/demo/agent-scene.py"],
     "codex-calls-agent": ["media/tapes/codex-calls-agent.tape", "media/demo/agent-scene.sh",
-                          "media/demo/agent-scene.py", "media/demo/fields.json"],
+                          "media/demo/agent-scene.py"],
 }
 
 
