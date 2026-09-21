@@ -180,8 +180,8 @@ beside a failed baseline lost nothing, whatever its content scalars say.
 ## Edit codes and cells
 
 Edit code 0 is keep. A learnable key's code is `1 + rank` among the learnable keys of
-`fixtures/schema-v1.json`, in key order. `spider_optimize::schema::edit_code` follows
-the same rule, so `request` is 1 and `network_blacklist` is 9. `schema-v1.json` is
+`fixtures/schema-v2.json`, in key order. `spider_optimize::schema::edit_code` follows
+the same rule, so `request` is 1 and `network_blacklist` is 9. `schema-v2.json` is
 generated from the crate's constants. It is the only source this package reads offsets
 and codes from.
 

@@ -7,6 +7,16 @@ error.
 
 ## Unreleased
 
+- `RequestParams` no longer has `storageless`, `preserve_host`, `text` or
+  `skip_config_checks`. The agent never read them; they sat on the request shape as
+  a copy of the service's fields, and `skip_config_checks` only ever skipped the
+  service's own per-site config lookup. Code that sets one stops compiling, and a
+  stored body that still carries one deserializes with that field dropped, as any
+  unknown field is. The key table is 76 entries with no gaps and `SCHEMA_VERSION`
+  is 2, so the reader refuses an artifact stamped with version 1 and the trainer
+  refuses a corpus whose manifest says 1. `training/fixtures/schema-v1.json` is now
+  `schema-v2.json`, and the synthetic fixtures and their sidecars carry version 2.
+
 - `spider-agent` can reach the parameter optimizer. `--optimize off|shadow|apply`
   and `--optimize-model FILE` set it for one run, `spider-agent optimize
   set|show|clear` keeps a mode and a weights path in `~/.spider/optimize.json`

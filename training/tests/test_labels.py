@@ -1,12 +1,13 @@
 import pytest
 
 from spider_optimize_train import labels
+from spider_optimize_train import schema as sch
 
 
 def arm(**kw):
     row = {
         "arm": "candidate",
-        "edit": {"key": 46},
+        "edit": {"key": sch.load().key_index("block_analytics")},
         "need": "markdown",
         "status": "ok",
         "success": True,

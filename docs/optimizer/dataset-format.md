@@ -72,7 +72,7 @@ For an edit set, the descriptor names the blacklist append if there is one.
 Otherwise it names the first key in schema order. The edit feature bits describe
 the whole set. They cannot rebuild exact patterns or a full request. Compact edit
 code 0 means keep. Codes 1-9 follow the learnable-key order in
-`training/fixtures/schema-v1.json`, so `request` is 1 and `network_blacklist` is 9.
+`training/fixtures/schema-v2.json`, so `request` is 1 and `network_blacklist` is 9.
 
 ## Manifest
 

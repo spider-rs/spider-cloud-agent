@@ -116,7 +116,7 @@ def validate_rows(rows: list[dict], manifest: Manifest) -> list[str]:
     if manifest.schema_version != schema.schema_version:
         out.append(
             f"manifest schema_version {manifest.schema_version} is not "
-            f"schema-v1.json's {schema.schema_version}"
+            f"schema-v2.json's {schema.schema_version}"
         )
     if manifest.edit_dim != schema.edit_dim:
         out.append(f"manifest edit_dim {manifest.edit_dim} is not {schema.edit_dim}")

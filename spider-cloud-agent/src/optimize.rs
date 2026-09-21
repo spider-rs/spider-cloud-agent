@@ -734,12 +734,10 @@ impl Params for RequestParams {
             Key::Cookies => self.cookies.is_some(),
             Key::Headers => self.headers.is_some(),
             Key::Encoding => self.encoding.is_some(),
-            Key::Storageless => self.storageless.is_some(),
             Key::Session => self.session.is_some(),
             Key::RedirectPolicy => self.redirect_policy.is_some(),
             Key::RequestTimeout => self.request_timeout.is_some(),
             Key::ServiceWorkerEnabled => self.service_worker_enabled.is_some(),
-            Key::PreserveHost => self.preserve_host.is_some(),
             Key::Delay => self.delay.is_some(),
             Key::ConcurrencyLimit => self.concurrency_limit.is_some(),
             Key::Wayback => self.wayback.is_some(),
@@ -791,7 +789,6 @@ impl Params for RequestParams {
             Key::ReturnCookies => self.return_cookies.is_some(),
             Key::ReturnPageLinks => self.return_page_links.is_some(),
             Key::ReturnJsonData => self.return_json_data.is_some(),
-            Key::Text => self.text.is_some(),
             Key::Cache => self.cache.is_some(),
             Key::Webhooks => self.webhooks.is_some(),
             Key::DataConnectors => self.data_connectors.is_some(),
@@ -800,7 +797,6 @@ impl Params for RequestParams {
             Key::MaxCreditsAllowed => self.max_credits_allowed.is_some(),
             Key::MaxCreditsPerPage => self.max_credits_per_page.is_some(),
             Key::DisableHints => self.disable_hints.is_some(),
-            Key::SkipConfigChecks => self.skip_config_checks.is_some(),
             // A key a later schema adds, which this version has no field for.
             _ => false,
         }
@@ -827,10 +823,8 @@ impl Params for RequestParams {
         match key {
             Key::Stealth => self.stealth,
             Key::Fingerprint => self.fingerprint,
-            Key::Storageless => self.storageless,
             Key::Session => self.session,
             Key::ServiceWorkerEnabled => self.service_worker_enabled,
-            Key::PreserveHost => self.preserve_host,
             Key::Wayback => self.wayback,
             Key::Subdomains => self.subdomains,
             Key::Tld => self.tld,
@@ -858,7 +852,6 @@ impl Params for RequestParams {
             Key::ReturnPageLinks => self.return_page_links,
             Key::ReturnJsonData => self.return_json_data,
             Key::DisableHints => self.disable_hints,
-            Key::SkipConfigChecks => self.skip_config_checks,
             _ => None,
         }
     }
@@ -947,12 +940,10 @@ mod tests {
             cookies: Some("a=b".into()),
             headers: Some(BTreeMap::from([("x".to_string(), "y".to_string())])),
             encoding: Some("utf-8".into()),
-            storageless: Some(true),
             session: Some(false),
             redirect_policy: Some(RedirectPolicy::Loose),
             request_timeout: Some(30),
             service_worker_enabled: Some(false),
-            preserve_host: Some(true),
             delay: Some(10),
             concurrency_limit: Some(2),
             wayback: Some(true),
@@ -1007,7 +998,6 @@ mod tests {
             return_cookies: Some(false),
             return_page_links: Some(true),
             return_json_data: Some(false),
-            text: Some("text".into()),
             cache: Some(Cache::Enabled(true)),
             webhooks: Some(WebhookSettings::new("https://example.com/hook")),
             data_connectors: Some(serde_json::Map::from_iter([(
@@ -1025,7 +1015,6 @@ mod tests {
             max_credits_allowed: Some(WholeCredits::floor(Credits::new(10.0))),
             max_credits_per_page: Some(Credits::new(1.0)),
             disable_hints: Some(true),
-            skip_config_checks: Some(false),
         }
     }
 
@@ -1167,14 +1156,14 @@ mod tests {
         assert_eq!(pinned_mask(&RequestParams::default()), (0, 0));
         let caller = RequestParams {
             stealth: Some(true),
-            skip_config_checks: Some(false),
+            disable_hints: Some(false),
             ..RequestParams::default()
         };
         assert_eq!(
             pinned_mask(&caller),
             (
                 1 << Key::Stealth.index(),
-                1 << (Key::SkipConfigChecks.index() - 32)
+                1 << (Key::DisableHints.index() - 32)
             )
         );
         let (low, high) = pinned_mask(&populated());

@@ -576,7 +576,7 @@ mod tests {
     fn mirror_path() -> std::path::PathBuf {
         std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
             .join("..")
-            .join("training/fixtures/schema-v1.json")
+            .join("training/fixtures/schema-v2.json")
     }
 
     #[test]
@@ -585,14 +585,14 @@ mod tests {
         let committed = std::fs::read_to_string(mirror_path()).unwrap_or_default();
         assert!(
             committed == expected,
-            "training/fixtures/schema-v1.json does not match the constants in spider-optimize. \
+            "training/fixtures/schema-v2.json does not match the constants in spider-optimize. \
              Regenerate it with `cargo test -p spider-optimize write_schema_mirror -- --ignored` \
              and commit the result.",
         );
     }
 
     #[test]
-    #[ignore = "writes training/fixtures/schema-v1.json"]
+    #[ignore = "writes training/fixtures/schema-v2.json"]
     fn write_schema_mirror() {
         let path = mirror_path();
         std::fs::create_dir_all(path.parent().unwrap()).unwrap();

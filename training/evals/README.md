@@ -105,10 +105,12 @@ Since 2026-09-17, `train` chooses tau from the train, tune and calibrate rows on
 Before that it read the repeat pairs of the whole corpus, test window included. On the
 seed 7 corpus the change moved tau from 0.8692 to 0.8610, and one train label moved with
 it. The four golden files and the crate's copies were therefore regenerated together on
-2026-09-17. The sequence in `fixtures/golden/README.md` now writes `synth-mlp.bin` with
-sha256 `b51910d8501e6e307a622790526224e500c68e3330cc1a32fc658012b37d706f` and
+2026-09-17, and again on 2026-09-21 when the key table moved to schema version 2,
+which changed the artifact header and nothing else. The sequence in
+`fixtures/golden/README.md` now writes `synth-mlp.bin` with sha256
+`a30ccfff7ba404b84150b7655917dae0f2e7285fef76237689bd004d0add8812` and
 `synth-gbdt.bin` with
-`f1d59d4d3895170f22151bfde45666d0e234134e9f1972f274bea9b06dfe0b7a`. These are the
+`9218dac902066a761e39b0233b270e88d4bcb05dbb04687b7918474622afa9ec`. These are the
 digests in the committed sidecars. `run.sh` in full mode compares against them with no
 allowance.
 

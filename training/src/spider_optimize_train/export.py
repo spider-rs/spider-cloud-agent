@@ -71,8 +71,8 @@ class Tables:
     mlp: list[list[tuple[np.ndarray, np.ndarray, int]]] = field(default_factory=list)
     gbdt: list[tuple[float, list[list[tuple]]]] = field(default_factory=list)
     feature_version: int = sch.BASE_FEATURE_VERSION
-    edit_feature_version: int = 1
-    schema_version: int = 1
+    edit_feature_version: int = field(default_factory=lambda: sch.load().edit_feature_version)
+    schema_version: int = field(default_factory=lambda: sch.load().schema_version)
 
 
 def calibration_entry(cal: calibrate.Calibration) -> tuple[int, list[float]]:

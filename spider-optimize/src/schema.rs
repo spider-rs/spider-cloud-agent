@@ -15,10 +15,14 @@
 use spider_route::{ProxyPool, RequestMode, PROXY_POOLS};
 
 /// The version of the key table and its specs. Recorded on every row.
-pub const SCHEMA_VERSION: u16 = 1;
+///
+/// Version 2 has no `storageless`, `preserve_host`, `text` or
+/// `skip_config_checks`. Nothing in the agent read them, so every key after
+/// `encoding` moved down and an artifact stamped with version 1 no longer loads.
+pub const SCHEMA_VERSION: u16 = 2;
 
 /// How many keys there are.
-pub const KEY_COUNT: usize = 80;
+pub const KEY_COUNT: usize = 76;
 
 /// One field of the request body.
 ///
@@ -56,8 +60,6 @@ pub enum Key {
     Headers,
     /// `encoding`
     Encoding,
-    /// `storageless`
-    Storageless,
     /// `session`
     Session,
     /// `redirect_policy`
@@ -66,8 +68,6 @@ pub enum Key {
     RequestTimeout,
     /// `service_worker_enabled`
     ServiceWorkerEnabled,
-    /// `preserve_host`
-    PreserveHost,
     /// `delay`
     Delay,
     /// `concurrency_limit`
@@ -170,8 +170,6 @@ pub enum Key {
     ReturnPageLinks,
     /// `return_json_data`
     ReturnJsonData,
-    /// `text`
-    Text,
     /// `cache`
     Cache,
     /// `webhooks`
@@ -188,8 +186,6 @@ pub enum Key {
     MaxCreditsPerPage,
     /// `disable_hints`
     DisableHints,
-    /// `skip_config_checks`
-    SkipConfigChecks,
 }
 
 /// Every key, in index order.
@@ -207,12 +203,10 @@ const ALL_KEYS: [Key; KEY_COUNT] = [
     Key::Cookies,
     Key::Headers,
     Key::Encoding,
-    Key::Storageless,
     Key::Session,
     Key::RedirectPolicy,
     Key::RequestTimeout,
     Key::ServiceWorkerEnabled,
-    Key::PreserveHost,
     Key::Delay,
     Key::ConcurrencyLimit,
     Key::Wayback,
@@ -264,7 +258,6 @@ const ALL_KEYS: [Key; KEY_COUNT] = [
     Key::ReturnCookies,
     Key::ReturnPageLinks,
     Key::ReturnJsonData,
-    Key::Text,
     Key::Cache,
     Key::Webhooks,
     Key::DataConnectors,
@@ -273,7 +266,6 @@ const ALL_KEYS: [Key; KEY_COUNT] = [
     Key::MaxCreditsAllowed,
     Key::MaxCreditsPerPage,
     Key::DisableHints,
-    Key::SkipConfigChecks,
 ];
 
 impl Key {
@@ -301,12 +293,10 @@ impl Key {
             Key::Cookies => "cookies",
             Key::Headers => "headers",
             Key::Encoding => "encoding",
-            Key::Storageless => "storageless",
             Key::Session => "session",
             Key::RedirectPolicy => "redirect_policy",
             Key::RequestTimeout => "request_timeout",
             Key::ServiceWorkerEnabled => "service_worker_enabled",
-            Key::PreserveHost => "preserve_host",
             Key::Delay => "delay",
             Key::ConcurrencyLimit => "concurrency_limit",
             Key::Wayback => "wayback",
@@ -358,7 +348,6 @@ impl Key {
             Key::ReturnCookies => "return_cookies",
             Key::ReturnPageLinks => "return_page_links",
             Key::ReturnJsonData => "return_json_data",
-            Key::Text => "text",
             Key::Cache => "cache",
             Key::Webhooks => "webhooks",
             Key::DataConnectors => "data_connectors",
@@ -367,7 +356,6 @@ impl Key {
             Key::MaxCreditsAllowed => "max_credits_allowed",
             Key::MaxCreditsPerPage => "max_credits_per_page",
             Key::DisableHints => "disable_hints",
-            Key::SkipConfigChecks => "skip_config_checks",
         }
     }
 }
@@ -510,7 +498,8 @@ const UNKNOWN: ParamSpec = ParamSpec::fixed(Key::Url, Kind::Opaque, Group::Other
 
 use self::{Group as G, Kind as K, ParamSpec as S};
 
-/// The version one table, in key order.
+/// The version one table, in key order. The one names the learnable set, not
+/// [`SCHEMA_VERSION`].
 const SPECS: [ParamSpec; KEY_COUNT] = [
     S::fixed(Key::Url, K::Opaque, G::Transport),
     S::fixed(
@@ -530,7 +519,6 @@ const SPECS: [ParamSpec; KEY_COUNT] = [
     S::fixed(Key::Cookies, K::Opaque, G::Transport),
     S::fixed(Key::Headers, K::Map, G::Transport),
     S::fixed(Key::Encoding, K::Opaque, G::Transport),
-    S::fixed(Key::Storageless, K::Bool, G::Transport),
     S::fixed(Key::Session, K::Bool, G::Transport),
     S::fixed(Key::RedirectPolicy, K::Opaque, G::Transport),
     S::fixed(
@@ -539,7 +527,6 @@ const SPECS: [ParamSpec; KEY_COUNT] = [
         G::Transport,
     ),
     S::fixed(Key::ServiceWorkerEnabled, K::Bool, G::Transport),
-    S::fixed(Key::PreserveHost, K::Bool, G::Transport),
     S::fixed(
         Key::Delay,
         K::IntRange {
@@ -650,7 +637,6 @@ const SPECS: [ParamSpec; KEY_COUNT] = [
     S::fixed(Key::ReturnCookies, K::Bool, G::Extraction),
     S::fixed(Key::ReturnPageLinks, K::Bool, G::Extraction),
     S::fixed(Key::ReturnJsonData, K::Bool, G::Extraction),
-    S::fixed(Key::Text, K::Opaque, G::Extraction).content(),
     S::fixed(Key::Cache, K::Opaque, G::Cache),
     S::fixed(Key::Webhooks, K::Opaque, G::Delivery),
     S::fixed(Key::DataConnectors, K::Map, G::Delivery),
@@ -666,7 +652,6 @@ const SPECS: [ParamSpec; KEY_COUNT] = [
     ),
     S::fixed(Key::MaxCreditsPerPage, K::Opaque, G::Budget),
     S::fixed(Key::DisableHints, K::Bool, G::Other),
-    S::fixed(Key::SkipConfigChecks, K::Bool, G::Other),
 ];
 
 // The table and the key list line up slot for slot, and the last key is the
@@ -684,7 +669,7 @@ const _: () = {
         at += 1;
     }
     assert!(at == KEY_COUNT);
-    assert!(Key::SkipConfigChecks as usize + 1 == KEY_COUNT);
+    assert!(Key::DisableHints as usize + 1 == KEY_COUNT);
 };
 
 /// The parameter table.
@@ -695,6 +680,11 @@ pub struct Schema {
 
 impl Schema {
     /// The version one table.
+    ///
+    /// The one here counts the learnable set, which is still on its first
+    /// version. [`SCHEMA_VERSION`] counts the key table, which is on its
+    /// second. The two numbers move for different reasons, so they are not
+    /// expected to agree.
     pub const fn v1() -> Schema {
         Schema { specs: &SPECS }
     }
@@ -758,7 +748,7 @@ pub const fn service_default(key: Key) -> bool {
 pub const KEEP_CODE: u8 = 0;
 
 /// One plus the rank among `Schema::v1().learnable()` in `Key::ALL` order.
-/// The trainer derives the same codes from learnable keys in schema-v1.json.
+/// The trainer derives the same codes from learnable keys in schema-v2.json.
 pub fn edit_code(key: Key) -> Option<u8> {
     Schema::v1()
         .learnable()
@@ -804,12 +794,10 @@ pub(crate) mod tests {
             cookies: Some("a=b".into()),
             headers: Some(BTreeMap::from([("x".to_string(), "y".to_string())])),
             encoding: Some("utf-8".into()),
-            storageless: Some(true),
             session: Some(true),
             redirect_policy: Some(RedirectPolicy::Loose),
             request_timeout: Some(30),
             service_worker_enabled: Some(false),
-            preserve_host: Some(true),
             delay: Some(10),
             concurrency_limit: Some(2),
             wayback: Some(true),
@@ -864,7 +852,6 @@ pub(crate) mod tests {
             return_cookies: Some(true),
             return_page_links: Some(true),
             return_json_data: Some(true),
-            text: Some("text".into()),
             cache: Some(Cache::Enabled(true)),
             webhooks: Some(WebhookSettings::new("https://example.com/hook")),
             data_connectors: Some(serde_json::Map::from_iter([(
@@ -882,7 +869,6 @@ pub(crate) mod tests {
             max_credits_allowed: Some(WholeCredits::floor(Credits::new(10.0))),
             max_credits_per_page: Some(Credits::new(1.0)),
             disable_hints: Some(true),
-            skip_config_checks: Some(false),
         }
     }
 
@@ -966,7 +952,6 @@ pub(crate) mod tests {
             Key::MaxSize,
             Key::ChunkingAlg,
             Key::CssExtractionMap,
-            Key::Text,
             Key::BlockStylesheets,
             Key::DisableFirstPartyStylesheets,
             Key::DisableFirstPartyJavascript,

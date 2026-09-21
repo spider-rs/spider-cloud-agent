@@ -1,7 +1,7 @@
 """The layout and vocabulary the rows and the artifact follow.
 
 The edit feature blocks, the keys, the needs and the status classes come from
-`training/fixtures/schema-v1.json`, which `spider-optimize` regenerates from its own
+`training/fixtures/schema-v2.json`, which `spider-optimize` regenerates from its own
 constants and checks in a test, so this module never restates them. The router's
 base slots are not in that file; the handful the synthetic corpus writes are copied
 from `spider-route/src/features.rs` below, with the arithmetic that places them.
@@ -15,7 +15,7 @@ from functools import lru_cache
 from pathlib import Path
 
 TRAINING_ROOT = Path(__file__).resolve().parents[2]
-SCHEMA_PATH = TRAINING_ROOT / "fixtures" / "schema-v1.json"
+SCHEMA_PATH = TRAINING_ROOT / "fixtures" / "schema-v2.json"
 
 # The router's feature layout, version 1. TLD_SLOTS is 30, which is what makes
 # the used slots come to 152.

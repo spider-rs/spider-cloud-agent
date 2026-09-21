@@ -574,7 +574,8 @@ mod tests {
     fn rows_hold_no_url_host_or_body() {
         let row = sample(&Fixture::observed());
 
-        assert!(row.contains("\"edit\":{\"key\":51,\"op\":1"), "{row}");
+        let edit = format!("\"edit\":{{\"key\":{},\"op\":1", Key::NetworkBlacklist.index());
+        assert!(row.contains(&edit), "{row}");
         for needle in [
             "http",
             "example",
@@ -592,7 +593,7 @@ mod tests {
     fn a_row_parses_as_json_with_the_documented_keys() {
         let mut fixture = Fixture::observed();
         fixture.caller.stealth = Some(true);
-        fixture.caller.skip_config_checks = Some(true);
+        fixture.caller.disable_hints = Some(true);
         let row = sample(&fixture);
 
         let order: KeyOrder = serde_json::from_str(&row).unwrap();
@@ -660,7 +661,7 @@ mod tests {
         assert_eq!(value["pinned"], 1 << Key::Stealth.index());
         assert_eq!(
             value["pinned_hi"].as_u64(),
-            Some(1 << (Key::SkipConfigChecks.index() - 32))
+            Some(1 << (Key::DisableHints.index() - 32))
         );
         assert_eq!(value["edit"]["ident"]["third"], true);
         assert_eq!(value["status"], "ok");

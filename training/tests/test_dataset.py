@@ -1,3 +1,4 @@
+import dataclasses
 import math
 
 from conftest import write_corpus
@@ -119,6 +120,18 @@ def test_versions_differing_from_the_manifest_are_named(valid_rows, small_manife
     valid_rows[0]["edit_feat_v"] = 2
     problems = validate_rows(valid_rows, small_manifest)
     assert any("version edit_feat_v 2 differs from manifest 1" in p for p in problems)
+
+
+def test_a_corpus_from_an_older_schema_is_refused(valid_rows, small_manifest):
+    # A version 1 corpus carries key indices that mean other keys in version 2,
+    # so validate has to refuse it before train sees a row.
+    older = dataclasses.replace(small_manifest, schema_version=1)
+    for row in valid_rows:
+        row["schema_v"] = 1
+    problems = validate_rows(valid_rows, older)
+    assert any(
+        "manifest schema_version 1 is not schema-v2.json's 2" in p for p in problems
+    )
 
 
 def test_the_cli_exits_one_on_any_violation(tmp_path, valid_rows, small_manifest, capsys):
