@@ -98,12 +98,6 @@ pub struct RequestParams {
     /// it wrongly or not at all.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub encoding: Option<String>,
-    /// Keep nothing between requests, so each one starts with no cookies or
-    /// stored state. Slower on a site that expects a session, and the right
-    /// choice when one page's state would spoil the next.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub storageless: Option<bool>,
-
     /// Keep cookies and headers across the requests you make to one site, the
     /// way a signed-in visitor would. Off by default, because a shared session
     /// makes otherwise independent requests affect each other.
@@ -119,11 +113,6 @@ pub struct RequestParams {
     /// one. On unless you turn it off.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub service_worker_enabled: Option<bool>,
-    /// Keep the default Host header rather than the one derived from the address.
-    /// Helps a server that answers differently when the TLS name cannot be
-    /// worked out.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub preserve_host: Option<bool>,
     /// Wait this many milliseconds between pages, up to a minute. Setting it
     /// turns concurrency off.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -307,9 +296,6 @@ pub struct RequestParams {
     /// blocks.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub return_json_data: Option<bool>,
-    /// The text to work from, instead of fetching anything.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub text: Option<String>,
     /// Serve a stored copy when there is one, rather than fetching again.
     /// A bool switches it, and a [`CacheControl`] says how fresh the copy
     /// has to be.
@@ -350,9 +336,6 @@ pub struct RequestParams {
     /// measuring what your own settings do and want nothing else moving.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub disable_hints: Option<bool>,
-    /// Skip the checks that catch a combination of settings that cannot work.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub skip_config_checks: Option<bool>,
 }
 
 // Keep free-form content out of diagnostics: URLs, scripts, selectors and text
@@ -379,12 +362,10 @@ impl std::fmt::Debug for RequestParams {
             .field("cookies", &self.cookies.as_ref().map(|_| "<redacted>"))
             .field("headers", &self.headers.as_ref().map(RedactedHeaders))
             .field("encoding", &self.encoding.as_ref().map(|_| "<redacted>"))
-            .field("storageless", &self.storageless)
             .field("session", &self.session)
             .field("redirect_policy", &self.redirect_policy)
             .field("request_timeout", &self.request_timeout)
             .field("service_worker_enabled", &self.service_worker_enabled)
-            .field("preserve_host", &self.preserve_host)
             .field("delay", &self.delay)
             .field("concurrency_limit", &self.concurrency_limit)
             .field("wayback", &self.wayback)
@@ -478,7 +459,6 @@ impl std::fmt::Debug for RequestParams {
             .field("return_cookies", &self.return_cookies)
             .field("return_page_links", &self.return_page_links)
             .field("return_json_data", &self.return_json_data)
-            .field("text", &self.text.as_ref().map(|_| "<redacted>"))
             .field("cache", &self.cache)
             .field("webhooks", &self.webhooks)
             .field(
@@ -493,7 +473,6 @@ impl std::fmt::Debug for RequestParams {
             .field("max_credits_allowed", &self.max_credits_allowed)
             .field("max_credits_per_page", &self.max_credits_per_page)
             .field("disable_hints", &self.disable_hints)
-            .field("skip_config_checks", &self.skip_config_checks)
             .finish_non_exhaustive()
     }
 }
@@ -696,7 +675,6 @@ mod tests {
         params.automation_scripts = Some([("/".into(), automation.to_vec())].into());
         params.webhooks = Some(webhook.clone());
         params.link_rewrite = Some(rewrite.clone());
-        params.text = Some(secret.into());
         for value in [
             format!("{params:?}"),
             format!("{automation:?}"),
@@ -710,7 +688,6 @@ mod tests {
         assert!(wire["execution_scripts"]["/"] == secret);
         assert!(wire["automation_scripts"]["/"][1]["Type"]["value"] == secret);
         assert!(wire["evaluate_on_new_document"] == secret);
-        assert!(wire["text"] == secret);
         assert!(wire["webhooks"]["destination"] == webhook.destination);
     }
 
@@ -1008,7 +985,6 @@ mod tests {
     fn documented_fields_go_out_under_the_service_names() {
         let mut params = RequestParams::default();
         params.service_worker_enabled = Some(false);
-        params.preserve_host = Some(true);
         params.delay = Some(1_000);
         params.concurrency_limit = Some(8);
         params.wayback = Some(true);
@@ -1044,7 +1020,6 @@ mod tests {
         let object = json.as_object().expect("object");
         for name in [
             "service_worker_enabled",
-            "preserve_host",
             "delay",
             "concurrency_limit",
             "wayback",
@@ -1069,7 +1044,7 @@ mod tests {
         ] {
             assert!(object.contains_key(name), "{name} missing");
         }
-        assert_eq!(object.len(), 23);
+        assert_eq!(object.len(), 22);
         assert_eq!(json["router"], serde_json::json!({"mode": "fallback"}));
         let back: RequestParams = serde_json::from_value(json).expect("deserialize");
         assert_eq!(back, params);

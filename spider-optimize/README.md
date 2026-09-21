@@ -50,7 +50,7 @@ uses two 256-float scratch arrays.
 `cell_id(need, ext, memory_state, edit_code)` packs four bytes from most to least
 significant. `KEEP_CODE` is 0. `edit_code(key)` is one plus the rank of a learnable
 key in schema order, so it runs from 1 through 9. The trainer must derive the same
-order from `schema-v1.json`. Absent and NaN thresholds return `None`. An empty
+order from `schema-v2.json`. Absent and NaN thresholds return `None`. An empty
 support table means no restriction. With a nonempty table, `score_slices` and
 `score_in_cell` return support 1 only for listed cells. `Scorer::score` has no cell,
 so it returns support 0 unless the table is empty.

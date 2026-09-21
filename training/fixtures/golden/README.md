@@ -34,8 +34,10 @@ return NaN.
 
 ## How they were produced
 
-They were produced from `training/` on 2026-09-16 with seed 7. The base commit was
-`ec75b64`, plus the exporter fixes in the same change as this file.
+They were first produced from `training/` on 2026-09-16 with seed 7, at base commit
+`ec75b64` plus the exporter fixes in the same change as this file. The committed
+files come from a rerun on 2026-09-21 at base commit `5a95102`, in the change that
+moved the key table to schema version 2.
 
 ```bash
 uv sync --frozen
@@ -61,11 +63,15 @@ under the 500 that isotonic needs.
 
 That tau was read from the repeat pairs of the whole corpus. Since 2026-09-17, `train`
 reads it from the train, tune and calibrate rows only, so the test window shapes no
-label. On this corpus the new rule gives tau 0.8610 and moves one train label. The
-committed files were regenerated with that rule on 2026-09-17. `synth-mlp.bin` now has
-sha256 `b51910d8501e6e307a622790526224e500c68e3330cc1a32fc658012b37d706f`, and
+label. On this corpus the new rule gives tau 0.8610 and moves one train label.
+
+The 2026-09-21 rerun stamps schema version 2 in the header and the sidecars. The
+schema change removed four keys that no model input reads, so the weights, the sizes
+and both golden files came out identical and only the header and its checksum moved.
+`synth-mlp.bin` now has sha256
+`a30ccfff7ba404b84150b7655917dae0f2e7285fef76237689bd004d0add8812`, and
 `synth-gbdt.bin` has
-`f1d59d4d3895170f22151bfde45666d0e234134e9f1972f274bea9b06dfe0b7a`. The crate's four
+`9218dac902066a761e39b0233b270e88d4bcb05dbb04687b7918474622afa9ec`. The crate's four
 copies were replaced in the same change.
 
 The floors are relaxed on purpose. At the defaults, `--min-covered 200 --r-max 0.01

@@ -16,8 +16,8 @@
   "pairs": 4000,
   "pooled_threshold": 0.5,
   "rows": 8000,
-  "schema_version": 1,
-  "sha256": "b51910d8501e6e307a622790526224e500c68e3330cc1a32fc658012b37d706f",
+  "schema_version": 2,
+  "sha256": "a30ccfff7ba404b84150b7655917dae0f2e7285fef76237689bd004d0add8812",
   "split": "chronological: train days 0..35, tune days 36..44, calibrate days 45..50, test days 51..59",
   "support_cells": 14,
   "sweeps": {

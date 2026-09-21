@@ -1,7 +1,11 @@
 # Parameter inventory
 
-`RequestParams` now has 80 fields. The earlier inventory had 73. The fields are
-declared in `spider-cloud-agent/src/params/mod.rs`, and `Schema::v1` covers all 80.
+`RequestParams` has 76 fields. The earlier inventory had 80, until `storageless`,
+`preserve_host`, `text` and `skip_config_checks` came off the struct because nothing
+in the agent read them. The fields are declared in
+`spider-cloud-agent/src/params/mod.rs`, and `Schema::v1` covers all 76. The one in
+that name counts the learnable set, which is still on its first version, not the key
+table, which this change put on its second.
 The tables use the actual Rust field types and the schema's group, learnable and
 content-changing flags. `Option::None` omits a key from the wire. Even
 `Some(false)` is a caller pin. "Content changing" is the schema flag.
@@ -22,12 +26,10 @@ It does not guarantee that an unflagged field cannot affect a page.
 | `cookies` | `Option<String>` | No | No |
 | `headers` | `Option<HeaderMap>` | No | No |
 | `encoding` | `Option<String>` | No | No |
-| `storageless` | `Option<bool>` | No | No |
 | `session` | `Option<bool>` | No | No |
 | `redirect_policy` | `Option<RedirectPolicy>` | No | No |
 | `request_timeout` | `Option<u8>` | No | No |
 | `service_worker_enabled` | `Option<bool>` | No | No |
-| `preserve_host` | `Option<bool>` | No | No |
 | `delay` | `Option<u64>` | No | No |
 | `concurrency_limit` | `Option<u32>` | No | No |
 | `wayback` | `Option<bool>` | No | No |
@@ -105,7 +107,6 @@ It does not guarantee that an unflagged field cannot affect a page.
 | `router` | `Option<Router>` | No | No |
 | `provider_options` | `Option<BTreeMap<String, serde_json::Value>>` | No | No |
 | `disable_hints` | `Option<bool>` | No | No |
-| `skip_config_checks` | `Option<bool>` | No | No |
 
 ## Extraction
 
@@ -128,7 +129,6 @@ It does not guarantee that an unflagged field cannot affect a page.
 | `return_cookies` | `Option<bool>` | No | No |
 | `return_page_links` | `Option<bool>` | No | No |
 | `return_json_data` | `Option<bool>` | No | No |
-| `text` | `Option<String>` | No | Yes |
 
 ## Cache
 

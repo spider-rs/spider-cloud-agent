@@ -587,7 +587,7 @@ mod tests {
             (6, 3, ArtifactError::Kind(3)),
             (7, 2, ArtifactError::FeatureVersion(2)),
             (9, 2, ArtifactError::EditFeatureVersion(2)),
-            (11, 2, ArtifactError::SchemaVersion(2)),
+            (11, 1, ArtifactError::SchemaVersion(1)),
             (13, 0, ArtifactError::Width(0)),
             (15, 1, ArtifactError::Shape),
             (16, 0, ArtifactError::Shape),
