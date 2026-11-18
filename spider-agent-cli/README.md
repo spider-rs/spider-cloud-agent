@@ -109,6 +109,7 @@ spider-agent <url>            scrape, which is what you get with no command
   optimize   store, show or clear how the parameter optimizer runs
   route      what transport would be chosen. Local, no call, no spend
   schema     the command tree and the record contract, as JSON
+  mcp        serve these commands as tools over the Model Context Protocol
   update     install the newest release now
 ```
 

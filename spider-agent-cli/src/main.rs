@@ -19,6 +19,7 @@ mod exit;
 mod optimize;
 mod progress;
 mod records;
+mod session;
 mod setup;
 mod update;
 
@@ -65,7 +66,7 @@ fn main() -> ExitCode {
 }
 
 /// Run the command the caller named, or scrape when they named none.
-async fn dispatch(parsed: &Cli, log: Log) -> Result<Code, Failure> {
+pub(crate) async fn dispatch(parsed: &Cli, log: Log) -> Result<Code, Failure> {
     let global = &parsed.global;
     match &parsed.command {
         None => commands::pages::scrape(global, &parsed.default, log).await,
@@ -88,6 +89,7 @@ async fn dispatch(parsed: &Cli, log: Log) -> Result<Code, Failure> {
         Some(Command::Optimize(args)) => commands::optimize::command(global, args, log),
         Some(Command::Route(args)) => commands::local::route(global, args, log),
         Some(Command::Schema) => commands::local::schema(global),
+        Some(Command::Mcp) => commands::mcp::serve(log).await,
         Some(Command::Update) => update::command(global, log).await,
     }
 }

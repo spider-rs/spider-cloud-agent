@@ -12,6 +12,13 @@ error.
   another version, as `spider-agent update` already does. Without minisign it
   checks the checksum only and says so. `SPIDER_AGENT_REQUIRE_SIGNATURE=1` stops
   the install when the signature cannot be checked.
+- `spider-agent mcp` serves scrape, crawl, search, links, transform and credits as
+  tools over the Model Context Protocol, on stdin and stdout. The process stays up,
+  so a call pays for no process start and calls share one connection pool. Each
+  tool runs its command under `--json` and answers with that document.
+  `spider_crawl` reads 10 pages unless the call names a limit.
+- `Transport::default_client()` returns the HTTP client a transport builds when it
+  is not handed one, for a process that wants several clients on one pool.
 - `RequestParams` no longer has `storageless`, `preserve_host`, `text` or
   `skip_config_checks`. The agent never read them; they sat on the request shape as
   a copy of the service's fields, and `skip_config_checks` only ever skipped the

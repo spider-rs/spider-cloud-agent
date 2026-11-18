@@ -416,12 +416,13 @@ mod tests {
             "route",
             "schema",
             "update",
+            "mcp",
         ] {
             assert!(commands.contains_key(name), "{name} is missing");
         }
         assert_eq!(
             commands.len(),
-            20,
+            21,
             "a command was added or removed without a line here"
         );
     }
