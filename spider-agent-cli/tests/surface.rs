@@ -25,6 +25,7 @@ fn run(args: &[&str]) -> Output {
         .args(args)
         // A key resolved from the machine would turn a parse test into a call.
         .env("SPIDER_API_KEY", "")
+        .env("SPIDER_AGENT_NO_KEYLESS", "1")
         .env("SPIDER_CLOUD_API_KEY", "")
         // The credentials file is found under the home directory, which is
         // HOME on Unix and USERPROFILE on Windows. Both are pointed somewhere
@@ -254,6 +255,7 @@ fn addresses_arrive_on_stdin() {
     let mut child = Command::new(env!("CARGO_BIN_EXE_spider-agent"))
         .args(["route", "--ndjson"])
         .env("SPIDER_API_KEY", "")
+        .env("SPIDER_AGENT_NO_KEYLESS", "1")
         .env("HOME", std::env::temp_dir())
         .env("USERPROFILE", std::env::temp_dir())
         .stdin(Stdio::piped())
@@ -801,6 +803,7 @@ fn spawn(args: &[&str]) -> std::process::Child {
     Command::new(env!("CARGO_BIN_EXE_spider-agent"))
         .args(args)
         .env("SPIDER_API_KEY", "")
+        .env("SPIDER_AGENT_NO_KEYLESS", "1")
         .env("SPIDER_CLOUD_API_KEY", "")
         .env("HOME", std::env::temp_dir())
         .env("USERPROFILE", std::env::temp_dir())
@@ -957,6 +960,7 @@ fn a_dash_as_the_output_is_stdout_and_not_a_file() {
         .args(["route", "https://example.com", "-o", "-"])
         .current_dir(&dir)
         .env("SPIDER_API_KEY", "")
+        .env("SPIDER_AGENT_NO_KEYLESS", "1")
         .env("HOME", std::env::temp_dir())
         .env("USERPROFILE", std::env::temp_dir())
         .output()
@@ -1090,6 +1094,7 @@ fn an_argument_that_is_not_utf8_is_a_usage_failure() {
         .arg("route")
         .arg(std::ffi::OsStr::from_bytes(b"https://example.com/\xff"))
         .env("SPIDER_API_KEY", "")
+        .env("SPIDER_AGENT_NO_KEYLESS", "1")
         .env("HOME", std::env::temp_dir())
         .env("USERPROFILE", std::env::temp_dir())
         .output()
@@ -1815,4 +1820,58 @@ fn the_schema_names_the_router_command_and_the_no_router_flag() {
     let help = stdout(&run(&["--help"]));
     assert!(help.contains("router"), "{help}");
     assert!(stdout(&run(&["scrape", "--help"])).contains("--no-router"));
+}
+
+/// With no key on the machine, `scrape` still goes out, and says once on
+/// stderr that it did so without one.
+#[test]
+fn scrape_with_no_key_still_goes_out_and_says_so() {
+    let (base, seen) =
+        stub(r##"{"url":"https://example.com","status":200,"content":{"markdown":"# Example"}}"##);
+    let output = Command::new(env!("CARGO_BIN_EXE_spider-agent"))
+        .args(["scrape", "https://example.com", "--json"])
+        .env("SPIDER_API_KEY", "")
+        .env("SPIDER_CLOUD_API_KEY", "")
+        .env_remove("SPIDER_AGENT_NO_KEYLESS")
+        .env("SPIDER_AGENT_NO_UPDATE", "1")
+        .env("SPIDER_API_URL", &base)
+        .env(
+            "HOME",
+            std::env::temp_dir().join("spider-agent-no-such-home"),
+        )
+        .env(
+            "USERPROFILE",
+            std::env::temp_dir().join("spider-agent-no-such-home"),
+        )
+        .output()
+        .expect("the binary runs");
+    let said = String::from_utf8_lossy(&output.stderr);
+    assert_eq!(code(&output), 0, "{said}");
+    assert!(seen.try_recv().is_ok(), "no request reached the service");
+    assert!(said.contains("without one"), "{said}");
+    assert!(stdout(&output).contains("# Example"));
+}
+
+/// Every other command still stops at the missing key and names the way in.
+#[test]
+fn a_command_other_than_scrape_with_no_key_names_how_to_sign_in() {
+    let output = Command::new(env!("CARGO_BIN_EXE_spider-agent"))
+        .args(["crawl", "https://example.com", "--limit", "1"])
+        .env("SPIDER_API_KEY", "")
+        .env("SPIDER_CLOUD_API_KEY", "")
+        .env_remove("SPIDER_AGENT_NO_KEYLESS")
+        .env("SPIDER_AGENT_NO_UPDATE", "1")
+        .env(
+            "HOME",
+            std::env::temp_dir().join("spider-agent-no-such-home"),
+        )
+        .env(
+            "USERPROFILE",
+            std::env::temp_dir().join("spider-agent-no-such-home"),
+        )
+        .output()
+        .expect("the binary runs");
+    let said = String::from_utf8_lossy(&output.stderr);
+    assert_eq!(code(&output), 3, "{said}");
+    assert!(said.contains("login --device"), "{said}");
 }

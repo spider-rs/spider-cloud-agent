@@ -28,6 +28,9 @@ fn serve(lines: &[&str]) -> Output {
         .env("HOME", std::env::temp_dir())
         .env("USERPROFILE", std::env::temp_dir())
         .env("SPIDER_AGENT_NO_UPDATE", "1")
+        // And scrape, the one command that would go out without a key, is
+        // told not to.
+        .env("SPIDER_AGENT_NO_KEYLESS", "1")
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
@@ -73,13 +76,16 @@ fn a_session_answers_each_request_and_leaves_cleanly_when_stdin_closes() {
     let messages = messages(&output);
     // Three requests, three answers, and nothing for the notification.
     assert_eq!(messages.len(), 3, "{messages:?}");
-    assert_eq!(with_id(&messages, 1)["result"]["protocolVersion"], "2025-06-18");
+    assert_eq!(
+        with_id(&messages, 1)["result"]["protocolVersion"],
+        "2025-06-18"
+    );
     assert_eq!(
         with_id(&messages, 2)["result"]["tools"]
             .as_array()
             .unwrap()
             .len(),
-        6
+        7
     );
     assert!(with_id(&messages, 3)["result"].is_object());
 }
@@ -101,6 +107,8 @@ fn a_tool_call_with_no_key_is_an_error_result_that_names_the_way_out() {
         let text = result["content"][0]["text"].as_str().unwrap();
         assert!(text.contains("no api key"), "{text}");
         assert!(text.contains("SPIDER_API_KEY"), "{text}");
+        // Inside a session the way to sign in is a tool.
+        assert!(text.contains("spider_login"), "{text}");
     }
 }
 

@@ -222,18 +222,55 @@ pub fn budget(global: &Global) -> Budget {
 /// The stored router is not read here. It only ever reaches a page request, and
 /// a broken router file has no business failing a balance read.
 pub fn client(global: &Global) -> Run<Spider> {
-    build_client(global, global.budget, None)
+    build_client(global, global.budget, None, false)
 }
+
+/// A client for `scrape`, the one command the service answers for a caller
+/// with no account. With no key on the machine it is built anyway and says so
+/// once, unless this run turned that off.
+pub fn scrape_client(global: &Global, log: Log) -> Run<Spider> {
+    let keyless = !keyless_refused() && !credentials_file_present();
+    let spider = build_client(global, global.budget, Some(log), keyless)?;
+    if !spider.raw().has_key() && !KEYLESS_NOTED.swap(true, Ordering::Relaxed) {
+        log.say("no key found, so this runs without one: scrape only, and rate limited. Run spider-agent login for anything more");
+    }
+    Ok(spider)
+}
+
+/// The environment variable that makes `scrape` refuse without a key, set to
+/// any value.
+pub const NO_KEYLESS_ENV: &str = "SPIDER_AGENT_NO_KEYLESS";
+
+/// Whether this run refuses to send a call with no key.
+fn keyless_refused() -> bool {
+    std::env::var_os("SPIDER_AGENT_NO_KEYLESS").is_some_and(|v| !v.is_empty())
+}
+
+/// Whether this machine has a credentials file, readable or not.
+///
+/// A file that is there and gave no key is a key that could not be read, and
+/// that is a failure to report. Going out with no account instead would turn
+/// a broken sign in into a quiet change of who the call is made as.
+fn credentials_file_present() -> bool {
+    let name = std::path::Path::new(spider_cloud_agent::auth::CREDENTIALS_PATH).file_name();
+    match (spider_cloud_agent::auth::store::spider_dir(), name) {
+        (Some(dir), Some(name)) => dir.join(name).exists(),
+        _ => false,
+    }
+}
+
+/// Said once per run, however many clients the run builds.
+static KEYLESS_NOTED: AtomicBool = AtomicBool::new(false);
 
 /// A client for a command that fetches pages, carrying the stored router
 /// unless this run skips it.
 pub fn fetching_client(global: &Global, log: Log) -> Run<Spider> {
-    build_client(global, global.budget, Some(log))
+    build_client(global, global.budget, Some(log), false)
 }
 
 /// The same, with the shared run cap a plan supplied.
 pub fn client_with_credits(global: &Global, credits: Option<f64>, log: Log) -> Run<Spider> {
-    build_client(global, credits, Some(log))
+    build_client(global, credits, Some(log), false)
 }
 
 /// The environment variable that skips the stored router, set to any value.
@@ -251,8 +288,13 @@ static ROUTER_NOTED: AtomicBool = AtomicBool::new(false);
 #[cfg(feature = "optimize")]
 static OPTIMIZER_NOTED: AtomicBool = AtomicBool::new(false);
 
-fn build_client(global: &Global, credits: Option<f64>, fetching: Option<Log>) -> Run<Spider> {
-    let mut builder = Spider::builder().budget(budget(global));
+fn build_client(
+    global: &Global,
+    credits: Option<f64>,
+    fetching: Option<Log>,
+    keyless: bool,
+) -> Run<Spider> {
+    let mut builder = Spider::builder().budget(budget(global)).keyless(keyless);
     // Inside the server every call shares one client, so the second call
     // reuses the connection the first one opened.
     if let Some(shared) = crate::session::http_client() {
@@ -423,10 +465,7 @@ pub fn emitter(global: &Global, default: Format) -> Run<Emitter> {
     // Inside the server stdout carries the protocol. The results go to the
     // tool call's own buffer, and the server sends them as its answer.
     if let Some(sink) = crate::session::sink() {
-        return Ok(Emitter::to_stream(
-            format(global, default),
-            Box::new(sink),
-        ));
+        return Ok(Emitter::to_stream(format(global, default), Box::new(sink)));
     }
     Emitter::open(
         format(global, default),

@@ -7,11 +7,29 @@ error.
 
 ## Unreleased
 
+## 0.8.0 (2026-11-18)
+
+- Dependencies: rustls, rustls-webpki, tokio, webpki-root-certs and yoke-derive are
+  updated in the lockfile for advisories published since 0.7.0.
 - The install script checks the release signature when minisign is installed. It
   refuses a SHA256SUMS.txt that no pinned release key signed, or one signed for
   another version, as `spider-agent update` already does. Without minisign it
   checks the checksum only and says so. `SPIDER_AGENT_REQUIRE_SIGNATURE=1` stops
   the install when the signature cannot be checked.
+- `spider-agent scrape` runs with no key on the machine. The service answers it
+  without an account: scrape only, and rate limited. A call that needs an account
+  fails with exit code 3 and says how to sign in. `SPIDER_AGENT_NO_KEYLESS` set
+  to any value restores the old refusal. Every other command still needs a key.
+- `spider-agent login --device` signs in with a code a person types on any device
+  (RFC 8628), for a machine with no browser. `--no-wait` prints the code and
+  leaves, and `--resume` collects the key, so an agent that runs one command at
+  a time can sign in. The MCP server has the same thing as `spider_login`.
+- `spider-agent setup` adds the MCP server to Claude Code, Codex, Cursor,
+  Windsurf, Claude Desktop and VS Code, whichever it finds. `--dry-run` shows what
+  it would change. It keeps every other server a client has.
+- `SpiderBuilder::keyless(true)` builds a client with no key. `Transport::has_key`
+  says which kind it is. `AuthCause::SignInRequired` is the error for a call the
+  service wants an account for. `auth::device` holds the device sign in.
 - `spider-agent mcp` serves scrape, crawl, search, links, transform and credits as
   tools over the Model Context Protocol, on stdin and stdout. The process stays up,
   so a call pays for no process start and calls share one connection pool. Each

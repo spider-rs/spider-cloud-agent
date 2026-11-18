@@ -428,6 +428,7 @@ impl Install {
             .env("HOME", &self.home)
             .env("USERPROFILE", &self.home)
             .env("SPIDER_API_KEY", "")
+            .env("SPIDER_AGENT_NO_KEYLESS", "1")
             .env("SPIDER_CLOUD_API_KEY", "")
             .env("SPIDER_AGENT_UPDATE_BASE", base)
             .env_remove("SPIDER_AGENT_NO_UPDATE")

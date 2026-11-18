@@ -84,11 +84,12 @@ fn document() -> serde_json::Value {
             "sites": "the sites configured on the account, one row each. Default format ndjson.",
             "keys": "the API keys on the account, as metadata. No key, secret or hash is returned. Default format ndjson.",
             "profile": "the account itself: plan limits, totals and billing caps. One row. Default format ndjson.",
-            "login": "sign in through a browser and store the key.",
+            "login": "sign in and store the key. A browser opens by default. --device signs in with a code a person types on any device, for a machine with no browser. --device --no-wait writes a device_login record with the code and the address and leaves; --device --resume collects the key and leaves with code 3 while the code is unapproved.",
             "router": "store, show or clear a provider fallback (the router parameter and provider_options) in ~/.spider/router.json. Every command that fetches pages sends it unless the request names a router; --no-router or SPIDER_AGENT_NO_ROUTER skips it for one run. Keys come from stdin or SPIDER_ROUTER_TOKEN, never an argument. show writes a router record with every key replaced. Local, no call.",
             "optimize": "store how the parameter optimizer runs (mode and weights file) in ~/.spider/optimize.json. The optimizer scores the valid edits to a request after the router has picked the mode, the pool and the wait, and writes at most one set on the first attempt: shadow scores and changes nothing, apply writes the pick onto the fields the caller left unset, off sends the request as it is. It never edits a field the caller set, and a request that fixes the mode, the pool or the country is not passed to it. Without weights the scorer abstains, so apply edits nothing. Every command that fetches pages reads the file; --optimize and --optimize-model override it for one run, and --no-optimize or SPIDER_AGENT_NO_OPTIMIZE leaves it out. show writes an optimize record. Local, no call.",
             "route": "what transport would be chosen. Local, no call, no spend.",
             "schema": "this document.",
+            "setup": "add the server in mcp to the agent clients on this machine: Claude Code, Codex, Cursor, Windsurf, Claude Desktop and VS Code, whichever are found. Writes one setup record per client. --dry-run changes nothing. Local, no call.",
             "update": "install the newest release now. Reports on stderr. Exit 0 installed or current, 1 refused or failed, 2 turned off, 6 unreachable, 7 not this tool's to replace."
         },
         "goals": ["text", "markdown", "html", "links", "metadata", "fields", "screenshot", "raw"],
@@ -166,6 +167,22 @@ fn document() -> serde_json::Value {
             },
             "credits": { "type": "credits", "credits": "number", "usd": "number" },
             "key": { "type": "key", "key": "string, written by login --print and nothing else" },
+            "device_login": {
+                "type": "device_login",
+                "status": "pending|signed_in",
+                "user_code": "string, the code a person types. Present while pending.",
+                "verification_uri": "string, the page a person opens. Present while pending.",
+                "verification_uri_complete": "string or null, the same page with the code filled in",
+                "expires_in": "integer, seconds until the code stops working",
+                "next": "string, the command that collects the key"
+            },
+            "setup": {
+                "type": "setup",
+                "client": "claude-code|codex|cursor|windsurf|claude-desktop|vscode",
+                "status": "added|already|would_add|not_found|failed",
+                "how": "string, the file written or the command run",
+                "detail": "string or null, the reason when it failed"
+            },
             "router": {
                 "type": "router",
                 "stored": "boolean. When false no other field is present.",
@@ -213,6 +230,10 @@ fn document() -> serde_json::Value {
             crate::cli::KEY_RESOLUTION,
             "There is no flag for the key, because an argument is readable in the process list.",
             "Environment: SPIDER_API_KEY is the first environment source for the API key; empty values after trimming are skipped. SPIDER_CLOUD_API_KEY is the fallback when SPIDER_API_KEY is empty or unset. SPIDER_API_URL overrides the API base (normally https://api.spider.cloud) for every key-bearing API request; the API base must use https. SPIDER_MCP_SERVER overrides the sign-in discovery server (normally https://mcp.spider.cloud/mcp) when OAuth is enabled. Set either server override only to a server you trust: one receives API requests with your key, and the other directs sign-in.",
+            format!(
+                "Without a key: scrape still runs when no key is found, and the service serves it without an account. It is scrape only and rate limited; on a 429 honor Retry-After, and sign in for anything sustained. Every other command needs a key. {} set to any value makes scrape refuse without a key too.",
+                crate::setup::NO_KEYLESS_ENV
+            ),
             format!(
                 "Provider fallback: {} set to any value, or --no-router, skips the stored router for one run. {} is read by router set as the provider token.",
                 crate::setup::NO_ROUTER_ENV,
@@ -417,12 +438,13 @@ mod tests {
             "schema",
             "update",
             "mcp",
+            "setup",
         ] {
             assert!(commands.contains_key(name), "{name} is missing");
         }
         assert_eq!(
             commands.len(),
-            21,
+            22,
             "a command was added or removed without a line here"
         );
     }

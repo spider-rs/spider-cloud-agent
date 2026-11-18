@@ -654,11 +654,14 @@ impl Transport {
     ) -> Result<Reply> {
         validate_base(&self.base, self.insecure_http)?;
         let started = Instant::now();
-        let mut response = request
-            .header(reqwest::header::AUTHORIZATION, self.bearer())
-            .send()
-            .await
-            .map_err(Error::Transport)?;
+        // A transport with no key sends no header at all, and the service
+        // decides what a caller with no account may read.
+        let request = if self.key.is_empty() {
+            request
+        } else {
+            request.header(reqwest::header::AUTHORIZATION, self.bearer())
+        };
+        let mut response = request.send().await.map_err(Error::Transport)?;
 
         let status = ApiStatus::new(response.status().as_u16());
         let headers = response.headers().clone();
@@ -700,6 +703,12 @@ impl Transport {
             content_type,
             body,
         })
+    }
+
+    /// Whether calls carry a key. False only for a client built with
+    /// [`crate::SpiderBuilder::keyless`] on a machine that has none.
+    pub fn has_key(&self) -> bool {
+        !self.key.is_empty()
     }
 
     /// The one place the key is written.
@@ -778,6 +787,12 @@ impl Reply {
             return None;
         }
         let message = self.message();
+        if self.asks_for_an_account() {
+            return Some(Error::Auth {
+                cause: AuthCause::SignInRequired,
+                message: message.unwrap_or_else(|| "this call needs an account".to_string()),
+            });
+        }
         Some(match self.status.code() {
             402 => Error::InsufficientCredits,
             401 => Error::Auth {
@@ -798,6 +813,24 @@ impl Reply {
             Some(error) => Err(error),
             None => Ok(self),
         }
+    }
+
+    /// Whether the service turned away a call that carried no key.
+    ///
+    /// It marks those answers with a `code` of its own, so this reads the code
+    /// and never guesses from the status: a 402 with no such code is still a
+    /// balance that ran out.
+    fn asks_for_an_account(&self) -> bool {
+        if !matches!(self.status.code(), 401 | 402) {
+            return false;
+        }
+        let Ok(value) = serde_json::from_slice::<serde_json::Value>(&self.body) else {
+            return false;
+        };
+        value
+            .get("code")
+            .and_then(|code| code.as_str())
+            .is_some_and(|code| code == "auth_required" || code.starts_with("free_tier_"))
     }
 
     /// What the service said went wrong, when the body carried a message.
@@ -1341,6 +1374,60 @@ mod tests {
             .expect("an error");
         assert!(matches!(error, Error::InsufficientCredits));
         assert!(!error.is_retryable());
+    }
+
+    #[test]
+    fn a_call_with_no_key_that_needs_an_account_says_to_sign_in() {
+        for (code, body) in [
+            (
+                402,
+                r#"{"error":"This route requires an account.","code":"free_tier_route_blocked"}"#,
+            ),
+            (
+                401,
+                r#"{"error":"Authentication required","code":"auth_required","hint":"x"}"#,
+            ),
+            (
+                401,
+                r#"{"message":"Unauthorized","code":"auth_required","hint":"x"}"#,
+            ),
+        ] {
+            match reply(code, body).as_error().expect("an error") {
+                Error::Auth { cause, message } => {
+                    assert_eq!(cause, AuthCause::SignInRequired, "{body}");
+                    assert!(!message.is_empty());
+                }
+                other => panic!("{body} became {other:?}"),
+            }
+        }
+    }
+
+    #[test]
+    fn only_the_service_marking_it_makes_a_refusal_a_sign_in() {
+        // A balance that ran out carries no such code and stays what it was.
+        let spent = reply(
+            402,
+            r#"{"error":"balance is zero","code":"insufficient_credits"}"#,
+        )
+        .as_error()
+        .expect("an error");
+        assert!(matches!(spent, Error::InsufficientCredits));
+        // A rate limit keeps its wait, whoever it was for.
+        let limited = reply(
+            429,
+            r#"{"error":"Free tier rate limit reached.","code":"free_tier_rate_limited"}"#,
+        )
+        .as_error()
+        .expect("an error");
+        assert!(matches!(limited, Error::Api { .. }), "{limited:?}");
+    }
+
+    #[test]
+    fn a_transport_with_no_key_says_so() {
+        let base = Url::parse("https://api.spider.cloud").expect("an address");
+        let client = Transport::default_client().expect("a client");
+        assert!(!Transport::with_client("", base.clone(), client.clone()).has_key());
+        assert!(Transport::with_client("sk-test", base, client).has_key());
     }
 
     #[test]

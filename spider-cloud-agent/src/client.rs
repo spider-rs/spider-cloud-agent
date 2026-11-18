@@ -553,6 +553,7 @@ pub struct SpiderBuilder {
     response_limit: Option<usize>,
     provider_router: Option<StoredRouter>,
     stored_router: bool,
+    keyless: bool,
     #[cfg(feature = "optimize")]
     pub(crate) optimize: crate::optimize::Hooks,
 }
@@ -569,7 +570,8 @@ impl fmt::Debug for SpiderBuilder {
             .field("recorder", &PolicyPresence(self.recorder.is_some()))
             .field("explore", &self.explorer.rate)
             .field("provider_router", &self.provider_router)
-            .field("stored_router", &self.stored_router);
+            .field("stored_router", &self.stored_router)
+            .field("keyless", &self.keyless);
         #[cfg(feature = "optimize")]
         out.field("optimize", &self.optimize);
         out.finish()
@@ -778,15 +780,31 @@ impl SpiderBuilder {
         self
     }
 
+    /// Let the client be built with no key on the machine.
+    ///
+    /// Off unless asked for. With it on and no key found, calls go out with no
+    /// `Authorization` header, and the service answers the ones it serves to
+    /// a caller with no account. The rest come back as [`Error::Auth`] with
+    /// [`AuthCause::SignInRequired`]. A key that is found is still used.
+    pub fn keyless(mut self, on: bool) -> SpiderBuilder {
+        self.keyless = on;
+        self
+    }
+
     /// Build the client.
     ///
-    /// Fails when no key can be found or the base address does not meet the TLS policy.
+    /// Fails when no key can be found, unless [`SpiderBuilder::keyless`] is
+    /// on, or when the base address does not meet the TLS policy.
     pub fn build(self) -> Result<Spider> {
-        let key = match self.key {
-            Some(key) => key,
-            None => resolve_key().ok_or_else(no_key)?,
+        let (key, without_key) = match self.key {
+            Some(key) => (key, false),
+            None => match resolve_key() {
+                Some(key) => (key, false),
+                None if self.keyless => (String::new(), true),
+                None => return Err(no_key()),
+            },
         };
-        if key.trim().is_empty() {
+        if !without_key && key.trim().is_empty() {
             return Err(Error::Auth {
                 cause: AuthCause::EmptyKey,
                 message: "the api key is empty".to_string(),
@@ -964,6 +982,14 @@ mod tests {
         out.extend(reply(429, r#"{"error":"slow down"}"#).as_error());
         out.extend(reply(401, r#"{"error":"invalid api key"}"#).as_error());
         out.extend(reply(402, r#"{"error":"balance is zero"}"#).as_error());
+        // A call with no key that the service wants an account for.
+        out.extend(
+            reply(
+                402,
+                r#"{"error":"This route requires an account.","code":"free_tier_route_blocked"}"#,
+            )
+            .as_error(),
+        );
         // A body that is not what this version expects.
         out.push(
             reply(200, "not json")
@@ -1034,7 +1060,7 @@ mod tests {
         let spider = Spider::with_key(SECRET).expect("a client");
         let errors = every_error(&spider);
         // A loop over an empty list passes and proves nothing.
-        assert_eq!(errors.len(), 15, "an error path stopped being covered");
+        assert_eq!(errors.len(), 16, "an error path stopped being covered");
         let causes: Vec<AuthCause> = errors
             .iter()
             .filter_map(|error| match error {
@@ -1048,6 +1074,7 @@ mod tests {
             AuthCause::Refused,
             AuthCause::SignInFailed,
             AuthCause::Local,
+            AuthCause::SignInRequired,
         ] {
             assert!(causes.contains(&cause), "no error path makes {cause:?}");
         }

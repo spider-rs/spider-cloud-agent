@@ -201,7 +201,8 @@ fn unusable(code: Code, why: String) -> Failure {
 
 /// Whether this run leaves the optimizer out.
 pub fn skipped(global: &Global) -> bool {
-    global.no_optimize || std::env::var_os(NO_OPTIMIZE_ENV).is_some_and(|v| !v.is_empty())
+    global.no_optimize
+        || std::env::var_os("SPIDER_AGENT_NO_OPTIMIZE").is_some_and(|v| !v.is_empty())
 }
 
 /// What one run does with the optimizer, flags over file.

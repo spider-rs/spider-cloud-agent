@@ -1,6 +1,7 @@
 //! One module per group of commands, and the parts they share.
 
 pub mod account;
+pub mod clients;
 pub mod local;
 pub mod mcp;
 pub mod optimize;

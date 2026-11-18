@@ -33,6 +33,15 @@ pub const ALLOWED_ENV_VARS: &[&str] = &[
     "SPIDER_AGENT_UPDATE_KEY",
     // Read by spider-agent to skip the background update check in CI.
     "CI",
+    // The opt out that makes `scrape` refuse without a key, as it did
+    // before the service answered a caller with no account.
+    "SPIDER_AGENT_NO_KEYLESS",
+    // The opt out that leaves the optimizer out of one run.
+    "SPIDER_AGENT_NO_OPTIMIZE",
+    // Read by `spider-agent setup` to find the agent clients on the machine:
+    // the search path for their commands, and where Windows keeps app config.
+    "PATH",
+    "APPDATA",
 ];
 
 /// Bytes at the front of a model artifact that may hold printable ASCII, for a magic

@@ -23,7 +23,7 @@ pub async fn scrape(global: &Global, args: &ScrapeArgs, log: Log) -> Run<Code> {
     if args.goal == Goal::Screenshot {
         setup::refuse_bytes_on_a_terminal(global)?;
     }
-    let spider = setup::fetching_client(global, log)?;
+    let spider = setup::scrape_client(global, log)?;
     let mut emitter = setup::emitter(global, Format::Text)?;
     let mut report = Report {
         targets: urls.len(),

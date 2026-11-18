@@ -12,20 +12,20 @@ citations. Run `scripts/check-anchors.sh` after moving code so these references 
 ## Credentials
 
 1. **A key never reaches a log line, an error message, a `Debug` output, a fixture or a commit.**
-   The bearer header is the only place the key is written (`spider-cloud-agent/src/transport.rs:696`
+   The bearer header is the only place the key is written (`spider-cloud-agent/src/transport.rs:715`
    (`fn bearer(`)), `REDACTED` stands in everywhere else (`spider-cloud-agent/src/transport.rs:59`
    (`const REDACTED:`), `spider-cloud-agent/src/client.rs:61` (`const REDACTED:`)), and `Debug` is
    hand written rather than derived on every type that holds one: `Spider` at
    `spider-cloud-agent/src/client.rs:122` (`impl fmt::Debug for Spider {`), `SpiderBuilder` at
-   `spider-cloud-agent/src/client.rs:558` (`impl fmt::Debug for SpiderBuilder`), `Credentials` at
+   `spider-cloud-agent/src/client.rs:561` (`impl fmt::Debug for SpiderBuilder`), `Credentials` at
    `spider-cloud-agent/src/auth/store.rs:108` (`impl fmt::Debug for Credentials`). The OAuth
    authorization code gets its own newtype for this and nothing else, `Code` at
-   `spider-cloud-agent/src/auth/oauth.rs:176` (`struct Code(`), whose `Debug` prints
-   `Code(<redacted>)` at `spider-cloud-agent/src/auth/oauth.rs:186` (`Code(<redacted>)`). A
+   `spider-cloud-agent/src/auth/oauth.rs:181` (`struct Code(`), whose `Debug` prints
+   `Code(<redacted>)` at `spider-cloud-agent/src/auth/oauth.rs:191` (`Code(<redacted>)`). A
    `#[derive(Debug)]` on a struct that later gains a key field is the ordinary way a credential gets
    out, and where it goes is a log the caller ships somewhere else. The tests that hold this are
-   `spider-cloud-agent/src/client.rs:1032` (`fn no_error_the_crate_makes_carries_the_key`) and
-   `spider-cloud-agent/src/auth/oauth.rs:810` (`fn a_code_never_prints_itself`).
+   `spider-cloud-agent/src/client.rs:1059` (`fn no_error_the_crate_makes_carries_the_key`) and
+   `spider-cloud-agent/src/auth/oauth.rs:821` (`fn a_code_never_prints_itself`).
 
 2. **A recorded response becomes a fixture only by way of `cargo run -p xtask -- redact`.** It
    rewrites hosts outside the allowlist to `example.com` (`xtask/src/redact.rs:12`

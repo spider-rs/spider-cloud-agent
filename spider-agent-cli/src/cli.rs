@@ -123,7 +123,17 @@ id, provider, total_crawl_count, total_credits_spent, usage and user_role.
 For what is left to spend right now, `credits` is the shorter answer."
     )]
     Profile,
-    /// Sign in through a browser and store the key.
+    /// Sign in and store the key.
+    #[command(long_about = "Sign in and store the key.
+
+With no flag a browser opens on this machine. On a machine with no browser, \
+such as one reached over SSH, a container or an agent's sandbox, pass --device: \
+the command prints a short code and a web address, a person opens the address \
+on any device and types the code, and the key arrives here.
+
+A caller that cannot wait while a person finds a browser splits it in two. \
+--device --no-wait prints the code and leaves. --device --resume collects the \
+key afterwards, and leaves with code 3 while the code is still unapproved.")]
     Login(LoginArgs),
     /// Store a provider fallback that every page request carries.
     #[command(
@@ -167,6 +177,18 @@ call."
     Route(RouteArgs),
     /// The command tree and the record schema, as JSON.
     Schema,
+    /// Add the MCP server to the agent clients on this machine.
+    #[command(long_about = "Add the MCP server to the agent clients on this machine.
+
+Looks for Claude Code, Codex, Cursor, Windsurf, Claude Desktop and VS Code, and \
+registers spider-agent mcp with each one it finds, under the name spider. \
+Claude Code, Codex and VS Code are asked through their own commands. The \
+others keep a JSON file, and one entry is added to it. Every other server a \
+client has is left alone, and a second run changes nothing.
+
+--dry-run says what would change and writes nothing. --client names the \
+clients to set up, instead of every one found.")]
+    Setup(SetupArgs),
     /// Serve these commands as tools over the Model Context Protocol, on
     /// stdin and stdout.
     #[command(
@@ -675,13 +697,69 @@ impl RowsArgs {
     }
 }
 
-/// Sign in through a browser.
+/// Which agent clients to set up.
+#[derive(Debug, Args)]
+pub struct SetupArgs {
+    /// Say what would change and write nothing.
+    #[arg(long)]
+    pub dry_run: bool,
+    /// Set up only these clients. Without it, every client found.
+    #[arg(long, value_enum, value_name = "NAME")]
+    pub client: Vec<Client>,
+}
+
+/// An agent client `setup` knows how to register the server with.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
+pub enum Client {
+    /// Claude Code, through `claude mcp add`.
+    ClaudeCode,
+    /// Codex, through `codex mcp add`.
+    Codex,
+    /// Cursor, in `~/.cursor/mcp.json`.
+    Cursor,
+    /// Windsurf, in `~/.codeium/windsurf/mcp_config.json`.
+    Windsurf,
+    /// Claude Desktop, in its `claude_desktop_config.json`.
+    ClaudeDesktop,
+    /// VS Code, through `code --add-mcp`.
+    Vscode,
+}
+
+impl Client {
+    /// The name on the command line and in a record.
+    pub const fn label(self) -> &'static str {
+        match self {
+            Client::ClaudeCode => "claude-code",
+            Client::Codex => "codex",
+            Client::Cursor => "cursor",
+            Client::Windsurf => "windsurf",
+            Client::ClaudeDesktop => "claude-desktop",
+            Client::Vscode => "vscode",
+        }
+    }
+}
+
+/// Sign in.
 #[derive(Debug, Args)]
 pub struct LoginArgs {
     /// Print the key instead of storing it. It goes to stdout and nowhere
     /// else, so redirect it or do not use it.
     #[arg(long)]
     pub print: bool,
+    /// Sign in with a code typed on another device, for a machine with no
+    /// browser.
+    #[arg(long)]
+    pub device: bool,
+    /// With --device: print the code and leave without waiting for approval.
+    #[arg(long, requires = "device", conflicts_with_all = ["resume", "print"])]
+    pub no_wait: bool,
+    /// With --device: collect the key for the code --no-wait printed.
+    #[arg(long, requires = "device")]
+    pub resume: bool,
+    /// With --device: the most seconds to wait for approval. Without it the
+    /// wait lasts as long as the code does, or 30 seconds under --resume.
+    #[arg(long, requires = "device", value_name = "SECONDS")]
+    pub wait: Option<u64>,
 }
 
 /// The stored provider fallback.

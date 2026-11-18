@@ -94,13 +94,23 @@ fn write_rows(emitter: &mut crate::emit::Emitter, rows: &[serde_json::Value]) ->
     Ok(())
 }
 
-/// Sign in through a browser and keep the key.
+/// Sign in and keep the key.
 #[cfg(feature = "oauth")]
 pub async fn login(global: &Global, args: &crate::cli::LoginArgs, log: Log) -> Run<Code> {
-    use spider_cloud_agent::auth::{oauth, Credentials, Stored};
+    use spider_cloud_agent::auth::oauth;
 
+    if args.device {
+        return device_login(global, args, log).await;
+    }
     log.say("opening a browser to sign in");
     let key = oauth::login().await.map_err(Failure::from)?;
+    keep(global, args, log, key)
+}
+
+/// Print the key or store it, whichever the caller asked for.
+#[cfg(feature = "oauth")]
+fn keep(global: &Global, args: &crate::cli::LoginArgs, log: Log, key: String) -> Run<Code> {
+    use spider_cloud_agent::auth::{Credentials, Stored};
 
     if args.print {
         let mut emitter = setup::emitter(global, Format::Text)?;
@@ -126,6 +136,150 @@ pub async fn login(global: &Global, args: &crate::cli::LoginArgs, log: Log) -> R
     Ok(Code::Ok)
 }
 
+/// The file a sign in waits in between `--no-wait` and `--resume`. It holds
+/// the device code, so it sits beside the key and is written the same way.
+#[cfg(feature = "oauth")]
+const PENDING_FILE: &str = "device-login.json";
+
+/// The most of that file a resume reads. The real thing is a few hundred bytes.
+#[cfg(feature = "oauth")]
+const MAX_PENDING_BYTES: u64 = 16 * 1024;
+
+/// How long `--resume` waits when the caller names no time. Short, because a
+/// caller that split the sign in in two is one that cannot sit and wait.
+#[cfg(feature = "oauth")]
+const RESUME_WAIT_SECONDS: u64 = 30;
+
+/// Sign in with a code a person types on another device.
+#[cfg(feature = "oauth")]
+async fn device_login(global: &Global, args: &crate::cli::LoginArgs, log: Log) -> Run<Code> {
+    use spider_cloud_agent::auth::device;
+    use std::time::Duration;
+
+    let mut pending = if args.resume {
+        read_pending()?
+    } else {
+        let pending = device::start().await.map_err(Failure::from)?;
+        if args.no_wait {
+            write_pending(&pending)?;
+            let mut emitter = setup::emitter(global, Format::Text)?;
+            emitter.write(pending_item(&pending))?;
+            emitter.finish()?;
+            return Ok(Code::Ok);
+        }
+        log.say(prompt(&pending));
+        log.say("waiting for the code to be approved");
+        pending
+    };
+
+    let seconds = match (args.wait, args.resume) {
+        (Some(seconds), _) => seconds,
+        (None, true) => RESUME_WAIT_SECONDS,
+        (None, false) => pending.seconds_left(),
+    };
+    let outcome = device::wait(&mut pending, Duration::from_secs(seconds)).await;
+    match outcome {
+        Ok(Some(key)) => {
+            // Kept first. The code is spent by now, so the stored sign in is
+            // no use either way, and it goes once the key is safe.
+            let code = keep(global, args, log, key);
+            forget_pending();
+            let code = code?;
+            if !args.print {
+                let mut emitter = setup::emitter(global, Format::Text)?;
+                emitter.write(
+                    Item::structured(json!({ "type": "device_login", "status": "signed_in" }))
+                        .with_text("signed in".to_string(), "txt"),
+                )?;
+                emitter.finish()?;
+            }
+            Ok(code)
+        }
+        Ok(None) => {
+            // Kept, with whatever slower pace the server asked for, so the
+            // next resume picks up where this one stopped.
+            write_pending(&pending)?;
+            Err(Failure::new(
+                Code::Auth,
+                format!(
+                    "the code is not approved yet. {} Then run spider-agent login --device --resume",
+                    prompt(&pending)
+                ),
+            ))
+        }
+        Err(error) => {
+            // Declined, expired or refused outright. A poll that merely
+            // failed to arrive never gets here, so the stored code is no use
+            // to anyone.
+            forget_pending();
+            Err(Failure::from(error))
+        }
+    }
+}
+
+/// What a person has to do, in one line.
+#[cfg(feature = "oauth")]
+fn prompt(pending: &spider_cloud_agent::auth::device::Pending) -> String {
+    format!(
+        "Open {} and enter the code {}.",
+        pending.verification_uri, pending.user_code
+    )
+}
+
+/// The code and the address as one item, for a caller that will show them to
+/// a person and come back. Nothing in it is secret.
+#[cfg(feature = "oauth")]
+fn pending_item(pending: &spider_cloud_agent::auth::device::Pending) -> Item {
+    let next = "spider-agent login --device --resume";
+    Item::structured(json!({
+        "type": "device_login",
+        "status": "pending",
+        "user_code": pending.user_code,
+        "verification_uri": pending.verification_uri,
+        "verification_uri_complete": pending.verification_uri_complete,
+        "expires_in": pending.seconds_left(),
+        "next": next,
+    }))
+    .with_text(format!("{} Then run {next}", prompt(pending)), "txt")
+}
+
+#[cfg(feature = "oauth")]
+fn write_pending(pending: &spider_cloud_agent::auth::device::Pending) -> Run<()> {
+    let bytes = serde_json::to_vec(pending)
+        .map_err(|e| Failure::new(Code::Failed, format!("could not keep the sign in: {e}")))?;
+    spider_cloud_agent::auth::store::write_private_file(PENDING_FILE, &bytes)
+        .map(|_| ())
+        .map_err(|e| Failure::new(Code::Output, format!("could not keep the sign in: {e}")))
+}
+
+#[cfg(feature = "oauth")]
+fn read_pending() -> Run<spider_cloud_agent::auth::device::Pending> {
+    use std::io::Read;
+    let nothing = || {
+        Failure::usage(
+            "no sign in is waiting. Start one with spider-agent login --device --no-wait",
+        )
+    };
+    let path = spider_cloud_agent::auth::store::spider_dir()
+        .ok_or_else(nothing)?
+        .join(PENDING_FILE);
+    let file = std::fs::File::open(path).map_err(|_| nothing())?;
+    let mut text = String::new();
+    file.take(MAX_PENDING_BYTES)
+        .read_to_string(&mut text)
+        .map_err(|_| nothing())?;
+    serde_json::from_str(&text).map_err(|_| nothing())
+}
+
+/// Drop the stored code. Best effort: a file that will not go is an expired
+/// code in an owner only directory, and not a reason to fail a sign in.
+#[cfg(feature = "oauth")]
+fn forget_pending() {
+    if let Some(dir) = spider_cloud_agent::auth::store::spider_dir() {
+        let _ = std::fs::remove_file(dir.join(PENDING_FILE));
+    }
+}
+
 /// The key as one item for `login --print`, in every shape the emitter writes.
 ///
 /// The structured form carries the key too. `--print` exists to hand the key
@@ -141,7 +295,7 @@ fn key_item(key: String) -> Item {
 #[cfg(not(feature = "oauth"))]
 pub async fn login(_global: &Global, _args: &crate::cli::LoginArgs, _log: Log) -> Run<Code> {
     Err(Failure::usage(
-        "this build has no browser sign in. Set SPIDER_API_KEY, or install a build with the oauth feature.",
+        "this build has no sign in. Set SPIDER_API_KEY, or install a build with the oauth feature.",
     ))
 }
 

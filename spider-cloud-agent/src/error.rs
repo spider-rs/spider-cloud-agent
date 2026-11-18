@@ -135,6 +135,9 @@ pub enum AuthCause {
     /// A problem on this machine: no home directory, a file that could not be
     /// written or narrowed, or a configured address that is not one.
     Local,
+    /// The call went out with no key and the service asked for an account.
+    /// Signing in is the way forward, and the same call then works.
+    SignInRequired,
 }
 
 /// What a caller can do about an error.
@@ -272,7 +275,9 @@ impl Error {
             Error::Transport(e) if e.is_timeout() || e.is_connect() => Recovery::Wait(None),
             Error::Transport(_) => Recovery::Permanent,
             Error::Auth { cause, .. } => match cause {
-                AuthCause::Refused | AuthCause::SignInFailed => Recovery::Reauthenticate,
+                AuthCause::Refused | AuthCause::SignInFailed | AuthCause::SignInRequired => {
+                    Recovery::Reauthenticate
+                }
                 AuthCause::NoKey | AuthCause::EmptyKey | AuthCause::Local => Recovery::Permanent,
             },
             Error::InsufficientCredits | Error::BudgetExceeded { .. } => Recovery::Permanent,
