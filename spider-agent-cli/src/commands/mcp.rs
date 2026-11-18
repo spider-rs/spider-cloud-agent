@@ -18,8 +18,9 @@
 //! together on the one runtime thread, and each answer leaves as its call
 //! ends, so a slow crawl does not hold up a scrape sent after it.
 
+use std::collections::HashMap;
 use std::future::Future;
-use std::io::{BufRead, Write};
+use std::io::{BufRead, Read, Write};
 use std::pin::Pin;
 
 use clap::Parser;
@@ -45,6 +46,9 @@ const PARSE_ERROR: i64 = -32700;
 const INVALID_REQUEST: i64 = -32600;
 const METHOD_NOT_FOUND: i64 = -32601;
 const INVALID_PARAMS: i64 = -32602;
+const INTERNAL_ERROR: i64 = -32603;
+/// In the range JSON-RPC leaves to the server.
+const SERVER_BUSY: i64 = -32000;
 
 /// The goals a tool may ask for. `fields` is reached by passing selectors and
 /// `screenshot` is bytes, which a text answer cannot carry.
@@ -56,38 +60,86 @@ const SHAPES: [&str; 3] = ["markdown", "text", "html"];
 /// How a page may be fetched.
 const MODES: [&str; 3] = ["http", "smart", "browser"];
 
+/// The longest line the server reads. A call that carries a whole page of
+/// markup to convert fits many times over, and a client that never sends a
+/// newline cannot grow the buffer past it.
+const MAX_LINE_BYTES: u64 = 8 * 1024 * 1024;
+
+/// How many calls may be open at once. Past it a call is refused at once
+/// rather than queued, so the client learns to wait instead of piling up work.
+const MAX_OPEN_CALLS: usize = 64;
+
+/// The most pages one `spider_crawl` may ask for. A larger crawl belongs on
+/// the command line, where the pages stream to a file as they arrive instead
+/// of being held for one answer.
+const MAX_CRAWL_LIMIT: u64 = 1000;
+
 /// Serve until the client closes stdin and every open call has answered.
+///
+/// Calls still open when stdin closes are finished and answered, so a session
+/// piped in from a file gets every answer. A client that wants a call stopped
+/// sends `notifications/cancelled`.
 pub async fn serve(log: Log) -> Run<Code> {
     let http = Transport::default_client().map_err(Failure::from)?;
     let mut lines = read_stdin()?;
-    let (done, mut answers) = mpsc::unbounded_channel::<String>();
     let local = tokio::task::LocalSet::new();
     local
         .run_until(async move {
+            let mut open = Open::default();
             let mut reading = true;
-            let mut open = 0usize;
-            while reading || open > 0 {
+            while reading || !open.tasks.is_empty() {
                 tokio::select! {
                     line = lines.recv(), if reading => match line {
                         None => reading = false,
-                        Some(line) => match handle(&line) {
+                        Some(Line::TooLong) => write_line(&error(
+                            &Value::Null,
+                            PARSE_ERROR,
+                            "the line is longer than this server reads",
+                        ))?,
+                        Some(Line::Text(line)) => match handle(&line) {
                             Step::Silent => {}
                             Step::Reply(text) => write_line(&text)?,
+                            Step::Cancel(id) => open.cancel(&id),
+                            Step::Call(call) if open.tasks.len() >= MAX_OPEN_CALLS => {
+                                write_line(&error(
+                                    &call.id,
+                                    SERVER_BUSY,
+                                    "too many calls are open. Wait for one to answer.",
+                                ))?;
+                            }
                             Step::Call(call) => {
-                                open += 1;
-                                let done = done.clone();
-                                let http = http.clone();
-                                tokio::task::spawn_local(async move {
-                                    // The receiver outlives every call, so a
-                                    // failed send means the server is gone.
-                                    let _ = done.send(answer(*call, http, log).await);
-                                });
+                                let id = call.id.clone();
+                                let work = answer(*call, http.clone(), log);
+                                open.track(Some(id), work);
+                            }
+                            Step::Batch(steps) => {
+                                let work = batch(steps, http.clone(), log);
+                                open.track(None, work);
                             }
                         },
                     },
-                    Some(text) = answers.recv(), if open > 0 => {
-                        open -= 1;
-                        write_line(&text)?;
+                    Some(joined) = open.tasks.join_next_with_id(), if !open.tasks.is_empty() => {
+                        match joined {
+                            Ok((task, text)) => {
+                                open.forget(task);
+                                if !text.is_empty() {
+                                    write_line(&text)?;
+                                }
+                            }
+                            Err(stopped) => {
+                                let id = open.forget(stopped.id());
+                                // A call the client cancelled gets no answer.
+                                // One that stopped any other way still owes
+                                // one, or the client waits on it for ever.
+                                if !stopped.is_cancelled() {
+                                    write_line(&error(
+                                        &id.unwrap_or(Value::Null),
+                                        INTERNAL_ERROR,
+                                        "the call stopped before it answered",
+                                    ))?;
+                                }
+                            }
+                        }
                     }
                     // Both arms off means stdin is closed and nothing is
                     // open, which the loop condition is about to see.
@@ -99,13 +151,74 @@ pub async fn serve(log: Log) -> Run<Code> {
         .await
 }
 
+/// The calls that have not answered yet.
+#[derive(Default)]
+struct Open {
+    tasks: tokio::task::JoinSet<String>,
+    /// The request each task answers, so one that stops early still gets an
+    /// answer. A batch has no single request and is absent.
+    requests: HashMap<tokio::task::Id, Value>,
+    /// The way to stop a request, by its id as text.
+    stops: HashMap<String, tokio::task::AbortHandle>,
+}
+
+impl Open {
+    fn track(&mut self, id: Option<Value>, work: impl Future<Output = String> + 'static) {
+        let stop = self.tasks.spawn_local(work);
+        if let Some(id) = id {
+            self.requests.insert(stop.id(), id.clone());
+            self.stops.insert(id.to_string(), stop);
+        }
+    }
+
+    fn cancel(&mut self, id: &Value) {
+        if let Some(stop) = self.stops.remove(&id.to_string()) {
+            stop.abort();
+        }
+    }
+
+    fn forget(&mut self, task: tokio::task::Id) -> Option<Value> {
+        let id = self.requests.remove(&task)?;
+        self.stops.remove(&id.to_string());
+        Some(id)
+    }
+}
+
+/// Answer a batch: every message in order, and one array back.
+///
+/// The calls in a batch run one after another. A client that wants them side
+/// by side sends them as separate lines. A batch of nothing but notifications
+/// has no answer, which is the empty text the caller skips.
+async fn batch(steps: Vec<Step>, http: reqwest::Client, log: Log) -> String {
+    let mut answers = Vec::new();
+    for step in steps {
+        match step {
+            Step::Silent | Step::Cancel(_) | Step::Batch(_) => {}
+            Step::Reply(text) => answers.push(text),
+            Step::Call(call) => answers.push(answer(*call, http.clone(), log).await),
+        }
+    }
+    if answers.is_empty() {
+        String::new()
+    } else {
+        format!("[{}]", answers.join(","))
+    }
+}
+
+/// One line from stdin.
+enum Line {
+    Text(String),
+    /// A line past [`MAX_LINE_BYTES`], already skipped.
+    TooLong,
+}
+
 /// Read stdin on its own thread and hand each line over a channel.
 ///
 /// Stdin has no portable async read, and a blocking read on the runtime thread
 /// would stop every open call. A plain thread that does nothing but read is
 /// the whole cost, and it ends when the client closes the stream.
-fn read_stdin() -> Run<mpsc::UnboundedReceiver<String>> {
-    let (send, receive) = mpsc::unbounded_channel::<String>();
+fn read_stdin() -> Run<mpsc::UnboundedReceiver<Line>> {
+    let (send, receive) = mpsc::unbounded_channel::<Line>();
     std::thread::Builder::new()
         .name("mcp-stdin".to_string())
         .spawn(move || {
@@ -113,20 +226,47 @@ fn read_stdin() -> Run<mpsc::UnboundedReceiver<String>> {
             let mut bytes = Vec::new();
             loop {
                 bytes.clear();
-                match stdin.read_until(b'\n', &mut bytes) {
+                let read = (&mut stdin)
+                    .take(MAX_LINE_BYTES)
+                    .read_until(b'\n', &mut bytes);
+                let line = match read {
                     Ok(0) | Err(_) => break,
+                    Ok(_) if bytes.len() as u64 >= MAX_LINE_BYTES && !bytes.ends_with(b"\n") => {
+                        if !skip_line(&mut stdin) {
+                            break;
+                        }
+                        Line::TooLong
+                    }
                     Ok(_) => {
                         let line = String::from_utf8_lossy(&bytes);
                         let line = line.trim();
-                        if !line.is_empty() && send.send(line.to_string()).is_err() {
-                            break;
+                        if line.is_empty() {
+                            continue;
                         }
+                        Line::Text(line.to_string())
                     }
+                };
+                if send.send(line).is_err() {
+                    break;
                 }
             }
         })
         .map_err(|e| Failure::new(Code::Failed, format!("could not start reading stdin: {e}")))?;
     Ok(receive)
+}
+
+/// Read and drop the rest of a line that ran past the cap, a piece at a time.
+/// False when the stream ended or failed first.
+fn skip_line(stdin: &mut impl BufRead) -> bool {
+    let mut piece = Vec::new();
+    loop {
+        piece.clear();
+        match stdin.take(64 * 1024).read_until(b'\n', &mut piece) {
+            Ok(0) | Err(_) => return false,
+            Ok(_) if piece.ends_with(b"\n") => return true,
+            Ok(_) => {}
+        }
+    }
 }
 
 /// One protocol message on stdout, flushed, so the client has it now.
@@ -146,6 +286,10 @@ enum Step {
     Reply(String),
     /// A tool call to run.
     Call(Box<Call>),
+    /// The client no longer wants the answer to this request.
+    Cancel(Value),
+    /// Several messages sent as one array, answered as one array.
+    Batch(Vec<Step>),
 }
 
 /// A tool call, checked and parsed, ready to run.
@@ -161,25 +305,51 @@ fn handle(line: &str) -> Step {
         Ok(message) => message,
         Err(_) => return Step::Reply(error(&Value::Null, PARSE_ERROR, "the line is not JSON")),
     };
+    match &message {
+        Value::Array(messages) if messages.is_empty() => Step::Reply(error(
+            &Value::Null,
+            INVALID_REQUEST,
+            "a batch holds at least one message",
+        )),
+        Value::Array(messages) => Step::Batch(messages.iter().map(one).collect()),
+        other => one(other),
+    }
+}
+
+/// Decide what one message leads to.
+fn one(message: &Value) -> Step {
     let Some(object) = message.as_object() else {
         return Step::Reply(error(
             &Value::Null,
             INVALID_REQUEST,
-            "a message is one JSON object. Batches are not supported.",
+            "a message is a JSON object",
         ));
     };
-    let Some(method) = object.get("method").and_then(Value::as_str) else {
-        return Step::Silent;
-    };
-    // No id makes it a notification, and a notification is never answered.
-    let Some(id) = object.get("id").filter(|id| !id.is_null()) else {
-        return Step::Silent;
-    };
+    let id = object.get("id").filter(|id| !id.is_null());
     let empty = Map::new();
     let params = object
         .get("params")
         .and_then(Value::as_object)
         .unwrap_or(&empty);
+    let Some(method) = object.get("method").and_then(Value::as_str) else {
+        // An answer to something this server never asked is dropped. Anything
+        // else that carries an id is a request nobody can read, and it still
+        // gets an answer so the client is not left waiting.
+        let is_answer = object.contains_key("result") || object.contains_key("error");
+        return match id {
+            Some(id) if !is_answer => {
+                Step::Reply(error(id, INVALID_REQUEST, "a request names a method"))
+            }
+            _ => Step::Silent,
+        };
+    };
+    // No id makes it a notification, and a notification is never answered.
+    let Some(id) = id else {
+        return match (method, params.get("requestId")) {
+            ("notifications/cancelled", Some(request)) => Step::Cancel(request.clone()),
+            _ => Step::Silent,
+        };
+    };
     match method {
         "initialize" => Step::Reply(result(id, initialize(params))),
         "ping" => Step::Reply(result(id, json!({}))),
@@ -285,6 +455,13 @@ fn plan(name: &str, arguments: &Map<String, Value>) -> Result<Plan, String> {
             words.push("crawl".to_string());
             goal(arguments, &mut words, &mut input)?;
             let limit = whole(arguments, "limit")?.unwrap_or(DEFAULT_CRAWL_LIMIT);
+            // Zero is how the service spells "the whole site", which is the
+            // one thing the default above exists to keep from a model.
+            if !(1..=MAX_CRAWL_LIMIT).contains(&limit) {
+                return Err(format!(
+                    "limit is between 1 and {MAX_CRAWL_LIMIT}. Run a larger crawl from the command line."
+                ));
+            }
             words.extend(["--limit".to_string(), limit.to_string()]);
             if let Some(depth) = whole(arguments, "depth")? {
                 words.extend(["--depth".to_string(), depth.to_string()]);
@@ -450,7 +627,11 @@ fn flag(arguments: &Map<String, Value>, key: &str) -> Result<bool, String> {
 async fn answer(call: Call, http: reqwest::Client, log: Log) -> String {
     let Call { id, parsed, input } = call;
     let (outcome, written) = session::scope(http, input, run(parsed, log)).await;
-    let document = String::from_utf8_lossy(&written).trim().to_string();
+    // Moved, not copied: a crawl's document can be large.
+    let mut document = String::from_utf8(written)
+        .unwrap_or_else(|bad| String::from_utf8_lossy(bad.as_bytes()).into_owned());
+    let kept = document.trim_end().len();
+    document.truncate(kept);
     let reason = match outcome {
         Ok(Code::Ok) => None,
         Ok(code) => Some(format!(
@@ -507,7 +688,7 @@ fn tools() -> Value {
             "Read a site by following its links from a starting page. Reads 10 pages unless limit says otherwise.",
             json!({
                 "url": url, "goal": goal, "selectors": selectors,
-                "limit": { "type": "integer", "minimum": 1, "description": "How many pages the crawl may read. 10 when left out." },
+                "limit": { "type": "integer", "minimum": 1, "maximum": MAX_CRAWL_LIMIT, "description": "How many pages the crawl may read. 10 when left out." },
                 "depth": { "type": "integer", "minimum": 0, "description": "How many links deep from the starting page the crawl may go." }
             }),
             &["url"],
@@ -601,8 +782,7 @@ mod tests {
     fn reply(line: &str) -> Value {
         match handle(line) {
             Step::Reply(text) => serde_json::from_str(&text).unwrap(),
-            Step::Silent => panic!("no reply to {line}"),
-            Step::Call(_) => panic!("{line} became a call"),
+            _ => panic!("{line} did not lead to a reply"),
         }
     }
 
@@ -646,9 +826,64 @@ mod tests {
     }
 
     #[test]
-    fn a_batch_is_refused() {
-        let answer = reply(r#"[{"jsonrpc":"2.0","id":1,"method":"ping"}]"#);
+    fn a_batch_is_answered_message_by_message() {
+        let step = handle(
+            r#"[{"jsonrpc":"2.0","id":1,"method":"ping"},{"jsonrpc":"2.0","method":"notifications/initialized"},{"jsonrpc":"2.0","id":2,"method":"nope"}]"#,
+        );
+        let Step::Batch(steps) = step else {
+            panic!("not a batch");
+        };
+        assert_eq!(steps.len(), 3);
+        assert!(matches!(steps[0], Step::Reply(_)));
+        assert!(matches!(steps[1], Step::Silent));
+        assert!(matches!(steps[2], Step::Reply(_)));
+    }
+
+    #[test]
+    fn an_empty_batch_is_refused() {
+        let answer = reply("[]");
         assert_eq!(answer["error"]["code"], INVALID_REQUEST);
+    }
+
+    #[test]
+    fn a_request_with_no_method_is_answered_and_a_stray_answer_is_not() {
+        let answer = reply(r#"{"jsonrpc":"2.0","id":1}"#);
+        assert_eq!(answer["error"]["code"], INVALID_REQUEST);
+        assert_eq!(answer["id"], 1);
+        let answer = reply(r#"{"jsonrpc":"2.0","id":2,"method":5}"#);
+        assert_eq!(answer["error"]["code"], INVALID_REQUEST);
+        assert!(matches!(
+            handle(r#"{"jsonrpc":"2.0","id":3,"result":{}}"#),
+            Step::Silent
+        ));
+    }
+
+    #[test]
+    fn a_cancellation_names_the_request_to_stop() {
+        let step = handle(
+            r#"{"jsonrpc":"2.0","method":"notifications/cancelled","params":{"requestId":"r1","reason":"timeout"}}"#,
+        );
+        match step {
+            Step::Cancel(id) => assert_eq!(id, "r1"),
+            _ => panic!("not a cancellation"),
+        }
+    }
+
+    #[test]
+    fn a_crawl_limit_is_between_one_and_the_ceiling() {
+        for limit in [0, MAX_CRAWL_LIMIT + 1] {
+            let refused = plan(
+                "spider_crawl",
+                &arguments(json!({ "url": "https://example.com", "limit": limit })),
+            )
+            .unwrap_err();
+            assert!(refused.contains("between 1 and"), "{refused}");
+        }
+        assert!(plan(
+            "spider_crawl",
+            &arguments(json!({ "url": "https://example.com", "limit": MAX_CRAWL_LIMIT })),
+        )
+        .is_ok());
     }
 
     #[test]
