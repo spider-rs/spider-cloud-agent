@@ -97,8 +97,10 @@ call, spending nothing and needing no key.
 
 ## Driving it from a coding agent
 
-There is no plugin to install and no server to register. A coding agent already
-has a shell, and that is the whole interface. The two recordings below are
+A coding agent already has a shell, and the shell is enough: there is no plugin
+to install and nothing to register. An agent client that speaks the Model
+Context Protocol can start `spider-agent mcp` instead, covered in the next
+section. The two recordings below are
 Claude Code and Codex, run headless with the same task, each working out the
 invocation itself and reading the report back.
 
@@ -155,6 +157,40 @@ the model. Choosing that one command cost Claude Code 107 seconds and 670,991
 tokens, and Codex 95 seconds and 406,370. The fetch underneath took 1,432 ms and
 794 ms and spent no model tokens at all, because no model runs on this side of
 the call. What comes back is the record any other caller gets.
+
+## As a Model Context Protocol server
+
+`spider-agent mcp` serves the same commands as tools on stdin and stdout. A
+client starts it once and calls it many times, so a call pays for no process
+start and every call after the first reuses the connection the first one
+opened. Calls that arrive together run together.
+
+```json
+{
+  "mcpServers": {
+    "spider": { "command": "spider-agent", "args": ["mcp"] }
+  }
+}
+```
+
+In Claude Code that is `claude mcp add spider -- spider-agent mcp`.
+
+| Tool | Runs |
+|---|---|
+| `spider_scrape` | `scrape` |
+| `spider_crawl` | `crawl`, reading 10 pages unless the call names a limit |
+| `spider_search` | `search` |
+| `spider_links` | `links` |
+| `spider_transform` | `transform` |
+| `spider_get_credits` | `credits` |
+
+Each tool answers with the JSON document its command writes under `--json`,
+closing report included, so what a tool returns and what the command prints
+cannot drift apart. Every tool that fetches takes `budget`, in credits, and it
+caps that one call. A call that fails answers with `isError` set and the reason
+in words. The key is found the way every command finds it.
+
+Screenshots are not served this way yet, because the answer is text.
 
 ## Provider fallback
 

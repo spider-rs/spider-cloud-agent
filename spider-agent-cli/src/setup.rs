@@ -24,7 +24,12 @@ use crate::progress::Log;
 /// neither: left in, the first address fails to parse and a JSON file is
 /// refused at its first byte.
 pub fn source(spec: &str) -> Run<String> {
-    let text = if spec == "-" {
+    let text = if spec == "-" && crate::session::active() {
+        // Inside the server stdin carries the protocol, so a dash names the
+        // text the tool call brought with it and never the real stream.
+        crate::session::input()
+            .ok_or_else(|| Failure::usage("this tool call carries no input to read"))?
+    } else if spec == "-" {
         let mut text = String::new();
         std::io::stdin()
             .read_to_string(&mut text)
@@ -55,7 +60,7 @@ pub fn addresses(targets: &Targets) -> Run<Vec<Url>> {
     if let Some(spec) = &targets.urls_from {
         raw.extend(lines(&source(spec)?));
     }
-    if raw.is_empty() && !std::io::stdin().is_terminal() {
+    if raw.is_empty() && !crate::session::active() && !std::io::stdin().is_terminal() {
         raw.extend(lines(&source("-")?));
     }
     if raw.is_empty() {
@@ -248,6 +253,11 @@ static OPTIMIZER_NOTED: AtomicBool = AtomicBool::new(false);
 
 fn build_client(global: &Global, credits: Option<f64>, fetching: Option<Log>) -> Run<Spider> {
     let mut builder = Spider::builder().budget(budget(global));
+    // Inside the server every call shares one client, so the second call
+    // reuses the connection the first one opened.
+    if let Some(shared) = crate::session::http_client() {
+        builder = builder.http_client(shared);
+    }
     if let Some(cap) = credits {
         builder = builder.run_budget(spider_cloud_agent::RunBudget::new(Credits::new(cap)));
     }
@@ -410,6 +420,14 @@ pub fn format(global: &Global, default: Format) -> Format {
 
 /// Open the destination the caller named.
 pub fn emitter(global: &Global, default: Format) -> Run<Emitter> {
+    // Inside the server stdout carries the protocol. The results go to the
+    // tool call's own buffer, and the server sends them as its answer.
+    if let Some(sink) = crate::session::sink() {
+        return Ok(Emitter::to_stream(
+            format(global, default),
+            Box::new(sink),
+        ));
+    }
     Emitter::open(
         format(global, default),
         global.output.as_deref(),

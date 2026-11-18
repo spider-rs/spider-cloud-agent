@@ -504,7 +504,18 @@ impl Transport {
         insecure: bool,
     ) -> Result<Transport> {
         validate_base(&base, insecure)?;
-        let client = reqwest::Client::builder()
+        let client = Self::default_client()?;
+        Ok(Transport::with_client(key, base, client).allow_insecure_http(insecure))
+    }
+
+    /// The HTTP client a transport builds when it is not handed one.
+    ///
+    /// For a process that makes many clients and wants them to share one
+    /// connection pool: build this once and pass a clone to each through
+    /// [`crate::SpiderBuilder::http_client`]. A clone shares the pool, so a
+    /// later call reuses the connection an earlier one opened.
+    pub fn default_client() -> Result<reqwest::Client> {
+        reqwest::Client::builder()
             .user_agent(USER_AGENT)
             // A redirect can rewrite an API POST as GET and discard its body.
             // Reject it as a transport failure before another request is sent.
@@ -514,8 +525,7 @@ impl Transport {
             }))
             .connect_timeout(CONNECT_TIMEOUT)
             .build()
-            .map_err(Error::Transport)?;
-        Ok(Transport::with_client(key, base, client).allow_insecure_http(insecure))
+            .map_err(Error::Transport)
     }
 
     /// A transport built on a client you already have, so connection pools and

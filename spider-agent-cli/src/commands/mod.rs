@@ -2,6 +2,7 @@
 
 pub mod account;
 pub mod local;
+pub mod mcp;
 pub mod optimize;
 pub mod pages;
 pub mod query;

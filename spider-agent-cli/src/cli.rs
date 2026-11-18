@@ -167,6 +167,29 @@ call."
     Route(RouteArgs),
     /// The command tree and the record schema, as JSON.
     Schema,
+    /// Serve these commands as tools over the Model Context Protocol, on
+    /// stdin and stdout.
+    #[command(
+        long_about = "Serve these commands as tools over the Model Context Protocol, on stdin and stdout.
+
+An agent client starts this once and calls it many times. The process stays \
+up, so every call after the first reuses the connection the first one opened \
+and pays for no process start. Calls that arrive together run together.
+
+Tools: spider_scrape, spider_crawl, spider_search, spider_links, \
+spider_transform and spider_get_credits. Each runs the command of the same \
+name and answers with the JSON document that command writes under --json, \
+closing report included. A call that fails answers with isError set and the \
+reason in words.
+
+spider_crawl reads 10 pages unless the call names a limit, because a crawl \
+with no limit reads the whole site. Every tool that fetches takes a budget in \
+credits, and it caps that one call.
+
+Nothing but protocol messages is written to stdout. Register it with a client \
+as the command `spider-agent mcp`."
+    )]
+    Mcp,
     /// Install the newest release now instead of on a later run.
     #[command(
         long_about = "Install the newest release now instead of on a later run.

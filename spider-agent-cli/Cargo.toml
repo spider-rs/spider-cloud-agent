@@ -42,7 +42,8 @@ clap = { version = "4", default-features = false, features = [
 ] }
 serde = { workspace = true }
 serde_json = { workspace = true }
-tokio = { workspace = true }
+# sync is for the channels the mcp server passes lines and answers through.
+tokio = { workspace = true, features = ["sync"] }
 url = { workspace = true }
 # Self update. reqwest is the client the library already builds with rustls,
 # used here on its own so a release check needs no key and spends nothing.

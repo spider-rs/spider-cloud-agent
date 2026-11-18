@@ -140,6 +140,23 @@ impl Emitter {
         })
     }
 
+    /// Write to a stream the caller already holds.
+    pub fn to_stream(format: Format, stream: Box<dyn Write>) -> Emitter {
+        Emitter {
+            format,
+            dest: Dest::Stream(stream),
+            rules: FileRules {
+                force: false,
+                mkdir: false,
+                append: false,
+            },
+            buffered: Vec::new(),
+            report: None,
+            sole: false,
+            count: 0,
+        }
+    }
+
     /// The shape this emitter writes.
     pub fn format(&self) -> Format {
         self.format
