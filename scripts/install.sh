@@ -36,9 +36,12 @@ note() { printf 'spider-agent install: %s\n' "$1" >&2; }
 verify_signature() {
   minisign="${SPIDER_AGENT_MINISIGN:-minisign}"
   unchecked=""
-  case "$version" in
-    0.4.*) unchecked="v$version was released before releases were signed" ;;
-  esac
+  # v0.4.0 is the one release from before signing. It is exempt only when the
+  # caller pinned it by name. A version read from releases/latest is never
+  # exempt, or publishing an unsigned 0.4.x as latest would skip the check.
+  if "$pinned" && [ "$version" = "0.4.0" ]; then
+    unchecked="v0.4.0 was released before releases were signed"
+  fi
   if [ -z "$unchecked" ] && ! command -v "$minisign" >/dev/null 2>&1; then
     unchecked="minisign is not installed"
   fi
@@ -54,14 +57,19 @@ verify_signature() {
   for key in $KEYS; do
     # -Q prints the signed trusted comment and nothing else. It names the
     # version, so signed sums from one release cannot be served under another.
-    if comment=$("$minisign" -V -Q -P "$key" -m "$tmp/SHA256SUMS.txt" \
-      -x "$tmp/SHA256SUMS.txt.minisig" 2>/dev/null); then
+    # -H accepts only a prehashed signature, the kind every release carries
+    # and the only kind the updater accepts.
+    if comment=$("$minisign" -V -H -Q -P "$key" -m "$tmp/SHA256SUMS.txt" \
+      -x "$tmp/SHA256SUMS.txt.minisig" 2>"$tmp/minisign.err"); then
       [ "$comment" = "$want" ] \
         || fail "SHA256SUMS.txt is signed for \"$comment\", not \"$want\". Nothing was installed"
       return 0
     fi
   done
-  fail "SHA256SUMS.txt is not signed by a release key. Nothing was installed"
+  # What minisign said, since an old minisign that cannot read the signature
+  # fails the same way a forged one does.
+  cat "$tmp/minisign.err" >&2
+  fail "minisign did not accept SHA256SUMS.txt as signed by a release key. Nothing was installed"
 }
 
 main() {
@@ -79,8 +87,10 @@ main() {
   esac
   target="$arch-$os"
 
+  pinned=false
   if [ -n "${SPIDER_AGENT_VERSION:-}" ]; then
     version="${SPIDER_AGENT_VERSION#v}"
+    pinned=true
   else
     # Without pipefail a failed curl leaves this empty rather than stopping the
     # script, and the empty value fails the check below.

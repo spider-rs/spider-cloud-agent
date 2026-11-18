@@ -48,7 +48,7 @@ done
 if "$head"; then
   case "$url" in
     */releases/latest)
-      printf 'HTTP/2 302 \r\nlocation: https://github.com/spider-rs/spider-cloud-agent/releases/tag/v9.9.9\r\n\r\n'
+      printf 'HTTP/2 302 \r\nlocation: https://github.com/spider-rs/spider-cloud-agent/releases/tag/v%s\r\n\r\n' "${FAKE_LATEST:-9.9.9}"
       exit 0 ;;
   esac
   exit 22
@@ -121,7 +121,7 @@ run "$tmp/c1" "$good"
 if [ "$code" -ne 0 ]; then flunk "$name" "exit $code: $(cat "$tmp/c1/err")"
 elif [ "$("$tmp/c1/bin/spider-agent" --version 2>&1)" != "spider-agent 9.9.9" ]; then flunk "$name" "installed binary did not print spider-agent 9.9.9"
 elif ! grep -q 'add it to your PATH' "$tmp/c1/out"; then flunk "$name" "no PATH hint in: $(cat "$tmp/c1/out")"
-elif ! grep -q 'SHA256SUMS.txt.minisig' "$tmp/c1/minisign.log"; then flunk "$name" "the signature was not checked"
+elif ! grep -q -e '-V -H -Q -P RWQTvFK0BbbrQ5Fi5QICN6wkM5EsCGlfeLsTSiY9hTMdZpUjGaAg5t13 -m .*/SHA256SUMS.txt -x .*/SHA256SUMS.txt.minisig$' "$tmp/c1/minisign.log"; then flunk "$name" "minisign was not asked to check the sums against the pinned key: $(cat "$tmp/c1/minisign.log")"
 else pass "$name"
 fi
 
@@ -155,7 +155,7 @@ fi
 name="refuses sums that no release key signed"
 run "$tmp/c5" "$good" FAKE_MINISIGN=refuse
 if [ "$code" -ne 1 ]; then flunk "$name" "exit $code, wanted 1"
-elif ! grep -q 'not signed by a release key' "$tmp/c5/err"; then flunk "$name" "stderr lacks the signature refusal: $(cat "$tmp/c5/err")"
+elif ! grep -q 'did not accept SHA256SUMS.txt as signed by a release key' "$tmp/c5/err"; then flunk "$name" "stderr lacks the signature refusal: $(cat "$tmp/c5/err")"
 elif [ -e "$tmp/c5/bin/spider-agent" ]; then flunk "$name" "a binary was installed anyway"
 else pass "$name"
 fi
@@ -181,6 +181,30 @@ run "$tmp/c8" "$good" SPIDER_AGENT_MINISIGN=no-such-minisign SPIDER_AGENT_REQUIR
 if [ "$code" -ne 1 ]; then flunk "$name" "exit $code, wanted 1"
 elif ! grep -q 'signature cannot be checked' "$tmp/c8/err"; then flunk "$name" "stderr lacks the reason: $(cat "$tmp/c8/err")"
 elif [ -e "$tmp/c8/bin/spider-agent" ]; then flunk "$name" "a binary was installed anyway"
+else pass "$name"
+fi
+
+# v0.4.0, the one release from before signing: sums and no signature file.
+old="$tmp/old"
+old_asset="spider-agent-0.4.0-aarch64-apple-darwin.tar.gz"
+mkdir -p "$old"
+tar -czf "$old/$old_asset" -C "$good/stage" spider-agent
+printf '%s  %s\n' "$(sum "$old/$old_asset")" "$old_asset" >"$old/SHA256SUMS.txt"
+
+name="installs v0.4.0 unsigned when the caller pinned it, and says so"
+run "$tmp/c9" "$old" SPIDER_AGENT_VERSION=v0.4.0
+if [ "$code" -ne 0 ]; then flunk "$name" "exit $code: $(cat "$tmp/c9/err")"
+elif ! grep -q 'v0.4.0 was released before releases were signed' "$tmp/c9/err"; then flunk "$name" "stderr does not say the signature went unchecked: $(cat "$tmp/c9/err")"
+elif [ -s "$tmp/c9/minisign.log" ]; then flunk "$name" "minisign was run for a release with no signature"
+elif [ ! -x "$tmp/c9/bin/spider-agent" ]; then flunk "$name" "no binary was installed"
+else pass "$name"
+fi
+
+name="refuses an unsigned v0.4.0 that arrived as the latest release"
+run "$tmp/c10" "$old" FAKE_LATEST=0.4.0
+if [ "$code" -ne 1 ]; then flunk "$name" "exit $code, wanted 1"
+elif ! grep -q 'could not download SHA256SUMS.txt.minisig' "$tmp/c10/err"; then flunk "$name" "stderr lacks the missing signature: $(cat "$tmp/c10/err")"
+elif [ -e "$tmp/c10/bin/spider-agent" ]; then flunk "$name" "a binary was installed anyway"
 else pass "$name"
 fi
 
