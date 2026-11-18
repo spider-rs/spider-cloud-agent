@@ -229,7 +229,8 @@ pub fn client(global: &Global) -> Run<Spider> {
 /// with no account. With no key on the machine it is built anyway and says so
 /// once, unless this run turned that off.
 pub fn scrape_client(global: &Global, log: Log) -> Run<Spider> {
-    let spider = build_client(global, global.budget, Some(log), !keyless_refused())?;
+    let keyless = !keyless_refused() && !credentials_file_present();
+    let spider = build_client(global, global.budget, Some(log), keyless)?;
     if !spider.raw().has_key() && !KEYLESS_NOTED.swap(true, Ordering::Relaxed) {
         log.say("no key found, so this runs without one: scrape only, and rate limited. Run spider-agent login for anything more");
     }
@@ -243,6 +244,19 @@ pub const NO_KEYLESS_ENV: &str = "SPIDER_AGENT_NO_KEYLESS";
 /// Whether this run refuses to send a call with no key.
 fn keyless_refused() -> bool {
     std::env::var_os("SPIDER_AGENT_NO_KEYLESS").is_some_and(|v| !v.is_empty())
+}
+
+/// Whether this machine has a credentials file, readable or not.
+///
+/// A file that is there and gave no key is a key that could not be read, and
+/// that is a failure to report. Going out with no account instead would turn
+/// a broken sign in into a quiet change of who the call is made as.
+fn credentials_file_present() -> bool {
+    let name = std::path::Path::new(spider_cloud_agent::auth::CREDENTIALS_PATH).file_name();
+    match (spider_cloud_agent::auth::store::spider_dir(), name) {
+        (Some(dir), Some(name)) => dir.join(name).exists(),
+        _ => false,
+    }
 }
 
 /// Said once per run, however many clients the run builds.

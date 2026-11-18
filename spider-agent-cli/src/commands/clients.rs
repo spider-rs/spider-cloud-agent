@@ -392,6 +392,10 @@ fn with_entry(
 /// Replace the config file whole: written beside it, then renamed over it, so
 /// a client reading at the wrong moment sees the old file or the new one.
 fn write_config(path: &Path, document: &Map<String, Value>) -> Result<(), String> {
+    // A config that is a link, as one kept in a dotfiles checkout is, stays a
+    // link: the file it points at is the one replaced.
+    let resolved = std::fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf());
+    let path = resolved.as_path();
     let failed = |e: std::io::Error| format!("{} could not be written: {e}", path.display());
     let mut text = serde_json::to_string_pretty(document)
         .map_err(|e| format!("{} could not be written: {e}", path.display()))?;
@@ -435,7 +439,7 @@ mod tests {
     )]
     use super::*;
 
-    const BINARY: &str = "/home/someone/.local/bin/spider-agent";
+    const BINARY: &str = "/opt/tools/bin/spider-agent";
 
     fn entry() -> Value {
         json!({ "command": BINARY, "args": ["mcp"] })

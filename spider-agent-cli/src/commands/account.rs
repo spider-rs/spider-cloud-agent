@@ -180,8 +180,11 @@ async fn device_login(global: &Global, args: &crate::cli::LoginArgs, log: Log) -
     let outcome = device::wait(&mut pending, Duration::from_secs(seconds)).await;
     match outcome {
         Ok(Some(key)) => {
+            // Kept first. The code is spent by now, so the stored sign in is
+            // no use either way, and it goes once the key is safe.
+            let code = keep(global, args, log, key);
             forget_pending();
-            let code = keep(global, args, log, key)?;
+            let code = code?;
             if !args.print {
                 let mut emitter = setup::emitter(global, Format::Text)?;
                 emitter.write(
@@ -205,7 +208,9 @@ async fn device_login(global: &Global, args: &crate::cli::LoginArgs, log: Log) -
             ))
         }
         Err(error) => {
-            // Declined or expired: the stored code is no use to anyone.
+            // Declined, expired or refused outright. A poll that merely
+            // failed to arrive never gets here, so the stored code is no use
+            // to anyone.
             forget_pending();
             Err(Failure::from(error))
         }

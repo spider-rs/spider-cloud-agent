@@ -7,6 +7,10 @@ error.
 
 ## Unreleased
 
+## 0.8.0 (2026-11-18)
+
+- Dependencies: rustls, rustls-webpki, tokio, webpki-root-certs and yoke-derive are
+  updated in the lockfile for advisories published since 0.7.0.
 - The install script checks the release signature when minisign is installed. It
   refuses a SHA256SUMS.txt that no pinned release key signed, or one signed for
   another version, as `spider-agent update` already does. Without minisign it
