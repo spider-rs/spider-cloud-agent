@@ -5,6 +5,8 @@
 #
 # SPIDER_AGENT_VERSION pins a release, v0.4.0 or later.
 # SPIDER_AGENT_INSTALL_DIR picks the directory, ~/.local/bin by default.
+# SPIDER_AGENT_REQUIRE_SIGNATURE, when set, stops the install unless the
+# release signature was checked.
 #
 # Everything runs inside main, called on the last line, so a download cut off
 # partway through defines a function and runs nothing.
@@ -14,7 +16,53 @@ REPO="spider-rs/spider-cloud-agent"
 BIN="spider-agent"
 FALLBACK="Use: cargo install spider-agent-cli"
 
+# The minisign keys that may sign a release's SHA256SUMS.txt, separated by
+# spaces on this one line.
+# Keep in step with spider-agent-cli/src/update/release-keys.pub; the install
+# tests compare the two.
+KEYS="RWQTvFK0BbbrQ5Fi5QICN6wkM5EsCGlfeLsTSiY9hTMdZpUjGaAg5t13"
+
 fail() { printf 'spider-agent install: %s\n' "$1" >&2; exit 1; }
+note() { printf 'spider-agent install: %s\n' "$1" >&2; }
+
+# Checks that a pinned release key signed SHA256SUMS.txt for this version, the
+# same rule the binary's own updater applies. The sums file comes from the same
+# release as the archive, so the checksum alone shows only that the download
+# was not damaged.
+#
+# The check needs the minisign program. Without it the install goes on with
+# the checksum alone and says so, unless SPIDER_AGENT_REQUIRE_SIGNATURE is set.
+# SPIDER_AGENT_MINISIGN names the program and exists for the tests.
+verify_signature() {
+  minisign="${SPIDER_AGENT_MINISIGN:-minisign}"
+  unchecked=""
+  case "$version" in
+    0.4.*) unchecked="v$version was released before releases were signed" ;;
+  esac
+  if [ -z "$unchecked" ] && ! command -v "$minisign" >/dev/null 2>&1; then
+    unchecked="minisign is not installed"
+  fi
+  if [ -n "$unchecked" ]; then
+    [ -z "${SPIDER_AGENT_REQUIRE_SIGNATURE:-}" ] \
+      || fail "$unchecked, so the release signature cannot be checked. Nothing was installed"
+    note "$unchecked, so the download is checked against its checksum only"
+    return 0
+  fi
+  curl -fsSL "$base/SHA256SUMS.txt.minisig" -o "$tmp/SHA256SUMS.txt.minisig" \
+    || fail "could not download SHA256SUMS.txt.minisig for v$version"
+  want="spider-agent v$version SHA256SUMS.txt"
+  for key in $KEYS; do
+    # -Q prints the signed trusted comment and nothing else. It names the
+    # version, so signed sums from one release cannot be served under another.
+    if comment=$("$minisign" -V -Q -P "$key" -m "$tmp/SHA256SUMS.txt" \
+      -x "$tmp/SHA256SUMS.txt.minisig" 2>/dev/null); then
+      [ "$comment" = "$want" ] \
+        || fail "SHA256SUMS.txt is signed for \"$comment\", not \"$want\". Nothing was installed"
+      return 0
+    fi
+  done
+  fail "SHA256SUMS.txt is not signed by a release key. Nothing was installed"
+}
 
 main() {
   command -v curl >/dev/null 2>&1 || fail "curl is not installed. $FALLBACK"
@@ -52,6 +100,7 @@ main() {
   trap 'exit 1' INT TERM
   curl -fsSL "$base/$asset" -o "$tmp/$asset" || fail "no v$version build for $target. $FALLBACK"
   curl -fsSL "$base/SHA256SUMS.txt" -o "$tmp/SHA256SUMS.txt" || fail "could not download SHA256SUMS.txt for v$version"
+  verify_signature
   expected=$(awk -v a="$asset" '{ sub(/^\*/, "", $2) } $2 == a { print $1; exit }' "$tmp/SHA256SUMS.txt")
   [ -n "$expected" ] || fail "$asset is not listed in SHA256SUMS.txt"
   if command -v sha256sum >/dev/null 2>&1; then

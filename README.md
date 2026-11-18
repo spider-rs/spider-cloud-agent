@@ -43,6 +43,12 @@ XDG user bin directory in your home folder. Set `SPIDER_AGENT_INSTALL_DIR`
 to install somewhere else, or `SPIDER_AGENT_VERSION` to pin a release. Its source is
 [scripts/install.sh](scripts/install.sh).
 
+When [minisign](https://jedisct1.github.io/minisign/) is installed, the script
+also checks that a release key signed SHA256SUMS.txt for that version, and
+installs nothing if it did not. Without minisign it checks the checksum only
+and prints a line saying so. Set `SPIDER_AGENT_REQUIRE_SIGNATURE=1` to make
+the install stop when the signature cannot be checked.
+
 Or, with a stable Rust toolchain, build it from crates.io:
 
 ```bash
