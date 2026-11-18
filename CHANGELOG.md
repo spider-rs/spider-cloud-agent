@@ -7,6 +7,11 @@ error.
 
 ## Unreleased
 
+- The install script checks the release signature when minisign is installed. It
+  refuses a SHA256SUMS.txt that no pinned release key signed, or one signed for
+  another version, as `spider-agent update` already does. Without minisign it
+  checks the checksum only and says so. `SPIDER_AGENT_REQUIRE_SIGNATURE=1` stops
+  the install when the signature cannot be checked.
 - `RequestParams` no longer has `storageless`, `preserve_host`, `text` or
   `skip_config_checks`. The agent never read them; they sat on the request shape as
   a copy of the service's fields, and `skip_config_checks` only ever skipped the
