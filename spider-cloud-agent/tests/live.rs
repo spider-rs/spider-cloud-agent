@@ -38,6 +38,11 @@ use spider_cloud_agent::{Body, Credits, Need, Spider};
 /// The page every test here asks for.
 const TARGET: &str = "https://example.com";
 
+/// A page that links somewhere. The page above stopped carrying a link and a
+/// heading on 2026-11-18, so the links test reads this one, and the selector
+/// tests read the title where they used to read the heading.
+const LINKS_TARGET: &str = "https://www.iana.org/help/example-domains";
+
 /// A client, or nothing when this machine has no key.
 ///
 /// The key is read out of the environment by the crate's own credential store,
@@ -154,7 +159,7 @@ async fn live_named_selectors_come_back_in_the_body_and_not_in_the_metadata() {
 
     let page = spider
         .scrape(TARGET)
-        .need(Need::fields([("heading", "h1"), ("paragraph", "p")]))
+        .need(Need::fields([("heading", "title"), ("paragraph", "p")]))
         .send()
         .await
         .expect("the page");
@@ -194,7 +199,7 @@ async fn live_the_service_answers_with_the_field_names_the_request_asked_for() {
 
     let page = spider
         .scrape(TARGET)
-        .need(Need::fields([("heading", "h1"), ("paragraph", "p")]))
+        .need(Need::fields([("heading", "title"), ("paragraph", "p")]))
         .send()
         .await
         .expect("the page");
@@ -263,7 +268,7 @@ async fn live_a_request_that_declined_a_body_does_not_climb_the_ladder() {
 async fn live_the_links_endpoint_answers_in_one_call() {
     let spider = client!();
 
-    let outcome = spider.links(TARGET).send().await.expect("the links");
+    let outcome = spider.links(LINKS_TARGET).send().await.expect("the links");
 
     // This endpoint returns addresses and no page, which read as a blank page
     // and sent the walk up the whole ladder. Measured on 2026-09-15 before the
