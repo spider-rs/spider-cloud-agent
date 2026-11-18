@@ -574,7 +574,10 @@ mod tests {
     fn rows_hold_no_url_host_or_body() {
         let row = sample(&Fixture::observed());
 
-        let edit = format!("\"edit\":{{\"key\":{},\"op\":1", Key::NetworkBlacklist.index());
+        let edit = format!(
+            "\"edit\":{{\"key\":{},\"op\":1",
+            Key::NetworkBlacklist.index()
+        );
         assert!(row.contains(&edit), "{row}");
         for needle in [
             "http",

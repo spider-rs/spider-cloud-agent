@@ -57,6 +57,41 @@ cargo install spider-agent-cli
 
 See [Cargo.toml](Cargo.toml) for the workspace's toolchain requirement.
 
+## First run
+
+The first page needs no account:
+
+```bash
+spider-agent scrape https://example.com
+```
+
+With no key on the machine, `scrape` still runs. That is scrape only, and it is
+rate limited. On a 429, honor `Retry-After`. Sign in for anything sustained, and
+for every other command:
+
+```bash
+spider-agent login            # opens a browser on this machine
+spider-agent login --device   # prints a code to type on any device
+```
+
+`--device` is for a machine with no browser: one reached over SSH, a container,
+an agent's sandbox. An agent that runs one command at a time splits it in two.
+`login --device --no-wait` prints the code and the address and leaves, and
+`login --device --resume` collects the key once a person has typed the code.
+
+Then tell the agent clients on the machine about it:
+
+```bash
+spider-agent setup --dry-run   # what it would change
+spider-agent setup
+```
+
+`setup` adds the server in `spider-agent mcp` to Claude Code, Codex, Cursor,
+Windsurf, Claude Desktop and VS Code, whichever of them it finds. It leaves
+every other server a client has alone, and a second run changes nothing.
+`SPIDER_AGENT_NO_KEYLESS` set to any value makes `scrape` refuse without a key,
+as every other command does.
+
 ## What a calling agent gets
 
 The tool is built to be called, not typed. The contract a caller codes against:
@@ -173,7 +208,8 @@ opened. Calls that arrive together run together.
 }
 ```
 
-In Claude Code that is `claude mcp add spider -- spider-agent mcp`.
+In Claude Code that is `claude mcp add spider -- spider-agent mcp`, and
+`spider-agent setup` writes the entry for every client it finds.
 
 | Tool | Runs |
 |---|---|
@@ -183,12 +219,15 @@ In Claude Code that is `claude mcp add spider -- spider-agent mcp`.
 | `spider_links` | `links` |
 | `spider_transform` | `transform` |
 | `spider_get_credits` | `credits` |
+| `spider_login` | `login --device`, in two calls: one for the code, one to collect the key |
 
 Each tool answers with the JSON document its command writes under `--json`,
 closing report included, so what a tool returns and what the command prints
 cannot drift apart. Every tool that fetches takes `budget`, in credits, and it
 caps that one call. A call that fails answers with `isError` set and the reason
-in words. The key is found the way every command finds it.
+in words. The key is found the way every command finds it. With no key,
+`spider_scrape` still answers, and a tool that needs an account says to call
+`spider_login`.
 
 Screenshots are not served this way yet, because the answer is text.
 

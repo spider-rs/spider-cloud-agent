@@ -74,6 +74,10 @@ const MAX_OPEN_CALLS: usize = 64;
 /// of being held for one answer.
 const MAX_CRAWL_LIMIT: u64 = 1000;
 
+/// How long `spider_login` waits for approval when asked to finish. Short
+/// enough to sit inside a client's tool timeout, and the call can be repeated.
+const LOGIN_WAIT_SECONDS: u64 = 20;
+
 /// Serve until the client closes stdin and every open call has answered.
 ///
 /// Calls still open when stdin closes are finished and answered, so a session
@@ -217,8 +221,10 @@ enum Line {
 /// Stdin has no portable async read, and a blocking read on the runtime thread
 /// would stop every open call. A plain thread that does nothing but read is
 /// the whole cost, and it ends when the client closes the stream.
-fn read_stdin() -> Run<mpsc::UnboundedReceiver<Line>> {
-    let (send, receive) = mpsc::unbounded_channel::<Line>();
+fn read_stdin() -> Run<mpsc::Receiver<Line>> {
+    // Bounded, so a client that writes faster than the server answers is
+    // held at the pipe instead of filling this process's memory.
+    let (send, receive) = mpsc::channel::<Line>(MAX_OPEN_CALLS);
     std::thread::Builder::new()
         .name("mcp-stdin".to_string())
         .spawn(move || {
@@ -246,7 +252,7 @@ fn read_stdin() -> Run<mpsc::UnboundedReceiver<Line>> {
                         Line::Text(line.to_string())
                     }
                 };
-                if send.send(line).is_err() {
+                if send.blocking_send(line).is_err() {
                     break;
                 }
             }
@@ -374,8 +380,7 @@ fn result(id: &Value, result: Value) -> String {
 /// A protocol error. A tool that ran and failed is not one of these: it
 /// answers with a result whose `isError` is set, so the model reads the reason.
 fn error(id: &Value, code: i64, message: &str) -> String {
-    json!({ "jsonrpc": "2.0", "id": id, "error": { "code": code, "message": message } })
-        .to_string()
+    json!({ "jsonrpc": "2.0", "id": id, "error": { "code": code, "message": message } }).to_string()
 }
 
 /// The answer to `initialize`.
@@ -486,7 +491,11 @@ fn plan(name: &str, arguments: &Map<String, Value>) -> Result<Plan, String> {
             &["url"]
         }
         "spider_transform" => {
-            words.extend(["transform".to_string(), "--input".to_string(), "-".to_string()]);
+            words.extend([
+                "transform".to_string(),
+                "--input".to_string(),
+                "-".to_string(),
+            ]);
             input = Some(required(arguments, "html")?);
             if let Some(shape) = choice(arguments, "to", &SHAPES)? {
                 words.extend(["--to".to_string(), shape]);
@@ -503,9 +512,29 @@ fn plan(name: &str, arguments: &Map<String, Value>) -> Result<Plan, String> {
             words.push("credits".to_string());
             &[]
         }
+        "spider_login" => {
+            words.extend(["login".to_string(), "--device".to_string()]);
+            // Two short calls, never one long one: the first hands back a
+            // code for a person, the second collects the key once they have
+            // typed it. A call that sat waiting for a person would outlast
+            // most clients' patience for a tool.
+            if flag(arguments, "finish")? {
+                words.extend([
+                    "--resume".to_string(),
+                    "--wait".to_string(),
+                    LOGIN_WAIT_SECONDS.to_string(),
+                ]);
+            } else {
+                words.push("--no-wait".to_string());
+            }
+            &["finish"]
+        }
         other => return Err(format!("{other} is not a tool this server has")),
     };
-    let fetches = !matches!(name, "spider_transform" | "spider_get_credits");
+    let fetches = !matches!(
+        name,
+        "spider_transform" | "spider_get_credits" | "spider_login"
+    );
     if fetches {
         caps(arguments, &mut words)?;
     }
@@ -626,6 +655,7 @@ fn flag(arguments: &Map<String, Value>, key: &str) -> Result<bool, String> {
 /// Run one call and build its answer.
 async fn answer(call: Call, http: reqwest::Client, log: Log) -> String {
     let Call { id, parsed, input } = call;
+    let signing_in = matches!(parsed.command, Some(crate::cli::Command::Login(_)));
     let (outcome, written) = session::scope(http, input, run(parsed, log)).await;
     // Moved, not copied: a crawl's document can be large.
     let mut document = String::from_utf8(written)
@@ -640,6 +670,11 @@ async fn answer(call: Call, http: reqwest::Client, log: Log) -> String {
             code.number()
         )),
         Err(failure) if failure.is_silent() => None,
+        // In here the way to sign in is a tool, so the reason names it.
+        Err(failure) if failure.code == Code::Auth && !signing_in => Some(format!(
+            "{}. In this session, call spider_login to sign in.",
+            failure.message.trim_end_matches('.')
+        )),
         Err(failure) => Some(failure.message),
     };
     let mut content = Vec::new();
@@ -728,6 +763,15 @@ fn tools() -> Value {
             "spider_get_credits",
             "Read the credits left on the account. Costs nothing.",
             json!({}),
+            &[],
+            None,
+        ),
+        tool(
+            "spider_login",
+            "Sign this machine in to Spider when a tool answers that it needs an account. Call it with no arguments to get a short code and a web address, show both to the person, and once they have entered the code call it again with finish set to true. The key is stored on this machine and never returned.",
+            json!({
+                "finish": { "type": "boolean", "description": "Collect the key for the code an earlier call returned. Answers as an error while the code is still unapproved, and can be called again." }
+            }),
             &[],
             None,
         ),
@@ -912,7 +956,8 @@ mod tests {
                 "spider_search",
                 "spider_links",
                 "spider_transform",
-                "spider_get_credits"
+                "spider_get_credits",
+                "spider_login"
             ]
         );
         for tool in tools {
@@ -1007,7 +1052,11 @@ mod tests {
 
     #[test]
     fn crawl_reads_ten_pages_unless_told_otherwise() {
-        let unset = plan("spider_crawl", &arguments(json!({"url": "https://example.com"}))).unwrap();
+        let unset = plan(
+            "spider_crawl",
+            &arguments(json!({"url": "https://example.com"})),
+        )
+        .unwrap();
         let at = unset.words.iter().position(|w| w == "--limit").unwrap();
         assert_eq!(unset.words[at + 1], "10");
 
@@ -1054,8 +1103,7 @@ mod tests {
         assert!(refusal.contains("output"), "{refusal}");
 
         // A cap belongs to the tools that fetch, and to no other.
-        let refusal =
-            plan("spider_get_credits", &arguments(json!({"budget": 1}))).unwrap_err();
+        let refusal = plan("spider_get_credits", &arguments(json!({"budget": 1}))).unwrap_err();
         assert!(refusal.contains("budget"), "{refusal}");
     }
 
@@ -1097,7 +1145,10 @@ mod tests {
         match step {
             Step::Call(call) => {
                 assert_eq!(call.id, 4);
-                assert!(matches!(call.parsed.command, Some(crate::cli::Command::Credits)));
+                assert!(matches!(
+                    call.parsed.command,
+                    Some(crate::cli::Command::Credits)
+                ));
                 assert!(call.parsed.global.json);
             }
             _ => panic!("not a call"),

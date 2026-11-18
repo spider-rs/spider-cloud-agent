@@ -1,11 +1,12 @@
 //! Where the API key comes from, and how to get one.
 //!
-//! Three pieces. [`store`] finds a key that is already on the machine and writes
+//! Four pieces. [`store`] finds a key that is already on the machine and writes
 //! one back, sharing both places with the command line tools so signing in with
 //! either tool signs you in for all of them. [`router`] keeps a provider
 //! fallback beside it, with the provider keys in it. [`oauth`], behind the
 //! `oauth` feature, opens a browser and comes back with a freshly provisioned
-//! key.
+//! key. [`device`], behind the same feature, does that with a code typed on
+//! another device, for a machine with no browser.
 //!
 //! Nothing here prints a key. Every type that holds one writes its own `Debug`
 //! and puts a placeholder where the value would be, and the tests assert that
@@ -17,6 +18,10 @@ pub mod store;
 #[cfg(feature = "oauth")]
 #[cfg_attr(docsrs, doc(cfg(feature = "oauth")))]
 pub mod oauth;
+
+#[cfg(feature = "oauth")]
+#[cfg_attr(docsrs, doc(cfg(feature = "oauth")))]
+pub mod device;
 
 pub use store::{
     Credentials, Source, Stored, API_KEY_ENV, API_KEY_ENV_ALT, CREDENTIALS_PATH, KEYRING_SERVICE,

@@ -89,6 +89,7 @@ pub(crate) async fn dispatch(parsed: &Cli, log: Log) -> Result<Code, Failure> {
         Some(Command::Optimize(args)) => commands::optimize::command(global, args, log),
         Some(Command::Route(args)) => commands::local::route(global, args, log),
         Some(Command::Schema) => commands::local::schema(global),
+        Some(Command::Setup(args)) => commands::clients::command(global, args, log),
         Some(Command::Mcp) => commands::mcp::serve(log).await,
         Some(Command::Update) => update::command(global, log).await,
     }

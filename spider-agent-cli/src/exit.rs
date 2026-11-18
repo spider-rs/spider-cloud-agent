@@ -187,10 +187,12 @@ impl From<Error> for Failure {
 /// The one thing to do about a key that did not work, so the stderr line
 /// names the next step and not only what went wrong.
 ///
-/// A missing key already says where it looked, so it gets nothing added.
+/// A missing key already says where it looked, so it gets the command that
+/// puts one there.
 fn next_step(cause: AuthCause) -> Option<&'static str> {
     match cause {
-        AuthCause::NoKey => None,
+        AuthCause::NoKey => Some(SIGN_IN),
+        AuthCause::SignInRequired => Some(SIGN_IN),
         AuthCause::EmptyKey => Some("The key that was found is blank, so set a real one"),
         AuthCause::Refused => Some(
             "The service refused the key. Sign in again with spider-agent login, or set a different key",
@@ -204,6 +206,9 @@ fn next_step(cause: AuthCause) -> Option<&'static str> {
         _ => None,
     }
 }
+
+/// How to sign in, for a person at a desk and for everything else.
+const SIGN_IN: &str = "To sign in, run spider-agent login, or spider-agent login --device on a machine with no browser";
 
 /// The result every command returns.
 pub type Run<T> = std::result::Result<T, Failure>;
@@ -389,6 +394,7 @@ mod tests {
             AuthCause::Refused,
             AuthCause::SignInFailed,
             AuthCause::Local,
+            AuthCause::SignInRequired,
         ] {
             let failure: Failure = auth(cause).into();
             assert_eq!(failure.code, Code::Auth, "{cause:?}");

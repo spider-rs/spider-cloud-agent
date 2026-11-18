@@ -88,7 +88,7 @@ fn loopback() -> SocketAddr {
 const HTTP_TIMEOUT: Duration = Duration::from_secs(30);
 
 /// The client name sent at registration.
-const CLIENT_NAME: &str = "spider-cloud-agent";
+pub(super) const CLIENT_NAME: &str = "spider-cloud-agent";
 
 /// The page shown in the browser tab once the callback arrives.
 const CALLBACK_PAGE: &str = r##"<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Spider Cloud</title><style>:root{color-scheme:dark}html,body{height:100%}body{margin:0;display:flex;align-items:center;justify-content:center;background:#0a0e14;color:#e6e9ef;font:14px/1.6 ui-monospace,SFMono-Regular,Menlo,monospace}.card{text-align:center;padding:40px}.mark{width:52px;height:52px;margin:0 auto 22px;border-radius:14px;background:#fff;display:flex;align-items:center;justify-content:center}.mark svg{width:30px;height:30px}h1{font-size:15px;font-weight:600;margin:0 0 8px;letter-spacing:.01em}p{margin:0;color:#8b93a7;font-size:13px}</style></head><body><div class="card"><div class="mark"><svg viewBox="0 0 24 24" fill="#0a0e14" xmlns="http://www.w3.org/2000/svg"><path fill-rule="evenodd" d="M20.646 5.196A2.25 2.25 0 0 0 17.199 2.304L15.447 4.391A4.5 4.5 0 0 1 8.553 4.391L6.801 2.304A2.25 2.25 0 0 0 3.354 5.196L8.697 11.564A4.5 4.5 0 0 1 9.75 14.457L9.75 20.25A2.25 2.25 0 0 0 14.25 20.25L14.25 14.457A4.5 4.5 0 0 1 15.303 11.564L20.646 5.196Z"/></svg></div><h1>Signed in to Spider Cloud</h1><p>You can close this tab and return to your terminal.</p></div></body></html>"##;
@@ -111,10 +111,7 @@ pub async fn login() -> Result<String> {
     // below holds the constant to it.
     let server =
         std::env::var("SPIDER_MCP_SERVER").unwrap_or_else(|_| DEFAULT_MCP_SERVER.to_string());
-    let http = reqwest::Client::builder()
-        .timeout(HTTP_TIMEOUT)
-        .build()
-        .map_err(Error::Transport)?;
+    let http = http_client()?;
 
     let auth = discover(&http, &server).await?;
 
@@ -169,6 +166,14 @@ pub async fn login() -> Result<String> {
         .ok_or_else(|| sign_in_failed("the authorization server returned no api key".to_string()))
 }
 
+/// The client both sign in flows call the authorization server with.
+pub(super) fn http_client() -> Result<reqwest::Client> {
+    reqwest::Client::builder()
+        .timeout(HTTP_TIMEOUT)
+        .build()
+        .map_err(Error::Transport)
+}
+
 /// An authorization code, wrapped so it cannot fall into a log line.
 ///
 /// A code is short lived and useless without the verifier, but it is still half
@@ -187,17 +192,19 @@ impl fmt::Debug for Code {
     }
 }
 
-/// The three endpoints the flow needs.
+/// The endpoints the flows need.
 #[derive(Debug, Clone, PartialEq, Eq)]
-struct AuthServer {
-    authorization_endpoint: String,
-    token_endpoint: String,
-    registration_endpoint: String,
+pub(super) struct AuthServer {
+    pub(super) authorization_endpoint: String,
+    pub(super) token_endpoint: String,
+    pub(super) registration_endpoint: String,
+    /// Present only on a server that offers sign in by code.
+    pub(super) device_authorization_endpoint: Option<String>,
 }
 
 /// Walk RFC 9728 protected resource metadata to RFC 8414 authorization server
 /// metadata.
-async fn discover(http: &reqwest::Client, server: &str) -> Result<AuthServer> {
+pub(super) async fn discover(http: &reqwest::Client, server: &str) -> Result<AuthServer> {
     let origin = origin_of(server)?;
     let resource: Value = http
         .get(format!("{origin}/.well-known/oauth-protected-resource/mcp"))
@@ -225,6 +232,10 @@ async fn discover(http: &reqwest::Client, server: &str) -> Result<AuthServer> {
         authorization_endpoint: field(&meta, "authorization_endpoint")?,
         token_endpoint: field(&meta, "token_endpoint")?,
         registration_endpoint: field(&meta, "registration_endpoint")?,
+        device_authorization_endpoint: meta
+            .get("device_authorization_endpoint")
+            .and_then(Value::as_str)
+            .map(str::to_string),
     })
 }
 
@@ -406,7 +417,7 @@ async fn serve(mut stream: TcpStream, state: &str, budget: Duration) -> Callback
 
 /// The flow itself failed: the browser step, the token exchange or a bad
 /// state. Signing in again is the answer, and the cause says so.
-fn sign_in_failed(message: String) -> Error {
+pub(super) fn sign_in_failed(message: String) -> Error {
     Error::Auth {
         cause: AuthCause::SignInFailed,
         message,
@@ -553,7 +564,7 @@ async fn respond(stream: &mut TcpStream, ok: bool) {
     let _ = stream.flush().await;
 }
 
-fn field(value: &Value, key: &str) -> Result<String> {
+pub(super) fn field(value: &Value, key: &str) -> Result<String> {
     value
         .get(key)
         .and_then(Value::as_str)
@@ -578,7 +589,7 @@ fn decode(input: &str) -> String {
         .into_owned()
 }
 
-fn form_urlencode(pairs: &[(&str, &str)]) -> String {
+pub(super) fn form_urlencode(pairs: &[(&str, &str)]) -> String {
     pairs
         .iter()
         .map(|(key, value)| {

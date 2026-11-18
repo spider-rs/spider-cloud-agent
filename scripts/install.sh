@@ -139,6 +139,12 @@ main() {
     *":$dir:"*) ;;
     *) printf 'add it to your PATH: export PATH="%s:$PATH"\n' "$dir" ;;
   esac
+  # A release from before setup existed gets no hint: a next step that fails
+  # is worse than none.
+  if "$dir/$BIN" setup --help >/dev/null 2>&1; then
+    printf 'next: spider-agent scrape https://example.com reads a page with no account\n'
+    printf '      spider-agent setup adds it to the agent clients on this machine\n'
+  fi
 }
 
 main "$@"
