@@ -168,9 +168,10 @@ for the scratch directory. A take is thrown away when that transcript has no
 search call or no page read, and when the answer says the page it read was cut
 short.
 
-This scene was recorded on a build with the token budget fix that follows
-0.8.0. On 0.8.0 as released, a model that passes `max_tokens` gets a page that
-fits its budget cut to a line, and every take ended with the model saying so.
+This scene needs 0.8.1 or later, and was recorded on a build carrying the token
+budget fix that 0.8.1 shipped. On 0.8.0 a model that passes `max_tokens` gets a
+page that fits its budget cut to a line, and every take ended with the model
+saying so.
 Needs a signed-in `claude`, a live key, and the tokens the run costs.
 
 ### Device login
