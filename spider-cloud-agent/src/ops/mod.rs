@@ -44,7 +44,7 @@ use crate::response::{Attempt, Body, FailedPage, Hint, Outcome, Page, PageResult
 use crate::routing;
 use crate::status::{ApiStatus, PageStatus};
 use crate::thrift::plan::Endpoint;
-use crate::thrift::tokens::{approx_tokens, TokenBudget};
+use crate::thrift::tokens::{approx_tokens, max_tokens, TokenBudget};
 use crate::thrift::trim::Trimmer;
 use crate::thrift::{Need, Plan, ThriftReport};
 use crate::transport::{route, Route};
@@ -723,8 +723,7 @@ impl<'a> Call<'a> {
             .iter()
             .map(|body| trimmer.trim(body, None).text)
             .collect();
-        let costs: Vec<usize> = first_pass.iter().map(|text| approx_tokens(text)).collect();
-        let shares = budget.split(&costs);
+        let shares = ceilings(&budget, &first_pass);
 
         let mut reasons = Vec::new();
         let mut returned_bytes = 0usize;
@@ -946,6 +945,18 @@ fn endpoint_for(plan: &Plan, requested: Route) -> Route {
         Some(Endpoint::Screenshot) => route::SCREENSHOT,
         Some(Endpoint::Scrape) | None => requested,
     }
+}
+
+/// What each page may keep under a budget, in the unit the cut is made in.
+///
+/// A ceiling is enforced in [`max_tokens`], so a page has to be costed in
+/// [`max_tokens`] as well. Costing it in [`approx_tokens`], which reads three
+/// to four times lower on prose, handed a page that fit the budget a share
+/// smaller than itself, and the cut then took most of a page nobody had asked
+/// to shorten.
+fn ceilings(budget: &TokenBudget, texts: &[String]) -> Vec<usize> {
+    let costs: Vec<usize> = texts.iter().map(|text| max_tokens(text)).collect();
+    budget.split(&costs)
 }
 
 /// Put trimmed text back in the body it came out of, keeping the form it had.
@@ -1499,6 +1510,33 @@ mod tests {
         let markdown = Plan::for_need(&Need::Markdown);
         assert_eq!(endpoint_for(&markdown, route::SCRAPE), route::SCRAPE);
         assert_eq!(endpoint_for(&Plan::none(), route::SCRAPE), route::SCRAPE);
+    }
+
+    #[test]
+    fn a_page_that_fits_the_budget_comes_back_whole() {
+        let page = "Example Domain\nThis domain is for use in documentation examples \
+                    without needing permission. This is not a service; avoid relying on \
+                    it for testing and monitoring purposes."
+            .to_string();
+        let trimmer = Trimmer::default();
+        let texts = vec![trimmer.trim(&page, None).text];
+
+        // A budget many times the page, and one that is exactly the page.
+        for total in [2000, 500, max_tokens(&texts[0])] {
+            let shares = ceilings(&TokenBudget::total(total), &texts);
+            let trimmed = trimmer.trim(&texts[0], shares.first().copied());
+            assert_eq!(
+                trimmed.text, texts[0],
+                "a budget of {total} cut a page that fits"
+            );
+        }
+
+        // One the page does not fit still cuts it, and to no more than was asked.
+        let tight = max_tokens(&texts[0]) / 2;
+        let shares = ceilings(&TokenBudget::total(tight), &texts);
+        let trimmed = trimmer.trim(&texts[0], shares.first().copied());
+        assert!(trimmed.text.len() < texts[0].len());
+        assert!(max_tokens(&trimmed.text) <= tight);
     }
 
     #[test]

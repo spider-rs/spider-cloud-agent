@@ -7,6 +7,12 @@ error.
 
 ## Unreleased
 
+- `--max-tokens`, and `max_tokens` on an MCP tool call, no longer cut a page that
+  fits the budget. The budget was shared out in one token estimate and enforced in
+  another that reads three to four times higher, so a short page under a budget of
+  2,000 came back as its first line and a truncation marker. A page is now costed
+  in the estimate it is cut in. A budget the pages do not fit cuts them as before.
+
 ## 0.8.0 (2026-11-18)
 
 - Dependencies: rustls, rustls-webpki, tokio, webpki-root-certs and yoke-derive are
