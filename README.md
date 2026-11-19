@@ -57,7 +57,7 @@ page, reads it and answers from it:
 
 [![The walkthrough, opening on the install and the first page](media/out/walkthrough.png)](media/out/walkthrough.mp4)
 
-[The walkthrough](media/out/walkthrough.mp4) joins seven of the recordings into
+[The walkthrough](media/out/walkthrough.mp4) joins five of the recordings into
 one video. Every scene is a real run against a public page, and the numbers on
 screen are the ones that run printed.
 
@@ -270,9 +270,9 @@ the token count below comes from.
 ![Codex, run headless, reading spider-agent's schema, choosing an extract invocation from it, and reading served, refused and credits out of the run report](media/out/codex-calls-agent.gif)
 
 The `[recorder]` line at the bottom of each recording is the recorder talking, not
-the model. Choosing that one command cost Claude Code 20 seconds and 258,561
-tokens, and Codex 86 seconds and 454,791. The fetch underneath took 1,431 ms and
-1,406 ms and spent no model tokens at all, because no model runs on this side of
+the model. Choosing that one command cost Claude Code 26 seconds and 259,248
+tokens, and Codex 76 seconds and 348,009. The fetch underneath took 906 ms and
+2,045 ms and spent no model tokens at all, because no model runs on this side of
 the call. What comes back is the record any other caller gets.
 
 ## As a Model Context Protocol server

@@ -37,8 +37,6 @@ SCENES = [
     ("setup", "One command adds it to the agent clients you have."),
     ("mcp-in-claude", "Claude Code searches the web and reads what it finds."),
     ("claude-calls-agent", "Or from a shell: the agent reads the schema and picks the call."),
-    ("streaming-crawl", "A crawl arrives one page per line."),
-    ("route-and-cost", "It picks the transport before it spends."),
 ]
 
 TAPE = """Output {frames}/
