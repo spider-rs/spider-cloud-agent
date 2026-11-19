@@ -39,7 +39,8 @@ SETTLE_SECONDS = 0.5
 # with nothing arriving on screen meanwhile. That gap holds no output to read,
 # so these two hold it shorter than a scene where lines are still landing. The
 # other four keep the 1.5 seconds above.
-SCENE_MAX_IDLE = {"claude-calls-agent": 0.6, "codex-calls-agent": 0.6}
+SCENE_MAX_IDLE = {"claude-calls-agent": 0.6, "codex-calls-agent": 0.6,
+                  "mcp-in-claude": 0.6}
 
 
 def digest(path):

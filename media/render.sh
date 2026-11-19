@@ -44,7 +44,9 @@ ready() {
   esac
 }
 mkdir -p media/out/frames media/out/takes
-[[ "$(./target/release/spider-agent --version)" == 'spider-agent 0.7.0' ]]
+# The recordings show the version this checkout builds, whatever that is.
+version="$(sed -n 's/^version = "\(.*\)"$/\1/p' Cargo.toml | head -n 1)"
+[[ "$(./target/release/spider-agent --version)" == "spider-agent $version" ]]
 
 cargo test -p spider-cloud-agent --test thrift_budget measured_numbers -- --ignored --nocapture \
   > media/out/measured-numbers.txt 2>&1
@@ -68,7 +70,7 @@ for tape in "${tapes[@]}"; do
   frames="media/out/frames/$name"
   scene_takes="$takes"
   case "$name" in
-    claude-calls-agent) driver=claude; scene_takes="$agent_takes" ;;
+    claude-calls-agent|mcp-in-claude) driver=claude; scene_takes="$agent_takes" ;;
     codex-calls-agent)  driver=codex;  scene_takes="$agent_takes" ;;
     *)                  driver= ;;
   esac
@@ -109,6 +111,9 @@ for tape in "${tapes[@]}"; do
   python3 media/demo/judge.py "$name" keep "media/out/takes/$name"
   rm -rf "${frames:?}"
 done
+
+# The walkthrough is cut from whatever now stands in out/.
+python3 media/demo/cut.py
 
 python3 - <<'PY'
 from pathlib import Path

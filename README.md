@@ -1,4 +1,87 @@
-# spider-cloud-agent
+![Spider](media/banner.png)
+
+# Spider Agent
+
+[![crates.io](https://img.shields.io/crates/v/spider-agent-cli.svg)](https://crates.io/crates/spider-agent-cli)
+[![docs.rs](https://img.shields.io/docsrs/spider-cloud-agent)](https://docs.rs/spider-cloud-agent)
+[![license](https://img.shields.io/crates/l/spider-agent-cli.svg)](LICENSE)
+
+Web data for coding agents. One Rust binary scrapes, crawls, searches and
+extracts through the [Spider Cloud](https://spider.cloud) API and answers in
+JSON a program can parse. Run it as a command, or as an MCP server inside Claude
+Code, Codex, Cursor, Windsurf, Claude Desktop and VS Code.
+
+```bash
+curl -fsSL https://spider.cloud/install/spider-agent.sh | sh
+spider-agent scrape https://example.com
+```
+
+The first page needs no account. With no key on the machine, `scrape` still
+runs. That is scrape only, and it is rate limited.
+
+![The install line, then spider-agent scrape reading a page on a machine with no key](media/out/first-run.gif)
+
+## Sign in and take a whole site
+
+```bash
+spider-agent login
+spider-agent crawl https://books.toscrape.com --selectors fields.json --ndjson > books.ndjson
+```
+
+`fields.json` names the fields to pull off every page. The crawl follows the
+site's links and writes one line per page, holding those fields and no page
+body. In the recording a demo store of 1,000 products comes back as 1,000 rows
+of title and price, and the report at the end says how many pages it read and
+how long that took.
+
+![A signed-in crawl of a demo store with two selectors, then the first rows, a count of 1,000 products, and the run report](media/out/store-to-rows.gif)
+
+## Add it to your agents
+
+```bash
+spider-agent setup
+```
+
+`setup` finds the agent clients on the machine and registers `spider-agent mcp`
+with each one. It leaves every other server a client has alone, and
+`--dry-run` prints what it would change first.
+
+![spider-agent setup, first as a dry run, then adding the server to five clients](media/out/setup.gif)
+
+From then on the model has the web as tools. Here Claude Code searches for a
+page, reads it and answers from it:
+
+![Claude Code, run headless, searching the web and reading a page through the spider tools, then answering with the address it read](media/out/mcp-in-claude.gif)
+
+## Watch it run
+
+[![The walkthrough, opening on the install and the first page](media/out/walkthrough.png)](media/out/walkthrough.mp4)
+
+[The walkthrough](media/out/walkthrough.mp4) joins five of the recordings into
+one video. Every scene is a real run against a public page, and the numbers on
+screen are the ones that run printed.
+
+Each recording alone:
+
+- [Install and first page](media/out/first-run.gif)
+- [A whole store into rows](media/out/store-to-rows.gif)
+- [Setup](media/out/setup.gif)
+- [Claude Code searching the web and reading a page](media/out/mcp-in-claude.gif)
+- [Signing in with a code, for a machine with no browser](media/out/device-login.gif)
+- [A program reading the NDJSON as it arrives](media/out/agent-calls-agent.gif)
+- [A streaming crawl](media/out/streaming-crawl.gif)
+- [Route and cost](media/out/route-and-cost.gif)
+- [Claude Code](media/out/claude-calls-agent.gif) and
+  [Codex](media/out/codex-calls-agent.gif) driving it from a shell
+- [What a caller reads with fields against the whole page](media/out/payload-savings.gif)
+
+How they are recorded, and how to record them again, is in
+[media/README.md](media/README.md).
+
+## What it is
+
+The repository and the library crate are named `spider-cloud-agent`. The command
+is `spider-agent`.
 
 An agent that other agents call. It fetches the web through the
 [Spider Cloud](https://spider.cloud) API and answers in JSON, in NDJSON, or with
@@ -21,8 +104,7 @@ skim.
 ![A program runs spider-agent, reads its NDJSON line by line, indexes each page and stops on the run report](media/out/agent-calls-agent.gif)
 
 A program running `spider-agent`, reading the NDJSON as it arrives, and stopping
-on the run report. More scenes, and how to re-record them, in
-[media/README.md](media/README.md).
+on the run report.
 
 Three crates ship from this workspace:
 
@@ -187,10 +269,10 @@ the token count below comes from.
 
 ![Codex, run headless, reading spider-agent's schema, choosing an extract invocation from it, and reading served, refused and credits out of the run report](media/out/codex-calls-agent.gif)
 
-The `[harness]` line at the bottom of each recording is the recorder talking, not
-the model. Choosing that one command cost Claude Code 107 seconds and 670,991
-tokens, and Codex 95 seconds and 406,370. The fetch underneath took 1,432 ms and
-794 ms and spent no model tokens at all, because no model runs on this side of
+The `[recorder]` line at the bottom of each recording is the recorder talking, not
+the model. Choosing that one command cost Claude Code 26 seconds and 259,248
+tokens, and Codex 76 seconds and 348,009. The fetch underneath took 906 ms and
+2,045 ms and spent no model tokens at all, because no model runs on this side of
 the call. What comes back is the record any other caller gets.
 
 ## As a Model Context Protocol server

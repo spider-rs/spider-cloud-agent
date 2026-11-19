@@ -16,6 +16,7 @@ media/out/*.txt
 media/out/*.stdout
 media/out/*.started
 media/out/*.finished
+media/out/*.tool.json
 media/out/render.log
 
 # Takes that did not win, and their frames.

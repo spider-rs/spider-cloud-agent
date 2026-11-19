@@ -17,6 +17,7 @@ does not, such as the local payload table, is scored on how long its video runs.
 """
 import hashlib
 import json
+import re
 import shutil
 import sys
 import time
@@ -33,7 +34,17 @@ EXPECTED = {
                            "note": True},
     "codex-calls-agent": {"served": 1, "refused": 0, "spider_agent": True, "discovered": True,
                           "note": True},
+    "first-run": {"installed": True, "keyless": True, "clean": True},
+    "setup": {"clients": 3, "clean": True},
+    "device-login": {"signed_in": False, "clean": True},
+    "store-to-rows": {"rows": 1000, "refused": 0, "clean": True},
+    "mcp-in-claude": {"searched": True, "read": True, "refused": 0, "note": True},
 }
+
+# A model that caps how much of a page it wants can get the page cut short, and
+# then it spends its answer saying so. That is a run where the read fell short
+# of the task, not a faster take of the same scene.
+SAYS_SO = {"mcp-in-claude": re.compile(r"truncat|cut off|cut short", re.I)}
 
 # Everything that decides what the scene shows. Change one and the standing
 # recording no longer describes the same thing.
@@ -47,6 +58,16 @@ RECIPE = {
                            "media/demo/agent-scene.py"],
     "codex-calls-agent": ["media/tapes/codex-calls-agent.tape", "media/demo/agent-scene.sh",
                           "media/demo/agent-scene.py"],
+    "first-run": ["media/tapes/first-run.tape", "media/demo/entry-scene.sh",
+                  "media/demo/entry-scene.py"],
+    "setup": ["media/tapes/setup.tape", "media/demo/entry-scene.sh",
+              "media/demo/entry-scene.py"],
+    "device-login": ["media/tapes/device-login.tape", "media/demo/entry-scene.sh",
+                     "media/demo/entry-scene.py"],
+    "store-to-rows": ["media/tapes/store-to-rows.tape", "media/demo/entry-scene.sh",
+                      "media/demo/entry-scene.py"],
+    "mcp-in-claude": ["media/tapes/mcp-in-claude.tape", "media/demo/agent-scene.sh",
+                      "media/demo/agent-scene.py"],
 }
 
 
@@ -70,8 +91,17 @@ def check(scene):
         if summary.get(key) != value:
             print(f"discarded: {scene} {key} was {summary.get(key)}, wanted {value}")
             return False
-    print(f"kept: {summary['elapsed_ms']} ms, served {summary['served']}")
+    if scene in SAYS_SO and SAYS_SO[scene].search(said(scene)):
+        print(f"discarded: {scene} answered that the page it read was cut short")
+        return False
+    print(f"kept: {summary['elapsed_ms']} ms")
     return True
+
+
+def said(scene):
+    """What the scene printed, as agent-scene.sh copied it."""
+    path = OUT / f"{scene}.stdout"
+    return path.read_text() if path.exists() else ""
 
 
 def score(take):

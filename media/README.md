@@ -1,10 +1,12 @@
 # spider-agent media
 
-Six recorded scenes of a calling program driving spider-agent 0.7.0. Four of
-them put nothing on screen but machine-readable output: NDJSON records, a run
-report, an exit code. The two that drive a coding agent CLI also show the task
-the agent was given. The measured payload table is the one scene written for a
-human eye.
+Eleven recorded scenes of spider-agent, and one walkthrough cut from five of
+them. Five scenes show the way in: the install and a first page with no account,
+a signed-in crawl of a whole store into rows, `setup`, a model searching and
+reading through the tools, and signing in with a code. The other six show a
+calling program driving the command. Most of what is on screen is
+machine-readable output: NDJSON records, a run report, an exit code. The
+measured payload table is the one scene written for a human eye.
 
 ## Re-record
 
@@ -15,14 +17,14 @@ SCENES="agent-calls-agent" bash media/render.sh   one scene
 AGENT_TAKES=2 bash media/render.sh                two takes of the CLI scenes
 ```
 
-The two scenes that drive a coding agent CLI run once per pass instead of three
+The three scenes that drive a coding agent CLI run once per pass instead of three
 times, because every take of those spends model tokens as well as credits.
 `AGENT_TAKES` raises that on its own, and `TAKES` sets every scene at once. If
 `claude` or `codex` is missing from PATH or signed out, render.sh prints why it
 passed the scene over and leaves the standing recording alone.
 
 It needs vhs, ffmpeg, jq, python3, Cargo, the Menlo font, and a release binary
-at `target/release/spider-agent` reporting version 0.7.0. It puts that directory
+at `target/release/spider-agent` reporting the version in `Cargo.toml`. It puts that directory
 first on PATH, so the older binary in `~/.local/bin` is never used. The five
 live scenes use whatever key the CLI already has stored. No tape, argument or
 environment dump carries a key, and no scene reads the account balance.
@@ -64,7 +66,7 @@ run still fits, which leaves a frozen tail on a fast one, and that tail goes.
 Any wait longer than 1.5 seconds is shortened to 1.5 seconds, and the two
 coding agent scenes cut that to 0.6. Those two wait on a model, twenty seconds
 and up with nothing landing on screen, so their gap holds no output to read.
-The other four keep the 1.5 seconds they were recorded under.
+The rest keep the 1.5 seconds they were recorded under.
 Nothing between the first and last visible change is dropped, and the
 millisecond stamps on screen are whatever that run measured.
 
@@ -80,7 +82,7 @@ once in 28 takes without that wait, and not once in 24 with it.
 The tapes share Menlo at 20, a dark theme, 24 fps capture and 70 ms typing, and
 each one is only as tall as its output. The two coding agent scenes type faster,
 40 ms for Claude Code and 35 ms for Codex, whose invocation runs to three lines.
-The invocation is still the longest thing typed in the six scenes, so that speed
+The invocation is still the longest thing typed in any scene, so that speed
 decides the length of the video more than the run does. Their width is set by
 what the agent chooses rather than by what the tape types, 124 columns for Claude
 Code and 144 for Codex, because nothing here knows in advance how long the fetch
@@ -88,6 +90,99 @@ the agent settles on will be, and a line that wraps mid word is worse than a wid
 frame. GIFs must stay under 2,000,000 bytes.
 
 ## Scenes
+
+### First run
+
+`tapes/first-run.tape` types the two lines a newcomer types:
+
+```sh
+curl -fsSL https://spider.cloud/install/spider-agent.sh | sh
+spider-agent scrape https://example.com
+```
+
+`demo/entry-scene.sh`, hidden with vhs `Hide`, first moves the shell into an
+empty home at `/tmp/spider-demo` with no key in the environment and none on
+disk. The installer therefore downloads the latest release into that home, and
+the scrape runs with no account. Every path on screen is a path in that home.
+`demo/entry-scene.py` keeps the take only when both commands exited 0, the
+installed binary reports the version in `Cargo.toml`, and no key existed when
+the scrape ran. Needs no key. Each take fetches the install script and a release
+archive.
+
+### Setup
+
+`tapes/setup.tape` types `spider-agent setup --dry-run` and then
+`spider-agent setup`, in the same scratch home, with the checkout's release
+binary copied into it. Cursor, Windsurf and Claude Desktop are found by the
+directory each keeps its settings in, so the hidden setup creates those three
+directories empty. Claude Code and Codex are found on PATH and asked through
+their own commands, and with the home moved they write there too. Nothing on the
+recording machine's own clients changes. The take is kept when both runs exited
+0 and all three JSON files name the server. Needs no key. Needs `claude` and
+`codex` on PATH for their two lines to appear.
+
+### Store to rows
+
+`tapes/store-to-rows.tape` is the signed-in scene. It uses the key the CLI
+already has stored, in a scratch directory where the hidden setup has left one
+file, `fields.json`, which the first command on screen prints:
+
+```sh
+cat fields.json
+spider-agent crawl https://books.toscrape.com --selectors fields.json --budget 1500 --ndjson -q > books.ndjson
+jq -r 'select(.fields.title[0]) | .fields | "\(.price[0])  \(.title[0])"' books.ndjson | awk 'NR<6'
+jq -c 'select(.fields.title[0])' books.ndjson | wc -l
+tail -n 1 books.ndjson | jq -c '{served, refused, elapsed_ms}'
+```
+
+books.toscrape.com is a public practice store of 1,000 products. The crawl
+follows its links with no page limit, and the budget is the only cap on it.
+`-q` keeps the closing line off stderr, and the last command prints three
+fields of the same report, so the page count and the time on screen are the
+run's own. `demo/entry-scene.py` reads `books.ndjson` back and keeps the take
+only when every command exited 0, nothing was refused, and exactly 1,000 lines
+carry both a title and a price. The take is scored on the crawl's own
+`elapsed_ms`, which moved between 8 and 65 seconds across the takes recorded
+here. Needs a live key and the credits a crawl of about 1,200 pages costs.
+
+### MCP in Claude Code
+
+`tapes/mcp-in-claude.tape` shares the hidden plumbing of the two coding agent
+scenes below. The scratch directory holds `mcp.json`, the entry `setup` writes,
+and a `CLAUDE.md` that asks for plain lines and says nothing about the task:
+
+```json
+{"mcpServers":{"spider":{"command":"spider-agent","args":["mcp"]}}}
+```
+
+The tape asks Claude Code, headless, to use spider to search the web for a
+release announcement, read it, and say in three lines what it promised. It
+passes `--mcp-config mcp.json --strict-mcp-config`, so that server is the only
+one loaded, and `--allowed-tools mcp__spider`. The task names spider because a
+model left to choose reached for its built-in web tools on every take.
+
+Under `-p` Claude Code prints its answer and nothing about how it got there, so
+the `[recorder]` line under the answer says which tools the model called and how
+many pages the reads served. Both come out of the transcript Claude Code writes
+for the scratch directory. A take is thrown away when that transcript has no
+search call or no page read, and when the answer says the page it read was cut
+short.
+
+This scene needs 0.8.1 or later, and was recorded on a build carrying the token
+budget fix that 0.8.1 shipped. On 0.8.0 a model that passes `max_tokens` gets a
+page that fits its budget cut to a line, and every take ended with the model
+saying so.
+Needs a signed-in `claude`, a live key, and the tokens the run costs.
+
+### Device login
+
+`tapes/device-login.tape` types `spider-agent login --device --no-wait` in the
+scratch home. The command prints a code and an address and leaves.
+
+The code on screen is a real one. Nobody approves it, the scratch home that held
+its pending file is deleted when the scene closes, and the code expires on its
+own. `out/device-login.summary.json` keeps the expiry time. Do not
+commit or publish this recording before that time has passed. Needs no key.
 
 ### Agent calls agent
 
@@ -181,7 +276,7 @@ the moment it returns, which leaves out both the typing and the fixed sleep the
 tape spends waiting.
 
 The last line on screen is the one line the agent did not write. The shell's
-prompt hook prints it when the invocation returns, marked `[harness]` so nobody
+prompt hook prints it when the invocation returns, marked `[recorder]` so nobody
 reads it as the model's answer, and a take with no such line is thrown away. Its
 seconds come off that same pair of stamps. Its token count is summed out of the
 transcript Claude Code writes for the scratch directory, every input, cache and
@@ -210,7 +305,7 @@ This is the one scene with a filter on screen. Codex has no quiet mode. It
 narrates every step, prints a session id in its header, and ends on a usage
 banner, so `--json` turns the run into an event per line and one jq takes the
 last agent message. The `tee` keeps the stream, because the `turn.completed`
-event at the end of it carries the usage block the harness line quotes. There is
+event at the end of it carries the usage block the recorder line quotes. There is
 no `< /dev/null` on the line. Codex reads stdin only when it is a pipe or a file,
 and under vhs it is a terminal.
 
@@ -242,6 +337,22 @@ requests and not a credit comparison. Needs no key.
 Every value matches the root README, and so does the crawl fixture: 5,261 bytes
 to 2,269, and 1,333 approximate tokens to 509.
 
+## The walkthrough
+
+`demo/cut.py` runs at the end of render.sh and joins the standing takes of five
+scenes into `out/walkthrough.mp4`, 1280 by 720: first run, store to rows, setup,
+MCP in Claude Code, Claude Code calls agent. Each scene plays as recorded and
+then holds its last frame for two seconds. A scene wider than the frame is
+scaled down to fit, and none is scaled up.
+
+A title card of one line sits in front of each scene. The ffmpeg used here has
+no text filter, so `demo/card.sh` prints the line in the middle of an empty vhs
+terminal and cut.py lifts one frame. The cards carry no figures. Every number in
+the walkthrough is one a scene printed when it ran.
+
+`out/walkthrough.png` is the poster, the closing frame of the first scene. A
+scene with no standing take is left out and named in the line cut.py prints.
+
 ## What is committed
 
 `out/*.gif`, `out/*.mp4` and `out/*.png` are in the repository: the standing take
@@ -249,11 +360,20 @@ of each scene, with `out/*.take.json` saying how fast it was and what recipe it
 came from. The captured frames, the losing takes and the small text byproducts
 are not.
 
-As of 17 September 2026 the standing takes are 1,163 ms for the flagship, 266 ms
-for route and cost, 2,632 ms for the crawl, and a 4.6 second video for the local
-table. The two CLI scenes are timed on the caller, 107,433 ms for Claude Code and
-94,817 ms for Codex, against the 1,432 and 794 ms the fetch itself took inside
-them. Reading the schema is most of that gap. Little of it reaches the video.
-The encoder cuts the wait down, so what is left is mostly the task being typed,
-and those two GIFs run 10.1 and 9.9 seconds and weigh 37 KB and 41 KB. The other
-four run 4.6 to 6.4 seconds and weigh about 31 KB.
+As of 19 November 2026 seven scenes stand on takes recorded that day. The
+install and first page took 1,941 ms across its two commands, `setup` 1,724 ms
+across its two, and the device login 443 ms. The store crawl took 11,139 ms for
+1,195 pages. The three CLI scenes are timed on the caller: 16,955 ms for Claude
+Code searching and reading through the tools, and 25,878 ms for Claude Code and
+76,334 ms for Codex driving the command from a shell, against the 906 and
+2,045 ms the fetch itself took inside those two. Reading the schema is most of
+that gap. Little of it reaches the video. The encoder cuts the wait down, so
+what is left is mostly the task being typed.
+
+The other four scenes kept their takes of 17 September 2026, recorded with
+0.7.0. Their tapes and scripts have not changed, and the takes of 19 November
+were slower: 1,163 ms for the flagship, 266 ms for route and cost, 2,632 ms for
+the crawl, and a 4.6 second video for the local table.
+
+The eleven GIFs run 4.5 to 26.2 seconds and weigh 13 KB to 62 KB. The
+walkthrough runs 89 seconds and weighs 508 KB.

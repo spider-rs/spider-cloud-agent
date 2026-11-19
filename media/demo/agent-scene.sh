@@ -1,7 +1,9 @@
-# Off-screen plumbing for the two scenes that record a coding agent CLI.
+# Off-screen plumbing for the scenes that record a coding agent CLI: the two
+# that drive spider-agent from a shell, and the one where Claude Code calls it
+# as a tool through `spider-agent mcp`.
 #
 # The tape hides these lines with vhs Hide, so the only thing on a visible frame
-# is the CLI invocation itself, what it printed, and one harness line under it.
+# is the CLI invocation itself, what it printed, and one recorder line under it.
 # `open` puts the agent in an empty scratch directory, leaves the notes file
 # that CLI reads in a working directory, starts a copy of everything printed
 # there, and clears the screen. `close` stops the copy and hands it to
@@ -33,8 +35,16 @@ case "$1" in
     # down once instead of retyping it. The task on screen is then the task.
     case "$SCENE_NAME" in
       claude-calls-agent) scene_notes=CLAUDE.md ;;
+      mcp-in-claude)      scene_notes=/dev/null ;;
       *)                  scene_notes=AGENTS.md ;;
     esac
+    if [ "$SCENE_NAME" = mcp-in-claude ]; then
+      # The tool scene needs the entry a client keeps for the server, the one
+      # `spider-agent setup` writes, in a file the invocation on screen names.
+      # Its notes ask for plain lines and nothing about how to do the task.
+      printf '%s\n' '{"mcpServers":{"spider":{"command":"spider-agent","args":["mcp"]}}}' > mcp.json
+      printf '%s\n' 'Answer in plain lines. No markdown, no headings, no lists.' > CLAUDE.md
+    fi
     cat > "$scene_notes" <<'NOTES'
 Answer in plain lines and nothing else. No markdown, no fenced blocks, no prose.
 
@@ -55,7 +65,7 @@ NOTES
     # from here, with a long string still left to type. PROMPT_COMMAND stops the
     # clock when the invocation returns, so the fixed stretch the tape sleeps
     # afterwards waiting on a slow one is left out. PS0 prints nothing. The
-    # prompt hook prints the one harness line the scene shows, and prints it
+    # prompt hook prints the one recorder line the scene shows, and prints it
     # only once the invocation it is reporting on has run.
     PS0='$(python3 -c "import time; print(int(time.time() * 1000))" >> "$SCENE_ROOT/media/out/$SCENE_NAME.started")'
     PROMPT_COMMAND='python3 "$SCENE_ROOT/media/demo/agent-scene.py" note "$SCENE_NAME" "$SCENE_WORK"'
