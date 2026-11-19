@@ -33,6 +33,11 @@ EXPECTED = {
                            "note": True},
     "codex-calls-agent": {"served": 1, "refused": 0, "spider_agent": True, "discovered": True,
                           "note": True},
+    "first-run": {"installed": True, "keyless": True, "clean": True},
+    "setup": {"clients": 3, "clean": True},
+    "device-login": {"signed_in": False, "clean": True},
+    "mcp-in-claude": {"served": 1, "refused": 0, "tool": True, "whole": True,
+                      "note": True},
 }
 
 # Everything that decides what the scene shows. Change one and the standing
@@ -47,6 +52,14 @@ RECIPE = {
                            "media/demo/agent-scene.py"],
     "codex-calls-agent": ["media/tapes/codex-calls-agent.tape", "media/demo/agent-scene.sh",
                           "media/demo/agent-scene.py"],
+    "first-run": ["media/tapes/first-run.tape", "media/demo/entry-scene.sh",
+                  "media/demo/entry-scene.py"],
+    "setup": ["media/tapes/setup.tape", "media/demo/entry-scene.sh",
+              "media/demo/entry-scene.py"],
+    "device-login": ["media/tapes/device-login.tape", "media/demo/entry-scene.sh",
+                     "media/demo/entry-scene.py"],
+    "mcp-in-claude": ["media/tapes/mcp-in-claude.tape", "media/demo/agent-scene.sh",
+                      "media/demo/agent-scene.py"],
 }
 
 
@@ -70,7 +83,7 @@ def check(scene):
         if summary.get(key) != value:
             print(f"discarded: {scene} {key} was {summary.get(key)}, wanted {value}")
             return False
-    print(f"kept: {summary['elapsed_ms']} ms, served {summary['served']}")
+    print(f"kept: {summary['elapsed_ms']} ms")
     return True
 
 

@@ -7,6 +7,11 @@ status a site returned, and stops on a budget you set. Output is JSON, NDJSON or
 the page content itself, and `spider-agent schema` hands a caller the whole
 command tree and record contract as JSON.
 
+![The install line, then spider-agent scrape reading a page on a machine with no key](https://raw.githubusercontent.com/spider-rs/spider-cloud-agent/main/media/out/first-run.gif)
+
+More recordings, and a walkthrough, are in the
+[repository README](https://github.com/spider-rs/spider-cloud-agent#readme).
+
 ## Install
 
 ```bash
