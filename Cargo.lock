@@ -945,7 +945,7 @@ checksum = "7c87def4c32ab89d880effc9e097653c8da5d6ef28e6b539d313baaacfbafcbe"
 
 [[package]]
 name = "optimize-collect"
-version = "0.8.0"
+version = "0.8.1"
 dependencies = [
  "clap",
  "serde",
@@ -1457,7 +1457,7 @@ dependencies = [
 
 [[package]]
 name = "spider-agent-cli"
-version = "0.8.0"
+version = "0.8.1"
 dependencies = [
  "base64",
  "clap",
@@ -1476,7 +1476,7 @@ dependencies = [
 
 [[package]]
 name = "spider-cloud-agent"
-version = "0.8.0"
+version = "0.8.1"
 dependencies = [
  "base64",
  "bytes",
@@ -1498,7 +1498,7 @@ dependencies = [
 
 [[package]]
 name = "spider-optimize"
-version = "0.8.0"
+version = "0.8.1"
 dependencies = [
  "criterion",
  "serde",
@@ -1510,7 +1510,7 @@ dependencies = [
 
 [[package]]
 name = "spider-route"
-version = "0.8.0"
+version = "0.8.1"
 dependencies = [
  "criterion",
  "serde",

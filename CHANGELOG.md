@@ -7,6 +7,8 @@ error.
 
 ## Unreleased
 
+## 0.8.1 (2026-11-19)
+
 - `--max-tokens`, and `max_tokens` on an MCP tool call, no longer cut a page that
   fits the budget. The budget was shared out in one token estimate and enforced in
   another that reads three to four times higher, so a short page under a budget of
