@@ -36,7 +36,7 @@ FETCH = re.compile(r"\bspider-agent\b.*--selectors\b")
 ACCOUNT = re.compile(r"--goal[= ]metadata\b|user_id")
 MARK = "[recorder]"
 TOOL_SCENE = "mcp-in-claude"
-TOOL = "mcp__spider__spider_scrape"
+TOOLS = "mcp__spider__spider_"
 
 
 def read(path):
@@ -132,14 +132,15 @@ def claude_tokens(work):
 
 
 def tool_calls(work):
-    """The spider tool calls in the transcript, and the last report one returned.
+    """The spider tools the model called, in order, and what the reads returned.
 
-    Claude Code prints only its answer under -p, so the call itself never
-    reaches the screen. The transcript holds both halves: the call the model
-    made, and the JSON document the server answered with, closing report
-    included.
+    Claude Code prints only its answer under -p, so the calls themselves never
+    reach the screen. The transcript holds both halves: each call the model
+    made, and the JSON document the server answered it with, closing report
+    included. Pages served and refused are summed over the calls that read a
+    page, and a search is counted as a call and nothing more.
     """
-    calls, report, cut = {}, {}, False
+    calls, served, refused = {}, 0, 0
     for records in claude_transcripts(work):
         for record in records:
             content = (record.get("message") or {}).get("content")
@@ -148,9 +149,12 @@ def tool_calls(work):
             for block in content:
                 if not isinstance(block, dict):
                     continue
-                if block.get("type") == "tool_use" and block.get("name") == TOOL:
-                    calls[block.get("id")] = True
-                if block.get("type") != "tool_result" or block.get("tool_use_id") not in calls:
+                name = block.get("name") or ""
+                if block.get("type") == "tool_use" and name.startswith(TOOLS):
+                    calls[block.get("id")] = name[len(TOOLS):]
+                if block.get("type") != "tool_result":
+                    continue
+                if calls.get(block.get("tool_use_id")) in (None, "search"):
                     continue
                 answer = block.get("content")
                 if isinstance(answer, list):
@@ -160,29 +164,28 @@ def tool_calls(work):
                     parsed = json.loads(answer or "")
                 except (TypeError, ValueError):
                     continue
-                if isinstance(parsed, dict) and isinstance(parsed.get("report"), dict):
-                    report = parsed["report"]
-                    # A model that caps the answer can get a page cut short,
-                    # and then it has nothing to answer from.
-                    cut = cut or "[truncated " in (answer or "")
-    return len(calls), report, cut
+                report = parsed.get("report") if isinstance(parsed, dict) else None
+                if isinstance(report, dict):
+                    served += report.get("served") or 0
+                    refused += report.get("refused") or 0
+    return list(calls.values()), served, refused
 
 
 def tool_note(scene, work):
     """The line under the answer, saying what the model called to get it."""
-    calls, report, cut = tool_calls(work)
+    calls, served, refused = tool_calls(work)
     (OUT / f"{scene}.tool.json").write_text(json.dumps({
-        "calls": calls, "served": report.get("served"), "refused": report.get("refused"),
-        "whole": bool(report) and not cut,
+        "calls": calls, "served": served, "refused": refused,
     }) + "\n")
     if not calls:
         return 0
-    times = "once" if calls == 1 else f"{calls} times"
-    said = f"claude called spider_scrape {times}."
-    if report:
-        said += (f" The tool answered {report.get('served')} served, "
-                 f"{report.get('refused')} refused, in {report.get('elapsed_ms')} ms.")
-    print(MARK, said, flush=True)
+    counted = []
+    for name in dict.fromkeys(calls):
+        times = calls.count(name)
+        counted.append(f"spider_{name} " + ("once" if times == 1 else f"{times} times"))
+    pages = "1 page" if served == 1 else f"{served} pages"
+    print(MARK, f"claude called {' and '.join(counted)}. {pages} served, {refused} refused.",
+          flush=True)
     return 0
 
 
@@ -238,18 +241,18 @@ def score_tool(scene, status):
     path = OUT / f"{scene}.tool.json"
     tool = json.loads(path.read_text()) if path.exists() else {}
     path.unlink(missing_ok=True)
+    calls = tool.get("calls") or []
     summary = {
         "scene": scene,
         "elapsed_ms": elapsed_ms(scene),
         "served": tool.get("served"),
         "refused": tool.get("refused"),
-        "tool": bool(tool.get("calls")),
-        "whole": bool(tool.get("whole")),
+        "searched": "search" in calls,
+        "read": bool(tool.get("served")),
         "note": MARK in read(OUT / f"{scene}.stdout"),
     }
     (OUT / f"{scene}.summary.json").write_text(json.dumps(summary) + "\n")
-    usable = (status == 0 and summary["tool"] and summary["note"]
-              and summary["served"] is not None)
+    usable = status == 0 and summary["searched"] and summary["read"] and summary["note"]
     (OUT / f"{scene}.exit").write_text(f"{0 if usable else 1}\n")
     return 0
 

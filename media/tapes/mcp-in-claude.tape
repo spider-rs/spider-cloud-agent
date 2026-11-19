@@ -4,7 +4,7 @@ Set Shell "bash"
 Set FontSize 20
 Set FontFamily "Menlo"
 Set Width 1560
-Set Height 350
+Set Height 400
 Set Padding 32
 Set Framerate 24
 Set TypingSpeed 40ms
@@ -16,12 +16,14 @@ Enter
 Sleep 3s
 Show
 
-Type "claude -p 'Read https://example.com with the spider tool. Give me its title and one line on what"
+Type "claude -p 'Use spider to search the web for the Tokio 1.0 release announcement, then read it. In three"
 Enter
-Type "it says.' --mcp-config mcp.json --strict-mcp-config --allowed-tools mcp__spider__spider_scrape --model sonnet"
+Type `lines, what did it promise? End with the address you read.' \`
+Enter
+Type "--mcp-config mcp.json --strict-mcp-config --allowed-tools mcp__spider --model sonnet"
 Sleep 300ms
 Enter
-Sleep 90s
+Sleep 120s
 
 Hide
 # vhs has one captured frame in flight when Hide lands, and the teardown starts

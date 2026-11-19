@@ -36,8 +36,8 @@ EXPECTED = {
     "first-run": {"installed": True, "keyless": True, "clean": True},
     "setup": {"clients": 3, "clean": True},
     "device-login": {"signed_in": False, "clean": True},
-    "mcp-in-claude": {"served": 1, "refused": 0, "tool": True, "whole": True,
-                      "note": True},
+    "store-to-rows": {"rows": 1000, "refused": 0, "clean": True},
+    "mcp-in-claude": {"searched": True, "read": True, "refused": 0, "note": True},
 }
 
 # Everything that decides what the scene shows. Change one and the standing
@@ -58,6 +58,8 @@ RECIPE = {
               "media/demo/entry-scene.py"],
     "device-login": ["media/tapes/device-login.tape", "media/demo/entry-scene.sh",
                      "media/demo/entry-scene.py"],
+    "store-to-rows": ["media/tapes/store-to-rows.tape", "media/demo/entry-scene.sh",
+                      "media/demo/entry-scene.py"],
     "mcp-in-claude": ["media/tapes/mcp-in-claude.tape", "media/demo/agent-scene.sh",
                       "media/demo/agent-scene.py"],
 }

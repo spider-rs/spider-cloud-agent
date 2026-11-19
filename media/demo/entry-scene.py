@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Times and judges the scenes that show a new machine.
+"""Times and judges the scenes a person types by hand.
 
 `start` and `finish` run from the shell's PS0 and prompt hook, once either side
 of each command the scene types. `finish` also keeps the command's exit status.
@@ -14,6 +14,10 @@ left behind in the scratch home instead of trusting the screen:
 - device-login: the command exited 0 and left a pending code. The summary keeps
   when that code expires and nothing else about it, because the code is on
   screen and a recording is only publishable once it is dead.
+
+- store-to-rows: every command exited 0, the crawl refused nothing, and the file
+  it wrote holds the thousand products the store has, each with a title and a
+  price. The time it is scored on is the crawl's own, out of its closing report.
 
 It writes `media/out/<scene>.summary.json` for judge.py and `<scene>.exit` for
 render.sh.
@@ -71,7 +75,28 @@ def names_server(path):
         return False
 
 
-def score(scene):
+def store(work):
+    """What the crawl wrote: how many rows are products, and its closing report."""
+    rows, report = 0, {}
+    try:
+        text = (Path(work) / "books.ndjson").read_text()
+    except OSError:
+        return rows, report
+    for line in text.splitlines():
+        try:
+            record = json.loads(line)
+        except ValueError:
+            continue
+        if record.get("type") == "report":
+            report = record
+            continue
+        fields = record.get("fields") or {}
+        if (fields.get("title") or [None])[0] and (fields.get("price") or [None])[0]:
+            rows += 1
+    return rows, report
+
+
+def score(scene, work):
     started = [int(line) for line in lines(scene, "started")]
     finished = [line.split() for line in lines(scene, "finished")]
     # The command that closes the scene starts the clock once more and never
@@ -99,6 +124,13 @@ def score(scene):
     elif scene == "setup":
         summary["clients"] = sum(names_server(HOME / name) for name in JSON_CLIENTS)
         usable = summary["commands"] == 2 and summary["clients"] == len(JSON_CLIENTS)
+    elif scene == "store-to-rows":
+        rows, report = store(work)
+        summary.update(rows=rows, served=report.get("served"),
+                       refused=report.get("refused"))
+        if report.get("elapsed_ms") is not None:
+            summary["elapsed_ms"] = report["elapsed_ms"]
+        usable = summary["commands"] == 5 and bool(report)
     elif scene == "device-login":
         pending = HOME / ".spider/device-login.json"
         try:
@@ -122,6 +154,6 @@ if __name__ == "__main__":
     elif action == "finish":
         finish(scene, sys.argv[3])
     elif action == "score":
-        score(scene)
+        score(scene, sys.argv[3] if len(sys.argv) > 3 else str(HOME))
     else:
         raise SystemExit(f"unknown action {action}")

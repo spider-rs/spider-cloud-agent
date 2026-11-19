@@ -33,12 +33,12 @@ HOLD_SECONDS = 2.0
 # clients on the machine, a model calling it, then what a run looks like.
 SCENES = [
     ("first-run", "Install it. The first page needs no account."),
+    ("store-to-rows", "Signed in, one command turns a whole store into rows."),
     ("setup", "One command adds it to the agent clients you have."),
-    ("mcp-in-claude", "Claude Code calls it as a tool."),
+    ("mcp-in-claude", "Claude Code searches the web and reads what it finds."),
     ("claude-calls-agent", "Or from a shell: the agent reads the schema and picks the call."),
     ("streaming-crawl", "A crawl arrives one page per line."),
     ("route-and-cost", "It picks the transport before it spends."),
-    ("payload-savings", "Ask for fields, and the page body stays behind."),
 ]
 
 TAPE = """Output {frames}/

@@ -39,10 +39,11 @@ case "$1" in
       *)                  scene_notes=AGENTS.md ;;
     esac
     if [ "$SCENE_NAME" = mcp-in-claude ]; then
-      # The tool scene has no notes file. What it needs is the entry a client
-      # keeps for the server, the one `spider-agent setup` writes, in a file
-      # the invocation on screen names.
+      # The tool scene needs the entry a client keeps for the server, the one
+      # `spider-agent setup` writes, in a file the invocation on screen names.
+      # Its notes ask for plain lines and nothing about how to do the task.
       printf '%s\n' '{"mcpServers":{"spider":{"command":"spider-agent","args":["mcp"]}}}' > mcp.json
+      printf '%s\n' 'Answer in plain lines. No markdown, no headings, no lists.' > CLAUDE.md
     fi
     cat > "$scene_notes" <<'NOTES'
 Answer in plain lines and nothing else. No markdown, no fenced blocks, no prose.

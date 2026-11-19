@@ -21,6 +21,21 @@ runs. That is scrape only, and it is rate limited.
 
 ![The install line, then spider-agent scrape reading a page on a machine with no key](media/out/first-run.gif)
 
+## Sign in and take a whole site
+
+```bash
+spider-agent login
+spider-agent crawl https://books.toscrape.com --selectors fields.json --ndjson > books.ndjson
+```
+
+`fields.json` names the fields to pull off every page. The crawl follows the
+site's links and writes one line per page, holding those fields and no page
+body. In the recording a demo store of 1,000 products comes back as 1,000 rows
+of title and price, and the report at the end says how many pages it read and
+how long that took.
+
+![A signed-in crawl of a demo store with two selectors, then the first rows, a count of 1,000 products, and the run report](media/out/store-to-rows.gif)
+
 ## Add it to your agents
 
 ```bash
@@ -33,9 +48,10 @@ with each one. It leaves every other server a client has alone, and
 
 ![spider-agent setup, first as a dry run, then adding the server to five clients](media/out/setup.gif)
 
-From then on the model calls it as a tool:
+From then on the model has the web as tools. Here Claude Code searches for a
+page, reads it and answers from it:
 
-![Claude Code, run headless, answering a question about a page by calling the spider_scrape tool](media/out/mcp-in-claude.gif)
+![Claude Code, run headless, searching the web and reading a page through the spider tools, then answering with the address it read](media/out/mcp-in-claude.gif)
 
 ## Watch it run
 
@@ -48,8 +64,9 @@ screen are the ones that run printed.
 Each recording alone:
 
 - [Install and first page](media/out/first-run.gif)
+- [A whole store into rows](media/out/store-to-rows.gif)
 - [Setup](media/out/setup.gif)
-- [Claude Code calling the tool](media/out/mcp-in-claude.gif)
+- [Claude Code searching the web and reading a page](media/out/mcp-in-claude.gif)
 - [Signing in with a code, for a machine with no browser](media/out/device-login.gif)
 - [A program reading the NDJSON as it arrives](media/out/agent-calls-agent.gif)
 - [A streaming crawl](media/out/streaming-crawl.gif)
