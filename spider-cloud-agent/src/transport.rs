@@ -39,6 +39,11 @@ use crate::response::costs::Costs;
 use crate::response::metadata::Metadata;
 use crate::response::page::{PageParts, PageResult, Pages};
 use crate::response::Body;
+
+/// The header a call with no key sends. The service serves the free tier to a
+/// `free` or `free-*` token, rate limited by the caller's address, and answers
+/// a call with no Authorization header with a payment challenge.
+const FREE_BEARER: &str = "Bearer free-agent";
 use crate::status::{ApiStatus, PageStatus};
 use crate::Result;
 
@@ -654,13 +659,10 @@ impl Transport {
     ) -> Result<Reply> {
         validate_base(&self.base, self.insecure_http)?;
         let started = Instant::now();
-        // A transport with no key sends no header at all, and the service
-        // decides what a caller with no account may read.
-        let request = if self.key.is_empty() {
-            request
-        } else {
-            request.header(reqwest::header::AUTHORIZATION, self.bearer())
-        };
+        // A transport with no key asks for the free tier by name. A call with
+        // no header at all is answered with a payment challenge, and the
+        // service decides what a free caller may read.
+        let request = request.header(reqwest::header::AUTHORIZATION, self.bearer());
         let mut response = request.send().await.map_err(Error::Transport)?;
 
         let status = ApiStatus::new(response.status().as_u16());
@@ -711,9 +713,14 @@ impl Transport {
         !self.key.is_empty()
     }
 
-    /// The one place the key is written.
+    /// The one place the key is written. With no key it is the free tier's
+    /// token, which carries no secret.
     fn bearer(&self) -> String {
-        format!("Bearer {}", self.key)
+        if self.key.is_empty() {
+            FREE_BEARER.to_string()
+        } else {
+            format!("Bearer {}", self.key)
+        }
     }
 
     fn record_limits(&self, headers: &reqwest::header::HeaderMap) {
@@ -1428,6 +1435,18 @@ mod tests {
         let client = Transport::default_client().expect("a client");
         assert!(!Transport::with_client("", base.clone(), client.clone()).has_key());
         assert!(Transport::with_client("sk-test", base, client).has_key());
+    }
+
+    #[test]
+    fn a_transport_with_no_key_asks_for_the_free_tier() {
+        let base = Url::parse("https://api.spider.cloud").expect("an address");
+        let client = Transport::default_client().expect("a client");
+        let keyless = Transport::with_client("", base.clone(), client.clone());
+        assert_eq!(keyless.bearer(), "Bearer free-agent");
+        assert_eq!(
+            Transport::with_client("sk-test", base, client).bearer(),
+            "Bearer sk-test"
+        );
     }
 
     #[test]
